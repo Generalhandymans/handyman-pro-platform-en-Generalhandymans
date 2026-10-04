@@ -52,6 +52,13 @@ Per-market labor multipliers already exist in the engine (`state` field);
 add market admin (service areas, pricing overrides) and Spanish-first landing
 variants.
 
+## 9. In-app messaging (front portals)
+Client ↔ platform ↔ contractor messaging per project: status updates, photo
+sharing, approval requests and payment notifications in one thread. The front
+portals (client & contractor) expect communication alongside job statuses,
+approvals and payments — this closes that loop. Email/SMS notifications
+(pointing back to the thread) come first; real-time chat second.
+
 ## Non-goals (deliberate)
 - No marketplace bidding: the platform sets the price (managed model).
 - No native consumer app until the web funnel converts — mobile web first.
