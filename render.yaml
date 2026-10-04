@@ -1,0 +1,35 @@
+# Handyman Pro — Render blueprint (one-click deploy)
+# https://render.com — connect the Generalhandymans/handyman-pro-platform repo,
+# create a new Blueprint, and Render provisions everything below.
+services:
+  - type: web
+    name: handyman-pro
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    # SQLite needs a persistent disk or the database resets on every deploy.
+    disk:
+      name: handyman-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DB_PATH
+        value: /opt/render/project/src/data/handyman.db
+      - key: HANDYMAN_FROM_EMAIL
+        value: generalhandymans@gmail.com
+      - key: HANDYMAN_FROM_NAME
+        value: Handyman Pro
+      - key: EMAIL_PROVIDER
+        value: console
+      # Optional — set in the Render dashboard after deploy:
+      # - key: OPENAI_API_KEY
+      # - key: SENDGRID_API_KEY
+      #   (then switch EMAIL_PROVIDER to sendgrid)
+    healthCheckPath: /api/health
