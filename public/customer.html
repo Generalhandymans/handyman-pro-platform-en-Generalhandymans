@@ -16,6 +16,7 @@
     <div class="tabs" role="tablist" id="portal-tabs">
       <button class="tab active" data-tab="requests" role="tab">My requests</button>
       <button class="tab" data-tab="projects" role="tab">My projects</button>
+      <button class="tab" data-tab="messages" role="tab">Messages</button>
       <button class="tab" data-tab="referrals" role="tab">Referrals</button>
     </div>
 
@@ -25,6 +26,14 @@
 
     <section class="tab-panel" id="panel-projects" role="tabpanel">
       <div id="projects-list"><p class="muted">Loading your projects…</p></div>
+    </section>
+
+    <section class="tab-panel" id="panel-messages" role="tabpanel">
+      <div class="card">
+        <h2 style="margin-top:0">Messages with support</h2>
+        <p class="small muted">Chat with Handyman Pro support about your projects. Support relays everything to your contractor — you never need to contact them directly.</p>
+        <div id="messages-box"></div>
+      </div>
     </section>
 
     <section class="tab-panel" id="panel-referrals" role="tabpanel">
@@ -38,6 +47,7 @@
   </main>
 
   <script src="js/api.js"></script>
+  <script src="js/messages.js"></script>
   <script>
   // Handyman Pro — customer portal: requests, projects, referrals.
   (function () {
@@ -66,6 +76,12 @@
       loadRequests();
       loadProjects();
       loadReferrals();
+      HPMsg.mountMessages(document.getElementById('messages-box'), {
+        fetchProjects: async () => {
+          const ps = await HP.api('GET', '/projects');
+          return ps.map((p) => ({ id: p.id, label: `Project — ${HP.fmtMoney(p.customer_price_cents)} · ${HP.PROJECT_STAGE[p.stage] || p.stage}` }));
+        },
+      });
     }
 
     // ---------------- requests ----------------

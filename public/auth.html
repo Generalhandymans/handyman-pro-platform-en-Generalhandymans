@@ -34,8 +34,45 @@
             <span class="field-error" data-error-for="password"></span>
           </div>
           <button class="btn btn-primary btn-block" type="submit" id="btn-login">Log in</button>
+          <p class="small" style="margin-top:.75rem"><a href="#" id="forgot-link">Forgot your password?</a></p>
         </form>
       </div>
+
+      <!-- FORGOT PASSWORD -->
+      <div class="tab-panel" id="panel-forgot" role="tabpanel">
+        <h2 style="margin-top:0">Reset your password</h2>
+        <p class="small muted">Enter your account email and we will send you a reset link (valid for 1 hour).</p>
+        <form id="form-forgot" novalidate>
+          <div class="field">
+            <label for="fp-email">Email <span class="req">*</span></label>
+            <input type="email" id="fp-email" name="email" autocomplete="email">
+            <span class="field-error" data-error-for="email"></span>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" id="btn-forgot">Send reset link</button>
+          <p class="small" style="margin-top:.75rem"><a href="#" id="back-to-login">Back to log in</a></p>
+        </form>
+      </div>
+
+      <!-- RESET PASSWORD -->
+      <div class="tab-panel" id="panel-reset" role="tabpanel">
+        <h2 style="margin-top:0">Choose a new password</h2>
+        <form id="form-reset" novalidate>
+          <div class="field">
+            <label for="rp-password">New password <span class="req">*</span></label>
+            <input type="password" id="rp-password" name="password" autocomplete="new-password">
+            <div class="hint">At least 8 characters.</div>
+            <span class="field-error" data-error-for="password"></span>
+          </div>
+          <div class="field">
+            <label for="rp-password2">Confirm new password <span class="req">*</span></label>
+            <input type="password" id="rp-password2" name="password_confirm" autocomplete="new-password">
+            <span class="field-error" data-error-for="password_confirm"></span>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" id="btn-reset">Set new password</button>
+        </form>
+      </div>
+
+      <div id="verify-banner" style="margin-top:1rem"></div>
 
       <!-- CUSTOMER SIGNUP -->
       <div class="tab-panel" id="panel-customer" role="tabpanel">
@@ -168,6 +205,85 @@
     if (new URLSearchParams(location.search).get('expired')) {
       HP.toast('Your session expired. Please log in again.', 'error');
     }
+    // Panel-only screens (not tabs): forgot / reset.
+    function showPanel(name) {
+      tabs.forEach((t) => t.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach((p) => {
+        p.classList.toggle('active', p.id === 'panel-' + name);
+      });
+    }
+    document.getElementById('forgot-link').addEventListener('click', (e) => { e.preventDefault(); showPanel('forgot'); });
+    document.getElementById('back-to-login').addEventListener('click', (e) => { e.preventDefault(); selectTab('login'); });
+
+    // ---- email verification (?verify=TOKEN) ----
+    (async function () {
+      const token = new URLSearchParams(location.search).get('verify');
+      if (!token) return;
+      const box = document.getElementById('verify-banner');
+      try {
+        const r = await HP.api('GET', '/auth/verify?token=' + encodeURIComponent(token));
+        box.innerHTML = `<div class="banner banner-ok"><strong>${HP.esc(r.message || 'Email verified.')}</strong> You can now log in.</div>`;
+        selectTab('login');
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-err">Verification failed: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+      history.replaceState(null, '', location.pathname);
+    })();
+
+    // ---- forgot password ----
+    document.getElementById('form-forgot').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target, btn = document.getElementById('btn-forgot');
+      HP.clearFieldErrors(form);
+      const email = document.getElementById('fp-email').value.trim();
+      if (!email) { HP.applyFieldErrors(form, { email: 'Enter your email.' }); return; }
+      HP.busy(btn, true, 'Sending…');
+      try {
+        const r = await HP.api('POST', '/auth/forgot', { email });
+        HP.toast(r.message || 'If that email exists, a reset link is on its way.', 'ok');
+      } catch (err) {
+        HP.handleFormError(form, err);
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    // ---- reset password (?reset=TOKEN) ----
+    (function () {
+      const token = new URLSearchParams(location.search).get('reset');
+      if (token) { showPanel('reset'); history.replaceState(null, '', location.pathname); }
+      window.__resetToken = token;
+    })();
+    document.getElementById('form-reset').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target, btn = document.getElementById('btn-reset');
+      HP.clearFieldErrors(form);
+      const pw = document.getElementById('rp-password').value;
+      const pw2 = document.getElementById('rp-password2').value;
+      const errs = {};
+      if (pw.length < 8) errs.password = 'At least 8 characters.';
+      if (pw2 !== pw) errs.password_confirm = 'Passwords do not match.';
+      if (!window.__resetToken) errs.password = 'This reset link is invalid. Request a new one.';
+      if (Object.keys(errs).length) { HP.applyFieldErrors(form, errs); return; }
+      HP.busy(btn, true, 'Saving…');
+      try {
+        const r = await HP.api('POST', '/auth/reset', { token: window.__resetToken, password: pw });
+        HP.toast(r.message || 'Password updated. You can log in now.', 'ok');
+        selectTab('login');
+      } catch (err) {
+        HP.handleFormError(form, err);
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    // ---- resend verification ----
+    window.HP_resendVerify = async function () {
+      try {
+        const r = await HP.api('POST', '/auth/verify/resend', {});
+        HP.toast(r.message || 'Verification email sent.', 'ok');
+      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+    };
 
     function redirectByRole(user) {
       if (user.role === 'customer') location.href = 'customer.html';
@@ -218,7 +334,7 @@
       try {
         const r = await HP.api('POST', '/auth/signup/customer', body);
         HP.setSession(r.token, r.user);
-        HP.toast('Account created. Welcome to Handyman Pro.', 'ok');
+        HP.toast('Account created. Check your email to verify your address.', 'ok');
         redirectByRole(r.user);
       } catch (err) {
         HP.handleFormError(form, err);

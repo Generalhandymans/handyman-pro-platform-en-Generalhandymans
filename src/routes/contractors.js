@@ -3,6 +3,7 @@ const express = require('express');
 const db = require('../db');
 const { ah, authRequired, requireRole, isNonEmpty, failIfErrors } = require('../middleware');
 const { contractorLifecycle, contractorScore, retentionAtRisk } = require('../services/crm');
+const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 
@@ -78,6 +79,7 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
   if (failIfErrors(res, errors)) return;
   const sets = Object.keys(patch).map(k => `${k} = ?`);
   if (sets.length) db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE id = ?`).run(...Object.values(patch), c.id);
+  auditLog(req.user.id, 'contractor.verified', 'contractors', c.id, JSON.stringify(patch));
   res.json(enriched(db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id)));
 }));
 

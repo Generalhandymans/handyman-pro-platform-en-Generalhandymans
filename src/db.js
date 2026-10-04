@@ -235,8 +235,62 @@ CREATE INDEX IF NOT EXISTS idx_quotes_status ON quotes(status);
 CREATE INDEX IF NOT EXISTS idx_projects_stage ON projects(stage);
 CREATE INDEX IF NOT EXISTS idx_projects_contractor ON projects(contractor_id);
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON email_outbox(status);
+
+-- PRO 100%: mediated messaging (client<->support, support<->contractor).
+-- Direct client<->contractor contact is PROHIBITED by business rule: the
+-- platform owns the customer relationship. Two thread kinds per project.
+CREATE TABLE IF NOT EXISTS message_threads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('client_support','support_contractor')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (project_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  thread_id INTEGER NOT NULL REFERENCES message_threads(id) ON DELETE CASCADE,
+  sender_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sender_role TEXT NOT NULL CHECK (sender_role IN ('customer','contractor','admin')),
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_threads_project ON message_threads(project_id);
+CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
+
+-- PRO 100%: admin audit trail.
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  action TEXT NOT NULL,
+  entity TEXT NOT NULL,
+  entity_id INTEGER,
+  details TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_admin ON admin_audit(admin_id);
+CREATE INDEX IF NOT EXISTS idx_audit_entity ON admin_audit(entity, entity_id);
 `;
 
 db.exec(SCHEMA);
+
+// ---- Lightweight migrations for pre-existing databases ----
+function columnExists(table, col) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === col);
+}
+if (!columnExists('users', 'email_verified')) {
+  db.exec(`ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0`);
+}
+if (!columnExists('users', 'verify_token')) {
+  db.exec(`ALTER TABLE users ADD COLUMN verify_token TEXT`);
+}
+if (!columnExists('users', 'reset_token')) {
+  db.exec(`ALTER TABLE users ADD COLUMN reset_token TEXT`);
+}
+if (!columnExists('users', 'reset_expires')) {
+  db.exec(`ALTER TABLE users ADD COLUMN reset_expires TEXT`);
+}
 
 module.exports = db;

@@ -8,6 +8,7 @@ const db = require('../db');
 const { ah, authRequired, optionalAuth, requireRole, isEmail, isPhone, isNonEmpty, failIfErrors } = require('../middleware');
 const { TRADES, estimateJob } = require('../services/estimator');
 const vision = require('../services/vision');
+const photoSvc = require('../services/photos');
 const { touchInteraction, refreshLeadScore } = require('../services/crm');
 
 const router = express.Router();
@@ -79,7 +80,7 @@ router.post('/', ah(async (req, res) => {
   res.status(201).json({ ...publicJob(db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id)), claim_token: claimToken });
 }));
 
-// ---- Upload photos for a request (runs the vision hook) ----
+// ---- Upload photos for a request (runs the vision hook, optimizes images) ----
 router.post('/:id/photos', upload.array('photos', 6), ah(async (req, res) => {
   const job = loadJob(req, res);
   if (!job) return;
@@ -91,15 +92,16 @@ router.post('/:id/photos', upload.array('photos', 6), ah(async (req, res) => {
 
   const saved = [];
   for (const f of req.files) {
+    const opt = await photoSvc.optimize(f.path, f.mimetype);
     const info = db.prepare(
-      `INSERT INTO photos (job_request_id, filename, original_name, mime, size_bytes, kind, vision_json, uploaded_by)
-       VALUES (?,?,?,?,?,?,?,?)`
-    ).run(job.id, f.filename, f.originalname, f.mimetype, f.size, 'request',
+      `INSERT INTO photos (job_request_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`
+    ).run(job.id, f.filename, f.originalname, f.mimetype, opt.size, opt.width, opt.height, 'request',
       JSON.stringify(analyzed), req.user ? req.user.id : null);
     saved.push(db.prepare('SELECT * FROM photos WHERE id = ?').get(info.lastInsertRowid));
   }
-  touchInteraction(job.id, 'photos_uploaded', `${saved.length} photo(s)`);
-  res.status(201).json({ photos: saved, vision: { mode: analyzed.mode, observations: analyzed.observations } });
+  touchInteraction(job.id, 'photos_uploaded', `${saved.length} photo(s)${photoSvc.available() ? ' (optimized)' : ''}`);
+  res.status(201).json({ photos: saved, vision: { mode: analyzed.mode, observations: analyzed.observations }, optimized: photoSvc.available() });
 }));
 
 // ---- Run the REAL estimation engine on a request ----

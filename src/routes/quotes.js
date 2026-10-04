@@ -3,6 +3,8 @@ const express = require('express');
 const db = require('../db');
 const { ah, authRequired, requireRole, isInt, failIfErrors } = require('../middleware');
 const { touchInteraction } = require('../services/crm');
+const { notify, shell } = require('../services/notify');
+const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 
@@ -47,6 +49,8 @@ router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
       deposit_cents, deposit_pct, valid_until)
      VALUES (?,?,?,?,?,?, datetime(CURRENT_TIMESTAMP,'+14 days'))`
   ).run(job.id, b.estimate_id || null, b.customer_price_cents, b.contractor_cost_cents, deposit, depositPct);
+  auditLog(req.user.id, 'quote.created', 'quotes', info.lastInsertRowid,
+    `Job #${job.id}: customer ${fmt(b.customer_price_cents)}, contractor ${fmt(b.contractor_cost_cents)}, deposit ${depositPct}%`);
   res.status(201).json({
     ...db.prepare('SELECT * FROM quotes WHERE id = ?').get(info.lastInsertRowid),
     margin_cents: b.customer_price_cents - b.contractor_cost_cents,
@@ -62,6 +66,25 @@ router.post('/:id/send', authRequired, requireRole('admin'), ah(async (req, res)
   db.prepare(`UPDATE quotes SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
   db.prepare(`UPDATE job_requests SET status = 'quote_sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.job_request_id);
   touchInteraction(q.job_request_id, 'quote_sent', `quote #${q.id}`);
+  auditLog(req.user.id, 'quote.sent', 'quotes', q.id, `Sent to customer, ${fmt(q.customer_price_cents)}`);
+
+  // Notify the customer by email.
+  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
+  const to = job.customer_id
+    ? (db.prepare('SELECT email, name FROM users WHERE id = ?').get(job.customer_id) || {}).email
+    : job.email;
+  if (to) {
+    notify({
+      to,
+      subject: `Your Handyman Pro quote is ready — ${fmt(q.customer_price_cents)}`,
+      html: shell('Your quote is ready', 'We prepared a fixed quote for your project. Review and accept it from your portal:', [
+        ['Project', `#${job.id} — ${job.service_type}`],
+        ['Quoted price', fmt(q.customer_price_cents)],
+        ['Deposit to start', `${fmt(q.deposit_cents)} (${q.deposit_pct}%)`],
+        ['Valid until', String(q.valid_until || '').slice(0, 10)],
+      ]),
+    }).catch(() => {});
+  }
   res.json(db.prepare('SELECT * FROM quotes WHERE id = ?').get(q.id));
 }));
 
@@ -120,6 +143,21 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
   });
   const projectId = tx();
   touchInteraction(job.id, 'customer_reply', 'quote accepted');
+
+  // Notify admins: a customer accepted — time to assign a contractor.
+  const admins = db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
+  for (const a of admins) {
+    notify({
+      to: a.email,
+      subject: `Quote accepted — project #${projectId} needs a contractor`,
+      html: shell('Quote accepted', `${job.name} accepted the quote. Assign a contractor to start:`, [
+        ['Project', `#${projectId} — ${job.service_type}`],
+        ['Customer', `${job.name} (${job.phone})`],
+        ['Quoted price', fmt(q.customer_price_cents)],
+        ['Contractor budget', fmt(q.contractor_cost_cents)],
+      ]),
+    }).catch(() => {});
+  }
   res.json({ accepted: true, project_id: projectId });
 }));
 

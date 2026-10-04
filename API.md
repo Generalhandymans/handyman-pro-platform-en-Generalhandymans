@@ -13,6 +13,10 @@ Conventions: `GET /api/health` → `{ok, service, mail_provider, from}`.
 | POST | `/signup/customer` | `{name, email, phone?, password≥8}` | `{token, user}` 201 |
 | POST | `/signup/contractor` | `{name, email, phone?, password, legal_name, city, service_base?, service_radius_miles?, years_experience?, specialties?, license_number?, insurance_info?}` | `{token, user, note}` — contractor starts `pending` |
 | POST | `/login` | `{email, password}` | `{token, user}` |
+| GET | `/verify?token=` | — | `{message}` — verifies email (link from signup email) |
+| POST | `/verify/resend` | 🔒 | re-sends the verification email |
+| POST | `/forgot` | `{email}` | `{message}` — generic reply (no email enumeration); sends reset link if the account exists |
+| POST | `/reset` | `{token, password≥8}` | `{message}` — one-hour token, single use |
 | GET | `/me` 🔒 | — | user (+ `contractor` profile for contractors) |
 
 ## Trades — `/api/trades` (public)
@@ -55,9 +59,29 @@ Guest access: append `?claim=<claim_token>` (returned at creation).
 | GET | `/:id` | same detail for one project |
 | POST | `/:id/assign` | 🔒 admin `{contractor_id}` — must be `active`; stage → `scheduled` |
 | PATCH | `/:id/stage` | admin any of `assigned,scheduled,in_progress,review,completed,cancelled`; contractor only `scheduled,in_progress,review` |
+| PATCH | `/:id/schedule` | 🔒 admin `{scheduled_start?, scheduled_end?}` (YYYY-MM-DD; end ≥ start; nulls clear) |
 | POST | `/:id/milestones/:mid/complete` | admin/contractor marks done |
 | POST | `/:id/milestones/:mid/approve` | customer (or admin) `{approved:true/false}` |
 | POST | `/:id/photos` | admin/contractor multipart `photos` + `kind=progress\|completion` |
+
+## Messages (mediated) — `/api` 🔒
+
+**Business rule: NO direct client↔contractor contact.** Two thread kinds per
+project: `client_support` (customer ↔ support) and `support_contractor`
+(support ↔ contractor). Access matrix (enforced server-side on every endpoint):
+
+- customer: only `client_support` threads of their own projects
+- contractor: only `support_contractor` threads of assigned projects
+- admin: both kinds
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/projects/:id/threads` | threads of this project visible to the caller's role |
+| POST | `/projects/:id/threads` | `{kind?}` — get-or-create; the caller's role decides which kind is allowed (customers get `client_support`, contractors `support_contractor`, admin chooses) |
+| GET | `/threads/:tid/messages` | messages, oldest first (role-checked) |
+| POST | `/threads/:tid/messages` | `{body≤2000}` — role-checked; emails a notification to the other side via the mailer |
+
+No endpoint can ever create or expose a direct customer↔contractor thread.
 
 ## Contractors — `/api/contractors`
 
@@ -80,6 +104,7 @@ Guest access: append `?claim=<claim_token>` (returned at creation).
 | GET | `/contractors` | `{stages:{lifecycle:count}, contractors:[…]}` |
 | GET | `/recruitment-gaps` | demand-vs-supply report by trade/city (planning data, not emails) |
 | GET | `/email-log` | every send attempt, any provider |
+| GET | `/audit?limit=` | admin audit trail: `{admin_id, admin_name, action, entity, entity_id, details, created_at}` — records quote create/send, contractor assign, milestone complete/approve, campaign send, contractor verify, project schedule |
 | GET | `/segments/:name` | `{segment, count, sample}` preview for the campaign builder |
 
 Segments: `all_customers, past_customers, inactive_clients_90d, lost_leads,

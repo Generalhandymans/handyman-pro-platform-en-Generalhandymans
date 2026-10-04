@@ -73,8 +73,36 @@ To send real email:
 
 **Works for real:**
 - Dual registration + login (customer / contractor), JWT sessions, role
-  middleware, bcrypt passwords.
+  middleware, bcrypt passwords. **Email verification** (`/auth/verify`,
+  resend available) and **password recovery** (forgot/reset with expiring
+  token) — emails go through the mailer (log mode until a provider is set).
+- Rate limiting on public endpoints: auth (20/15 min) and job creation
+  (30/hour).
 - Job request intake with photo upload (5 MB max, images only, 6 max).
+  **Photos are optimized on upload with `sharp`**: resized so the longest
+  side is ≤ 1600 px and recompressed (JPEG/WebP quality ~80); the optimized
+  file is what gets served.
+- Mediated messaging (**business rule: NO direct client↔contractor contact**).
+  Two thread kinds per project — `client_support` (customer ↔ support) and
+  `support_contractor` (support ↔ contractor). Customers only see/write the
+  first, contractors only the second, admin sees both. Every message triggers
+  an email notification to the other side (support for customers/contractors,
+  the relevant party for admin replies).
+- Automatic email notifications on every state change: quote sent, quote
+  accepted, contractor assigned, milestone completed, milestone approved,
+  project completed. All recorded in `email_log` (console mode = logged,
+  not really sent).
+- Project scheduling: admin sets `scheduled_start`/`scheduled_end`
+  (UI + `PATCH /api/projects/:id/schedule`, validated: end ≥ start).
+- Admin audit log (`admin_audit` table + overview panel): quote creation /
+  sending, contractor assignment, milestone completion / approval, campaign
+  sends, contractor verification, scheduling.
+- `npm test` — 11 automated end-to-end tests (node:test) covering dual
+  signup, login, verification, password recovery, job intake + optimized
+  photo upload, estimate, quote→send→accept→project, assignment, **mediated
+  messaging (including 403s when a customer tries the contractor thread)**,
+  milestone notifications, scheduling validation, audit trail, rate-limit
+  headers.
 - Deterministic estimation engine: 8 trades, base ranges, scope drivers,
   urgency ×1.25, US-state labor multipliers, risk contingencies, confidence
   score, explainable price factors. Re-running the same inputs gives the same
@@ -126,12 +154,16 @@ run the commands above.)
 server.js            Express app, static frontend, outbox worker
 src/db.js            SQLite schema (one .db file, WAL mode)
 src/middleware/      JWT auth, role checks, input validators
-src/services/        estimator.js (real engine), vision.js, mailer.js, crm.js
+src/services/        estimator.js (real engine), vision.js, mailer.js, crm.js,
+                     notify.js (state-change emails), photos.js (sharp optimize),
+                     audit.js (admin audit log)
 src/routes/          REST API (auth, jobs, quotes, projects, contractors,
-                     crm, campaigns, reports, reviews, referrals, payments)
+                     crm, campaigns, reports, reviews, referrals, payments,
+                     messages)
 src/seed.js          Coherent demo data (idempotent)
+test/api.test.js     11 end-to-end tests (node:test) — run with `npm test`
 public/              Vanilla frontend: index, auth, track, customer,
-                     contractor, admin
+                     contractor, admin (+ shared js/messages.js component)
 ```
 
 Docs: `ARCHITECTURE.md` (design decisions), `API.md` (endpoints),

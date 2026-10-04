@@ -1,15 +1,31 @@
-// Auth: DUAL signup flows (customer / contractor), one login, JWT sessions.
+// Auth: DUAL signup flows (customer / contractor), one login, JWT sessions,
+// email verification + password recovery (tokens, expiring).
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const db = require('../db');
 const { ah, authRequired, isEmail, isPhone, isNonEmpty, failIfErrors, signToken } = require('../middleware');
+const { notify, shell } = require('../services/notify');
 
 const router = express.Router();
 
 function hashPassword(pw) { return bcrypt.hashSync(pw, 10); }
+function newToken() { return crypto.randomBytes(32).toString('hex'); }
 
 function publicUser(u) {
-  return { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role };
+  return { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, email_verified: !!u.email_verified };
+}
+
+function sendVerificationEmail(user, token) {
+  const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/api/auth/verify?token=${token}`;
+  return notify({
+    to: user.email,
+    subject: 'Verify your Handyman Pro email',
+    html: shell('Verify your email', `Hi ${user.name.split(' ')[0]}, please confirm this is your email address:`, [
+      ['Account', user.email],
+      ['Verify link', link],
+    ]) + `<p style="text-align:center;margin:20px 0;"><a href="${link}" style="background:#111827;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Verify my email</a></p>`,
+  }).catch(() => {});
 }
 
 // ---- CUSTOMER signup ----
@@ -25,11 +41,13 @@ router.post('/signup/customer', ah(async (req, res) => {
   const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email.trim().toLowerCase());
   if (exists) return res.status(409).json({ error: 'An account with this email already exists.' });
 
+  const token = newToken();
   const info = db.prepare(
-    'INSERT INTO users (name, email, phone, password_hash, role) VALUES (?,?,?,?,?)'
-  ).run(name.trim(), email.trim().toLowerCase(), (phone || '').trim(), hashPassword(password), 'customer');
+    'INSERT INTO users (name, email, phone, password_hash, role, verify_token) VALUES (?,?,?,?,?,?)'
+  ).run(name.trim(), email.trim().toLowerCase(), (phone || '').trim(), hashPassword(password), 'customer', token);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
-  res.status(201).json({ token: signToken(user), user: publicUser(user) });
+  sendVerificationEmail(user, token);
+  res.status(201).json({ token: signToken(user), user: publicUser(user), verify_sent: true });
 }));
 
 // ---- CONTRACTOR signup: creates the user AND the contractor profile (status: pending) ----
@@ -64,9 +82,13 @@ router.post('/signup/contractor', ah(async (req, res) => {
   });
   const userId = tx();
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  const vtoken = newToken();
+  db.prepare('UPDATE users SET verify_token = ? WHERE id = ?').run(vtoken, userId);
+  sendVerificationEmail(user, vtoken);
   res.status(201).json({
     token: signToken(user),
     user: publicUser(user),
+    verify_sent: true,
     note: 'Contractor profile created with status "pending". An admin must verify license, insurance and background check before activation.',
   });
 }));
@@ -90,6 +112,64 @@ router.get('/me', authRequired, ah(async (req, res) => {
     out.contractor = db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id) || null;
   }
   res.json(out);
+}));
+
+// ---- Email verification ----
+router.get('/verify', ah(async (req, res) => {
+  const token = String(req.query.token || '');
+  if (!token) return res.status(400).json({ error: 'Verification token is required.' });
+  const user = db.prepare('SELECT * FROM users WHERE verify_token = ?').get(token);
+  if (!user) return res.status(400).json({ error: 'Invalid or expired verification token.' });
+  db.prepare('UPDATE users SET email_verified = 1, verify_token = NULL WHERE id = ?').run(user.id);
+  res.json({ verified: true, email: user.email });
+}));
+
+// Resend the verification email (logged-in user).
+router.post('/verify/resend', authRequired, ah(async (req, res) => {
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (user.email_verified) return res.json({ verified: true, already: true });
+  const token = newToken();
+  db.prepare('UPDATE users SET verify_token = ? WHERE id = ?').run(token, user.id);
+  sendVerificationEmail(user, token);
+  res.json({ verify_sent: true });
+}));
+
+// ---- Password recovery: request a reset link ----
+router.post('/forgot', ah(async (req, res) => {
+  const { email } = req.body || {};
+  // Always respond the same way: never reveal whether the email exists.
+  const done = () => res.json({ sent: true, note: 'If that email is registered, a reset link is on its way.' });
+  if (!isEmail(email)) return done();
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
+  if (!user) return done();
+  const token = newToken();
+  const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+  db.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id);
+  const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/auth.html?reset=${token}`;
+  notify({
+    to: user.email,
+    subject: 'Reset your Handyman Pro password',
+    html: shell('Reset your password', `Hi ${user.name.split(' ')[0]}, use the link below within 1 hour:`, [
+      ['Reset link', link],
+    ]) + `<p style="text-align:center;margin:20px 0;"><a href="${link}" style="background:#111827;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Reset password</a></p>`,
+  }).catch(() => {});
+  return done();
+}));
+
+// ---- Password recovery: set the new password ----
+router.post('/reset', ah(async (req, res) => {
+  const { token, password } = req.body || {};
+  const errors = {};
+  if (typeof token !== 'string' || !token) errors.token = 'Reset token is required.';
+  if (typeof password !== 'string' || password.length < 8) errors.password = 'Password must be at least 8 characters.';
+  if (failIfErrors(res, errors)) return;
+  const user = db.prepare('SELECT * FROM users WHERE reset_token = ?').get(token);
+  if (!user || !user.reset_expires || new Date(user.reset_expires).getTime() < Date.now()) {
+    return res.status(400).json({ error: 'Invalid or expired reset token.' });
+  }
+  db.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?')
+    .run(hashPassword(password), user.id);
+  res.json({ reset: true });
 }));
 
 module.exports = router;

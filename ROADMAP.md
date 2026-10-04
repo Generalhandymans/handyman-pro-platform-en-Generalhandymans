@@ -52,12 +52,17 @@ Per-market labor multipliers already exist in the engine (`state` field);
 add market admin (service areas, pricing overrides) and Spanish-first landing
 variants.
 
-## 9. In-app messaging (front portals) — MEDIATED MODEL (business rule)
-NO direct client↔contractor contact: the platform owns the customer
-relationship. Two mediated threads per project: client↔support and
-support↔contractor. Covers status updates, photo sharing, approval requests
-and payment notifications. Email notifications (pointing back to the thread)
-come first; real-time chat second.
+## 9. In-app messaging — ✅ IMPLEMENTED (mediated model, business rule)
+**Was:** real-time chat second, email notifications first.
+**Now:** two mediated threads per project (`client_support`, `support_contractor`);
+customers and contractors can only see/write their own thread with support —
+**no direct client↔contractor contact is possible** (enforced server-side).
+Every message emails the other side through the mailer (console/log mode until
+a provider is set). UI in customer, contractor and admin portals; admin can
+switch between both sides. Audit-safe, covered by `npm test`.
+
+Next step (optional): WebSocket push for real-time delivery; the polling
+fallback (15 s in the current UI) stays.
 
 ## Non-goals (deliberate)
 - No marketplace bidding: the platform sets the price (managed model).

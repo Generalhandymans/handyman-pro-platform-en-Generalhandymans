@@ -6,6 +6,7 @@ const db = require('../db');
 const { ah, authRequired, requireRole, isNonEmpty, failIfErrors } = require('../middleware');
 const crm = require('../services/crm');
 const mailer = require('../services/mailer');
+const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 router.use(authRequired, requireRole('admin'));
@@ -89,6 +90,7 @@ router.post('/:id/send', ah(async (req, res) => {
   const c = db.prepare('SELECT * FROM campaigns WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Campaign not found.' });
   db.prepare(`UPDATE campaigns SET status = 'sending' WHERE id = ?`).run(c.id);
+  auditLog(req.user.id, 'campaign.sent', 'campaigns', c.id, `Campaign "${c.name}" → segment ${c.segment}`);
   const n = processOutbox(50); // also flush a batch right now for immediacy
   res.json({ status: 'sending', flushed_now: n });
 }));

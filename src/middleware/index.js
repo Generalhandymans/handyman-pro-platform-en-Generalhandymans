@@ -19,7 +19,7 @@ function authRequired(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Authentication required' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(payload.id);
+    const user = db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id);
     if (!user) return res.status(401).json({ error: 'User no longer exists' });
     req.user = user;
     next();
@@ -36,7 +36,7 @@ function optionalAuth(req, res, next) {
   if (h.startsWith('Bearer ')) {
     try {
       const payload = jwt.verify(h.slice(7), JWT_SECRET);
-      req.user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(payload.id) || undefined;
+      req.user = db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id) || undefined;
     } catch (e) { /* stay a guest */ }
   }
   next();

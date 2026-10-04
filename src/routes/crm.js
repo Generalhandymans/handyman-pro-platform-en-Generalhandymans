@@ -70,6 +70,24 @@ router.get('/email-log', ah(async (req, res) => {
   res.json(db.prepare('SELECT * FROM email_log ORDER BY id DESC LIMIT 200').all());
 }));
 
+// ---- Admin audit trail ----
+router.get('/audit', ah(async (req, res) => {
+  const { action, limit } = req.query;
+  const lim = Math.min(Number(limit) || 100, 500);
+  const rows = action
+    ? db.prepare(
+        `SELECT a.*, u.name AS admin_name FROM admin_audit a
+         LEFT JOIN users u ON u.id = a.admin_id
+         WHERE a.action = ? ORDER BY a.id DESC LIMIT ?`
+      ).all(action, lim)
+    : db.prepare(
+        `SELECT a.*, u.name AS admin_name FROM admin_audit a
+         LEFT JOIN users u ON u.id = a.admin_id
+         ORDER BY a.id DESC LIMIT ?`
+      ).all(lim);
+  res.json(rows);
+}));
+
 // ---- Segments preview (for the campaign builder) ----
 router.get('/segments/:name', ah(async (req, res) => {
   try {

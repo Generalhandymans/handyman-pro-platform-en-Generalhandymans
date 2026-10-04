@@ -18,6 +18,7 @@
       <button class="tab" data-tab="clients" role="tab">Clients</button>
       <button class="tab" data-tab="contractors" role="tab">Contractors</button>
       <button class="tab" data-tab="projects" role="tab">Projects</button>
+      <button class="tab" data-tab="messages" role="tab">Messages</button>
       <button class="tab" data-tab="campaigns" role="tab">Campaigns</button>
       <button class="tab" data-tab="reports" role="tab">Reports</button>
     </div>
@@ -25,6 +26,11 @@
     <section class="tab-panel active" id="panel-overview" role="tabpanel">
       <div id="mail-badge" style="margin-bottom:1rem"></div>
       <div class="kpis" id="overview-kpis"><p class="muted">Loading overview…</p></div>
+      <div class="section">
+        <div class="section-head"><h2>Audit log</h2></div>
+        <p class="small muted">Who did what, when: quote creation/sending, contractor assignment, milestone completion/approval, campaigns, contractor verification.</p>
+        <div id="audit-list"><p class="muted">Loading audit log…</p></div>
+      </div>
     </section>
 
     <section class="tab-panel" id="panel-clients" role="tabpanel">
@@ -95,6 +101,14 @@
       <div id="admin-projects"><p class="muted">Loading projects…</p></div>
     </section>
 
+    <section class="tab-panel" id="panel-messages" role="tabpanel">
+      <div class="section">
+        <div class="section-head"><h2>Messages (mediated)</h2></div>
+        <p class="small muted">Support sits in the middle: customers and contractors never talk to each other directly. Switch the conversation to see both sides.</p>
+        <div id="admin-messages"></div>
+      </div>
+    </section>
+
     <section class="tab-panel" id="panel-campaigns" role="tabpanel">
       <div class="section">
         <div class="section-head"><h2>Email templates</h2></div>
@@ -147,6 +161,7 @@
   </main>
 
   <script src="js/api.js"></script>
+  <script src="js/messages.js"></script>
   <script>
   // Handyman Pro — admin dashboard.
   (function () {
@@ -163,12 +178,25 @@
     document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
       t.addEventListener('click', () => {
         document.querySelectorAll('#admin-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
-        document.querySelectorAll('#panel-overview, #panel-clients, #panel-contractors, #panel-projects, #panel-campaigns, #panel-reports')
+        document.querySelectorAll('#panel-overview, #panel-clients, #panel-contractors, #panel-projects, #panel-messages, #panel-campaigns, #panel-reports')
           .forEach((p) => p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
-        const fn = { overview: loadOverview, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, campaigns: loadCampaignsTab, reports: loadReports }[t.dataset.tab];
+        const fn = { overview: loadOverview, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports }[t.dataset.tab];
         if (fn) fn();
       });
     });
+
+    // ---------- mediated messages (admin sees both sides) ----------
+    async function loadMessagesTab() {
+      if (loaded.messages) return;
+      loaded.messages = true;
+      HPMsg.mountMessages(document.getElementById('admin-messages'), {
+        allowKindSwitch: true,
+        fetchProjects: async () => {
+          const ps = await HP.api('GET', '/projects');
+          return ps.map((p) => ({ id: p.id, label: `#${p.id} · ${HP.fmtMoney(p.customer_price_cents)} · ${HP.PROJECT_STAGE[p.stage] || p.stage}` }));
+        },
+      });
+    }
 
     async function init() {
       const me = await HP.requireAuth('admin');
@@ -209,6 +237,20 @@
           `<div class="kpi"><div class="v">${HP.esc(v)}</div><div class="l">${HP.esc(l)}</div>${s ? `<div class="s">${HP.esc(s)}</div>` : ''}</div>`).join('');
       } catch (e) {
         box.innerHTML = `<div class="banner banner-warn">Could not load overview: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+      loadAuditLog();
+    }
+
+    async function loadAuditLog() {
+      const box = document.getElementById('audit-list');
+      try {
+        const rows = await HP.api('GET', '/crm/audit?limit=50');
+        if (!rows.length) { box.innerHTML = '<p class="muted">No audit entries yet.</p>'; return; }
+        box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Entity</th><th>Details</th></tr></thead><tbody>${
+          rows.map((r) => `<tr><td class="small">${HP.fmtDateTime(r.created_at)}</td><td>${HP.esc(r.admin_name || '#' + r.admin_id)}</td><td>${HP.esc(r.action)}</td><td class="small">${HP.esc(r.entity)}${r.entity_id ? ' #' + r.entity_id : ''}</td><td class="small">${HP.esc(r.details || '')}</td></tr>`).join('')
+        }</tbody></table></div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load audit log: ${HP.esc(HP.friendlyMessage(e))}</div>`;
       }
     }
 
@@ -622,6 +664,14 @@
                 <button class="btn btn-outline btn-sm" data-stage-go="${full.id}">Move</button>
               </div></div>
           </div>
+          <div class="form-grid two">
+            <div class="field"><label for="sched-start-${full.id}">Scheduled start</label>
+              <input type="date" id="sched-start-${full.id}" value="${(full.scheduled_start || '').slice(0, 10)}"><span class="field-error" data-error-for="scheduled_start"></span></div>
+            <div class="field"><label for="sched-end-${full.id}">Scheduled end</label>
+              <input type="date" id="sched-end-${full.id}" value="${(full.scheduled_end || '').slice(0, 10)}"><span class="field-error" data-error-for="scheduled_end"></span></div>
+          </div>
+          <div style="margin-bottom:1rem"><button class="btn btn-dark btn-sm" data-schedule-go="${full.id}">Save schedule</button>
+          <span class="hint">End date must be on or after the start date.</span></div>
           <dl class="kv">
             <dt>Customer price</dt><dd>${HP.fmtMoney(full.customer_price_cents)}</dd>
             <dt>Contractor cost</dt><dd>${HP.fmtMoney(full.contractor_cost_cents)}</dd>
@@ -655,6 +705,15 @@
           try {
             await HP.api('PATCH', `/projects/${full.id}/stage`, { stage: s });
             HP.toast('Stage updated.', 'ok');
+            expandedRefresh(full.id, body);
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+        body.querySelector('[data-schedule-go]').addEventListener('click', async () => {
+          const start = document.getElementById(`sched-start-${full.id}`).value || null;
+          const end = document.getElementById(`sched-end-${full.id}`).value || null;
+          try {
+            await HP.api('PATCH', `/projects/${full.id}/schedule`, { scheduled_start: start, scheduled_end: end });
+            HP.toast('Schedule saved.', 'ok');
             expandedRefresh(full.id, body);
           } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
         });

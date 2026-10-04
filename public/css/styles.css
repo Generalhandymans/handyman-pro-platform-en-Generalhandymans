@@ -434,3 +434,23 @@ td.num, th.num { text-align: right; white-space: nowrap; }
   border-radius: .5rem;
 }
 .rtab-panel { padding-top: .25rem; }
+
+/* ---- Mediated messaging ---- */
+.msg-wrap { display: grid; gap: .75rem; }
+.msg-notice { background: var(--info-bg); border: 1px solid #cfe2f7; border-radius: 8px; padding: .5rem .75rem; }
+.msg-list {
+  display: flex; flex-direction: column; gap: .6rem;
+  max-height: 380px; overflow-y: auto; padding: .75rem;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+}
+.msg { max-width: 85%; padding: .55rem .8rem; border-radius: 14px; }
+.msg-mine { align-self: flex-end; background: var(--navy); color: #fff; border-bottom-right-radius: 4px; }
+.msg-theirs { align-self: flex-start; background: #eef2f7; color: var(--ink); border-bottom-left-radius: 4px; }
+.msg-meta { font-size: .72rem; opacity: .75; margin-bottom: .2rem; }
+.msg-mine .msg-meta { color: #cdd9ea; }
+.msg-text { white-space: pre-wrap; word-break: break-word; }
+.msg-composer { display: grid; gap: .5rem; }
+.msg-composer .btn { justify-self: start; }
+@media (min-width: 720px) {
+  .msg-list { max-height: 460px; }
+}

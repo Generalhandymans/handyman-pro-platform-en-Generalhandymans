@@ -92,6 +92,15 @@ performance/retention scoring. Campaign segments exist per side.
 Vanilla HTML/CSS/JS. The whole app is readable and debuggable by the owner
 without a toolchain, and deploys anywhere Node runs.
 
+**11. Mediated messaging — the platform owns the customer relationship.**
+`message_threads` / `messages` tables; two thread kinds per project:
+`client_support` (customer ↔ support) and `support_contractor` (support ↔
+contractor). The access matrix is enforced server-side in `src/routes/messages.js`:
+customers only ever see their own `client_support` threads, contractors only
+their `support_contractor` threads, admin both. There is no endpoint — and no
+UI path — that can create or expose a direct customer↔contractor thread.
+Every message fires an email notification to the other side via `src/services/notify.js`.
+
 ## Request lifecycle
 
 ```
@@ -110,4 +119,13 @@ customer reviews → referral code
 - Input validation on every write endpoint; 422 `{errors:{field:msg}}`.
 - Multer: 5 MB/file, images only, 6 files max; friendly error mapping.
 - Photos served by DB-checked `/api/photos/:filename`, never raw static.
+  Uploads are optimized with `sharp` (longest side ≤ 1600 px, JPEG/WebP q80).
+- Rate limiting (`express-rate-limit`): `/api/auth/*` 20 req/15 min per IP,
+  `POST /api/jobs` 30 req/hour per IP.
+- Email verification + password recovery: single-use crypto tokens
+  (`verify_token`, `reset_token` 1-hour expiry); `/forgot` never reveals
+  whether an address is registered.
+- Admin audit log (`admin_audit`) records quote create/send, contractor
+  assignment, milestone complete/approve, campaign sends, contractor
+  verification, and scheduling — visible in the admin overview.
 - `.env`, `*.db*`, `uploads/` git-ignored.
