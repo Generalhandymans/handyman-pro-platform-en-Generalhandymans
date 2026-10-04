@@ -28,7 +28,7 @@ Conventions: `GET /api/health` → `{ok, service, mail_provider, from}`.
 |---|---|---|---|
 | POST | `/` | public (token optional; attaches customer when present) | `{name, phone, email?, address, city, state, zip?, service_type, urgency?, description, scope?}` → 201 `{job…, claim_token}` |
 | POST | `/:id/photos` | owner / admin / `?claim=` | multipart, field `photos` (≤6, ≤5MB, images) → runs vision hook |
-| POST | `/:id/estimate` | owner / admin / `?claim=` | optional `{scope}` merge → **201 real estimate** `{low_cents, high_cents, line_items, missing, risks, confidence, factors, engine_version}` |
+| POST | `/:id/estimate` | owner / admin / `?claim=` | optional `{scope}` merge → **201 real estimate** `{low_cents, high_cents, line_items:[{label,low_cents,high_cents}], missing:[{key,label}], risks:[{flag,note}], confidence:0-100, factors:[strings], engine_version}` |
 | GET | `/:id/estimate/latest` | owner / admin / `?claim=` | latest estimate or 404 |
 | GET | `/:id` | owner / admin / `?claim=` | job + photos + latest estimate summary |
 | GET | `/mine/list` | 🔒 customer | own requests |

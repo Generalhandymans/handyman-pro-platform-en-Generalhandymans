@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin dashboard — Handyman Pro</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -304,13 +305,13 @@
           <h4>New quote</h4>
           <form class="quote-form" novalidate>
             <div class="form-grid two">
-              <div class="field"><label>Customer price ($) <span class="req">*</span></label>
-                <input type="number" name="price" min="1" step="0.01" placeholder="850.00"><span class="field-error" data-error-for="customer_price_cents"></span></div>
-              <div class="field"><label>Contractor cost ($) <span class="req">*</span></label>
-                <input type="number" name="cost" min="0" step="0.01" placeholder="600.00"><span class="field-error" data-error-for="contractor_cost_cents"></span></div>
+              <div class="field"><label for="q-price-${job.id}">Customer price ($) <span class="req">*</span></label>
+                <input type="number" id="q-price-${job.id}" name="price" min="1" step="0.01" placeholder="850.00"><span class="field-error" data-error-for="customer_price_cents"></span></div>
+              <div class="field"><label for="q-cost-${job.id}">Contractor cost ($) <span class="req">*</span></label>
+                <input type="number" id="q-cost-${job.id}" name="cost" min="0" step="0.01" placeholder="600.00"><span class="field-error" data-error-for="contractor_cost_cents"></span></div>
             </div>
-            <div class="field"><label>Deposit %</label>
-              <input type="number" name="deposit_pct" min="0" max="100" value="30" style="max-width:140px"><span class="field-error" data-error-for="deposit_pct"></span></div>
+            <div class="field"><label for="q-dep-${job.id}">Deposit %</label>
+              <input type="number" id="q-dep-${job.id}" name="deposit_pct" min="0" max="100" value="30" style="max-width:140px"><span class="field-error" data-error-for="deposit_pct"></span></div>
             <div class="small muted" data-margin></div>
             <div class="btn-row"><button class="btn btn-dark btn-sm" type="submit">Create quote</button></div>
           </form>`;
@@ -416,6 +417,568 @@
         box.innerHTML = `<div class="banner banner-warn">Could not load tasks: ${HP.esc(HP.friendlyMessage(e))}</div>`;
       }
     }
+
+    // =================================================================
+    // CONTRACTORS
+    // =================================================================
+    let contractorsCache = [];
+
+    async function loadContractorTab() {
+      if (loaded.contractors) return;
+      loaded.contractors = true;
+      loadContractorPipeline();
+      loadContractorTable();
+      loadGaps();
+      document.getElementById('verify-select').addEventListener('change', paintVerifyDetail);
+      document.getElementById('verify-form').addEventListener('submit', submitVerify);
+    }
+
+    async function loadContractorPipeline() {
+      const box = document.getElementById('contractor-stages');
+      try {
+        const r = await HP.api('GET', '/crm/contractors');
+        const stages = r.stages || {};
+        const names = { verification: 'In verification', ready_to_activate: 'Ready to activate', new_active: 'New active', active: 'Active', top_performer: 'Top performer', suspended: 'Suspended', rejected: 'Rejected', applicant: 'Applicant' };
+        box.innerHTML = Object.keys(names).map((k) => `
+          <div class="stage-card"><div class="c">${stages[k] || 0}</div><div class="n">${names[k]}</div></div>`).join('');
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load contractor pipeline: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    async function loadContractorTable() {
+      const box = document.getElementById('contractor-table');
+      try {
+        contractorsCache = await HP.api('GET', '/contractors');
+        if (!contractorsCache.length) { box.innerHTML = HP.emptyState('No contractors yet', 'Applications will appear here.'); paintVerifyOptions(); return; }
+        box.innerHTML = `<div class="table-scroll"><table>
+          <thead><tr><th>Contractor</th><th>City</th><th>Lifecycle</th><th class="num">Score</th><th class="num">Rating</th><th class="num">Jobs</th><th>Retention</th></tr></thead>
+          <tbody>${contractorsCache.map((c) => `<tr>
+            <td><strong>${HP.esc(c.legal_name || c.user_name || '')}</strong><br><span class="small muted">${HP.esc(c.user_name || '')} · ${HP.esc(c.email || '')}</span></td>
+            <td>${HP.esc(c.city || '—')}</td>
+            <td>${HP.badge(c.lifecycle || c.status, c.status === 'active' ? 'ok' : 'warn')}</td>
+            <td class="num">${c.score || 0}</td>
+            <td class="num">${Number(c.rating_avg || 0).toFixed(1)}</td>
+            <td class="num">${c.jobs_completed || 0}</td>
+            <td>${c.retention_at_risk ? HP.badge('At risk', 'warn') : '<span class="muted small">OK</span>'}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+        paintVerifyOptions();
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load contractors: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    function paintVerifyOptions() {
+      const sel = document.getElementById('verify-select');
+      sel.innerHTML = '<option value="">Choose a contractor…</option>' +
+        contractorsCache.map((c) => `<option value="${c.id}">${HP.esc(c.legal_name || c.user_name || ('#' + c.id))} (${HP.esc(c.status)})</option>`).join('');
+    }
+
+    function paintVerifyDetail() {
+      const id = document.getElementById('verify-select').value;
+      const box = document.getElementById('verify-detail');
+      const c = contractorsCache.find((x) => String(x.id) === String(id));
+      if (!c) { box.innerHTML = 'Select a contractor to review and update verification.'; return; }
+      box.innerHTML = `
+        <dl class="kv" style="margin:.5rem 0">
+          <dt>Contact</dt><dd>${HP.esc(c.user_name || '')} · ${HP.esc(c.email || '')} · ${HP.esc(c.phone || '—')}</dd>
+          <dt>License #</dt><dd>${HP.esc(c.license_number || '—')}</dd>
+          <dt>Insurance</dt><dd>${HP.esc(c.insurance_info || '—')}</dd>
+          <dt>Now</dt><dd>${HP.badge('license ' + (c.license_verified ? 'verified' : 'unverified'), c.license_verified ? 'ok' : 'warn')}
+            ${HP.badge('insurance ' + (c.insurance_verified ? 'verified' : 'unverified'), c.insurance_verified ? 'ok' : 'warn')}
+            ${HP.badge('background ' + c.background_check, c.background_check === 'passed' ? 'ok' : 'warn')}
+            ${HP.badge(c.status, c.status === 'active' ? 'ok' : 'warn')}</dd>
+        </dl>`;
+      document.getElementById('vf-license').checked = !!c.license_verified;
+      document.getElementById('vf-insurance').checked = !!c.insurance_verified;
+      document.getElementById('vf-bg').value = c.background_check || 'pending';
+      document.getElementById('vf-status').value = c.status || 'pending';
+    }
+
+    async function submitVerify(e) {
+      e.preventDefault();
+      const id = document.getElementById('verify-select').value;
+      if (!id) { HP.toast('Choose a contractor first.', 'error'); return; }
+      const btn = document.getElementById('verify-save');
+      HP.busy(btn, true, 'Saving…');
+      try {
+        await HP.api('PATCH', `/contractors/${id}/verify`, {
+          license_verified: document.getElementById('vf-license').checked,
+          insurance_verified: document.getElementById('vf-insurance').checked,
+          background_check: document.getElementById('vf-bg').value,
+          status: document.getElementById('vf-status').value,
+        });
+        HP.toast('Verification updated.', 'ok');
+        loaded.contractors = false;
+        loadContractorPipeline(); loadContractorTable(); loaded.contractors = true;
+      } catch (err) {
+        // The activation guardrail surfaces here as a 400 with a clear message.
+        const msg = err.fields ? Object.values(err.fields).join(' ') : HP.friendlyMessage(err);
+        HP.toast(msg, 'error');
+      } finally {
+        HP.busy(btn, false);
+      }
+    }
+
+    async function loadGaps() {
+      const box = document.getElementById('gaps-box');
+      try {
+        const gaps = await HP.api('GET', '/crm/recruitment-gaps');
+        if (!gaps.length) { box.innerHTML = '<p class="muted">No recruitment gaps: current demand is covered.</p>'; return; }
+        box.innerHTML = `<div class="table-scroll"><table>
+          <thead><tr><th>Service</th><th>City</th><th class="num">Open jobs</th><th class="num">Active contractors</th></tr></thead>
+          <tbody>${gaps.map((g) => `<tr><td>${HP.esc(g.service_type)}</td><td>${HP.esc(g.city || '—')}</td><td class="num">${g.open_jobs}</td><td class="num">${g.active_contractors}</td></tr>`).join('')}
+          </tbody></table></div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load recruitment gaps: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    // =================================================================
+    // PROJECTS
+    // =================================================================
+    let activeContractors = [];
+
+    async function loadProjectsTab() {
+      if (loaded.projects) return;
+      loaded.projects = true;
+      const stripeBox = document.getElementById('stripe-note');
+      try {
+        const s = await HP.api('GET', '/payments/stripe-status');
+        stripeBox.innerHTML = `<div class="banner banner-info"><strong>Payments are manual bookkeeping.</strong> ${HP.esc(s.message || 'Stripe is not integrated.')}</div>`;
+      } catch (e) { /* optional */ }
+      try {
+        const all = await HP.api('GET', '/contractors');
+        activeContractors = all.filter((c) => c.status === 'active');
+      } catch (e) { activeContractors = []; }
+      loadAdminProjects();
+    }
+
+    async function loadAdminProjects() {
+      const box = document.getElementById('admin-projects');
+      box.innerHTML = '<p class="muted">Loading projects…</p>';
+      try {
+        const projects = await HP.api('GET', '/projects');
+        if (!projects.length) { box.innerHTML = HP.emptyState('No projects yet', 'Projects appear here once a customer accepts a quote.'); return; }
+        box.innerHTML = '<div class="proj-list"></div>';
+        const list = box.querySelector('.proj-list');
+        projects.forEach((p) => list.appendChild(adminProjectCard(p)));
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load projects: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    function adminProjectCard(p) {
+      const card = HP.el(`<article class="proj-card">
+        <div class="proj-head">
+          <button type="button" aria-expanded="false">
+            <span class="job-title">Project #${p.id}</span><br>
+            <span class="job-meta">${HP.fmtMoney(p.customer_price_cents)} · ${p.contractor ? HP.esc(p.contractor.name || '') : 'no contractor yet'} · ${HP.fmtDate(p.created_at)}</span>
+          </button>
+          ${HP.badge(HP.PROJECT_STAGE[p.stage] || p.stage, HP.statusKind(p.stage))}
+          <span class="chev" aria-hidden="true">▾</span>
+        </div>
+        <div class="proj-body"></div>
+      </article>`);
+      const head = card.querySelector('.proj-head button');
+      const body = card.querySelector('.proj-body');
+      let expanded = false;
+      head.addEventListener('click', async () => {
+        const open = card.classList.toggle('open');
+        head.setAttribute('aria-expanded', open);
+        if (open && !expanded) { expanded = true; await expandAdminProject(p, body); }
+      });
+      return card;
+    }
+
+    async function expandAdminProject(p, body) {
+      body.innerHTML = '<p class="muted">Loading…</p>';
+      try {
+        const full = await HP.api('GET', `/projects/${p.id}`);
+        const stageOpts = PROJECT_STAGES.map((s) =>
+          `<option value="${s}" ${full.stage === s ? 'selected' : ''}>${HP.PROJECT_STAGE[s]}</option>`).join('');
+        const assignOpts = activeContractors.map((c) =>
+          `<option value="${c.id}" ${full.contractor_id === c.id ? 'selected' : ''}>${HP.esc(c.legal_name || c.user_name)} (${HP.esc(c.city || '')})</option>`).join('');
+        const ms = (full.milestones || []).map((m) =>
+          `<div class="ms-item"><div class="grow"><div class="ttl">${HP.esc(m.title)}</div>
+            <div class="st">${HP.esc(m.status)} · customer approval: ${HP.esc(m.customer_approval)}</div></div></div>`).join('');
+        const pays = (full.payments || []).map((pay) =>
+          `<tr><td>${HP.esc(pay.kind)}</td><td class="num">${HP.fmtMoney(pay.amount_cents)}</td><td>${HP.esc(pay.status)}</td><td class="small">${HP.esc(pay.notes || '')}</td></tr>`).join('');
+        const photos = (full.photos && full.photos.length)
+          ? `<div class="photo-grid">${full.photos.map(photoTile).join('')}</div>`
+          : '<p class="small muted">No photos yet.</p>';
+        body.innerHTML = `
+          <div class="form-grid two">
+            <div class="field"><label for="assign-${full.id}">Assign contractor</label>
+              <div class="copy-row">
+                <select id="assign-${full.id}" style="flex:1;font:inherit;padding:.5rem;border:1.5px solid var(--line);border-radius:.5rem">
+                  <option value="">—</option>${assignOpts}</select>
+                <button class="btn btn-dark btn-sm" data-assign="${full.id}">Assign</button>
+              </div>
+              ${activeContractors.length ? '' : '<div class="hint">No active contractors yet — verify one first.</div>'}</div>
+            <div class="field"><label for="stage-${full.id}">Move stage</label>
+              <div class="copy-row">
+                <select id="stage-${full.id}" style="flex:1;font:inherit;padding:.5rem;border:1.5px solid var(--line);border-radius:.5rem">${stageOpts}</select>
+                <button class="btn btn-outline btn-sm" data-stage-go="${full.id}">Move</button>
+              </div></div>
+          </div>
+          <dl class="kv">
+            <dt>Customer price</dt><dd>${HP.fmtMoney(full.customer_price_cents)}</dd>
+            <dt>Contractor cost</dt><dd>${HP.fmtMoney(full.contractor_cost_cents)}</dd>
+            <dt>Margin</dt><dd>${HP.fmtMoney(full.customer_price_cents - full.contractor_cost_cents)}</dd>
+          </dl>
+          <h4>Milestones</h4><div class="ms">${ms || '<p class="small muted">No milestones.</p>'}</div>
+          <hr class="divider"><h4>Photos</h4>${photos}
+          <hr class="divider"><h4>Payments</h4>
+          ${pays ? `<div class="table-scroll"><table><thead><tr><th>Type</th><th class="num">Amount</th><th>Status</th><th>Note</th></tr></thead><tbody>${pays}</tbody></table></div>` : '<p class="small muted">No payments recorded yet.</p>'}
+          <h4 style="margin-top:1rem">Record a payment (manual bookkeeping)</h4>
+          <form class="pay-form" data-pid="${full.id}" novalidate>
+            <div class="form-grid two">
+              <div class="field"><label for="pay-kind-${full.id}">Type</label>
+                <select id="pay-kind-${full.id}" name="kind"><option value="deposit">Deposit</option><option value="milestone">Milestone</option><option value="final">Final</option><option value="refund">Refund</option></select></div>
+              <div class="field"><label for="pay-amount-${full.id}">Amount ($)</label><input type="number" id="pay-amount-${full.id}" name="amount" min="0.01" step="0.01" placeholder="250.00"></div>
+            </div>
+            <div class="field"><label for="pay-notes-${full.id}">Notes</label><input type="text" id="pay-notes-${full.id}" name="notes" placeholder="e.g. cash received on site"></div>
+            <button class="btn btn-dark btn-sm" type="submit">Record payment</button>
+          </form>`;
+        body.querySelector('[data-assign]').addEventListener('click', async (ev) => {
+          const cid = document.getElementById(`assign-${full.id}`).value;
+          if (!cid) { HP.toast('Choose a contractor to assign.', 'error'); return; }
+          try {
+            await HP.api('POST', `/projects/${full.id}/assign`, { contractor_id: Number(cid) });
+            HP.toast('Contractor assigned — project moved to Scheduled.', 'ok');
+            expandedRefresh(full.id, body);
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+        body.querySelector('[data-stage-go]').addEventListener('click', async () => {
+          const s = document.getElementById(`stage-${full.id}`).value;
+          try {
+            await HP.api('PATCH', `/projects/${full.id}/stage`, { stage: s });
+            HP.toast('Stage updated.', 'ok');
+            expandedRefresh(full.id, body);
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+        body.querySelector('.pay-form').addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          const f = ev.target;
+          const amount = f.amount.value;
+          if (!(Number(amount) > 0)) { HP.toast('Enter a valid amount in dollars.', 'error'); return; }
+          try {
+            await HP.api('POST', '/payments', {
+              project_id: full.id, kind: f.kind.value,
+              amount_cents: toCents(amount), notes: f.notes.value.trim() || undefined,
+            });
+            HP.toast('Payment recorded.', 'ok');
+            expandedRefresh(full.id, body);
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+      } catch (e) {
+        body.innerHTML = `<p class="muted">Could not load project: ${HP.esc(HP.friendlyMessage(e))}</p>`;
+      }
+      async function expandedRefresh(pid, b) {
+        try { const fresh = await HP.api('GET', `/projects/${pid}`); await expandAdminProject(fresh, b); }
+        catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      }
+    }
+
+    // =================================================================
+    // CAMPAIGNS
+    // =================================================================
+    async function loadCampaignsTab() {
+      if (loaded.campaigns) return;
+      loaded.campaigns = true;
+      const seg = document.getElementById('cm-segment');
+      seg.innerHTML = SEGMENTS.map((s) => `<option value="${s}">${s.replace(/_/g, ' ')}</option>`).join('');
+      document.getElementById('template-form').addEventListener('submit', createTemplate);
+      document.getElementById('campaign-form').addEventListener('submit', createCampaign);
+      loadTemplates();
+      loadCampaigns();
+      loadEmailLog();
+    }
+
+    async function loadTemplates() {
+      const box = document.getElementById('templates-list');
+      try {
+        const rows = await HP.api('GET', '/campaigns/templates');
+        const sel = document.getElementById('cm-template');
+        sel.innerHTML = rows.map((t) => `<option value="${t.id}">${HP.esc(t.name)}</option>`).join('') || '<option value="">No templates yet</option>';
+        box.innerHTML = rows.length ? `<div class="table-scroll"><table>
+          <thead><tr><th>Name</th><th>Subject</th><th>Created</th></tr></thead>
+          <tbody>${rows.map((t) => `<tr><td><strong>${HP.esc(t.name)}</strong></td><td>${HP.esc(t.subject)}</td><td class="small">${HP.fmtDate(t.created_at)}</td></tr>`).join('')}
+          </tbody></table></div>` : '<p class="small muted">No templates yet — create one below.</p>';
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load templates: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    async function createTemplate(e) {
+      e.preventDefault();
+      const form = e.target;
+      HP.clearFieldErrors(form);
+      try {
+        await HP.api('POST', '/campaigns/templates', {
+          name: document.getElementById('tm-name').value.trim(),
+          subject: document.getElementById('tm-subject').value.trim(),
+          body_html: document.getElementById('tm-body').value.trim(),
+        });
+        HP.toast('Template saved.', 'ok');
+        form.reset();
+        loadTemplates();
+      } catch (err) { HP.handleFormError(form, err); }
+    }
+
+    async function loadCampaigns() {
+      const box = document.getElementById('campaigns-list');
+      box.innerHTML = '<p class="muted">Loading campaigns…</p>';
+      try {
+        const rows = await HP.api('GET', '/campaigns');
+        if (!rows.length) { box.innerHTML = HP.emptyState('No campaigns yet', 'Create one above to reach a segment of your audience.'); return; }
+        box.innerHTML = '<div class="job-list"></div>';
+        const list = box.querySelector('.job-list');
+        rows.forEach((c) => list.appendChild(campaignCard(c)));
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load campaigns: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    function campaignCard(c) {
+      const card = HP.el(`<article class="job-card">
+        <div class="job-head">
+          <button type="button" aria-expanded="false">
+            <span class="job-title">${HP.esc(c.name)}</span><br>
+            <span class="job-meta">${HP.esc(String(c.segment).replace(/_/g, ' '))} · template: ${HP.esc(c.template_name || '—')} · ${c.recipients || 0} queued · ${c.sent || 0} sent</span>
+          </button>
+          ${HP.badge(c.status, c.status === 'done' ? 'ok' : c.status === 'draft' ? 'muted' : 'info')}
+          <span class="chev" aria-hidden="true">▾</span>
+        </div>
+        <div class="job-body"></div>
+      </article>`);
+      const head = card.querySelector('.job-head button');
+      const body = card.querySelector('.job-body');
+      let expanded = false;
+      head.addEventListener('click', async () => {
+        const open = card.classList.toggle('open');
+        head.setAttribute('aria-expanded', open);
+        if (open && !expanded) { expanded = true; await expandCampaign(c, body); }
+      });
+      return card;
+    }
+
+    async function expandCampaign(c, body) {
+      body.innerHTML = `
+        <div class="btn-row" style="margin-top:0">
+          <button class="btn btn-outline btn-sm" data-preview>Preview audience</button>
+          <button class="btn btn-dark btn-sm" data-queue>Queue emails</button>
+          <button class="btn btn-primary btn-sm" data-send>Send now</button>
+          <button class="btn btn-outline btn-sm" data-outbox>View outbox</button>
+        </div>
+        <div data-detail style="margin-top:1rem"><p class="small muted">Pick an action above.</p></div>`;
+      const detail = body.querySelector('[data-detail]');
+      body.querySelector('[data-preview]').addEventListener('click', async () => {
+        detail.innerHTML = '<p class="muted">Resolving segment…</p>';
+        try {
+          const r = await HP.api('GET', `/crm/segments/${encodeURIComponent(c.segment)}`);
+          detail.innerHTML = `<p><strong>${r.count}</strong> recipient(s) in <span class="code-chip">${HP.esc(r.segment)}</span>.</p>` +
+            (r.sample && r.sample.length ? `<div class="table-scroll"><table>
+              <thead><tr><th>Name</th><th>Email</th></tr></thead>
+              <tbody>${r.sample.map((m) => `<tr><td>${HP.esc(m.name || '—')}</td><td>${HP.esc(m.email || '—')}</td></tr>`).join('')}
+              </tbody></table></div><p class="small muted">Showing first ${r.sample.length}.</p>` : '<p class="small muted">No members in this segment yet.</p>');
+        } catch (e) { detail.innerHTML = `<div class="banner banner-warn">${HP.esc(HP.friendlyMessage(e))}</div>`; }
+      });
+      body.querySelector('[data-queue]').addEventListener('click', async (ev) => {
+        const b = ev.target; HP.busy(b, true, 'Queueing…');
+        try {
+          const r = await HP.api('POST', `/campaigns/${c.id}/queue`);
+          HP.toast(`${r.queued} email(s) queued.`, 'ok');
+          loadCampaigns();
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(b, false); }
+      });
+      body.querySelector('[data-send]').addEventListener('click', async (ev) => {
+        if (!confirm('Send this campaign now? Queued emails will go out.')) return;
+        const b = ev.target; HP.busy(b, true, 'Sending…');
+        try {
+          const r = await HP.api('POST', `/campaigns/${c.id}/send`);
+          HP.toast(`Sending started — ${r.flushed_now || 0} flushed immediately.`, 'ok');
+          loadCampaigns(); loadEmailLog();
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(b, false); }
+      });
+      body.querySelector('[data-outbox]').addEventListener('click', async () => {
+        detail.innerHTML = '<p class="muted">Loading outbox…</p>';
+        try {
+          const rows = await HP.api('GET', `/campaigns/${c.id}/outbox`);
+          detail.innerHTML = rows.length ? `<div class="table-scroll"><table>
+            <thead><tr><th>To</th><th>Subject</th><th>Status</th><th>Provider</th><th>Sent</th></tr></thead>
+            <tbody>${rows.map((o) => `<tr><td class="small">${HP.esc(o.to_email)}</td><td class="small">${HP.esc(o.subject)}</td>
+              <td>${HP.badge(o.status, o.status === 'sent' ? 'ok' : o.status === 'failed' ? 'err' : 'info')}</td>
+              <td class="small">${HP.esc(o.provider || '')}</td><td class="small">${o.sent_at ? HP.fmtDateTime(o.sent_at) : '—'}</td></tr>`).join('')}
+            </tbody></table></div>` : '<p class="small muted">Outbox is empty — queue emails first.</p>';
+        } catch (e) { detail.innerHTML = `<div class="banner banner-warn">${HP.esc(HP.friendlyMessage(e))}</div>`; }
+      });
+    }
+
+    async function createCampaign(e) {
+      e.preventDefault();
+      const form = e.target;
+      HP.clearFieldErrors(form);
+      try {
+        await HP.api('POST', '/campaigns', {
+          name: document.getElementById('cm-name').value.trim(),
+          segment: document.getElementById('cm-segment').value,
+          template_id: Number(document.getElementById('cm-template').value),
+        });
+        HP.toast('Campaign created as a draft.', 'ok');
+        form.reset();
+        loadCampaigns();
+      } catch (err) { HP.handleFormError(form, err); }
+    }
+
+    async function loadEmailLog() {
+      const box = document.getElementById('email-log');
+      try {
+        const rows = await HP.api('GET', '/crm/email-log');
+        box.innerHTML = rows.length ? `<div class="table-scroll"><table>
+          <thead><tr><th>To</th><th>Subject</th><th>Status</th><th>Provider</th><th>When</th></tr></thead>
+          <tbody>${rows.slice(0, 50).map((l) => `<tr><td class="small">${HP.esc(l.to_email)}</td><td class="small">${HP.esc(l.subject)}</td>
+            <td>${HP.badge(l.status, l.status === 'sent' ? 'ok' : 'err')}</td>
+            <td class="small">${HP.esc(l.provider)}</td><td class="small">${HP.fmtDateTime(l.created_at)}</td></tr>`).join('')}
+          </tbody></table></div><p class="small muted">Showing latest 50 of ${rows.length}.</p>`
+          : '<p class="small muted">No emails sent or attempted yet.</p>';
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load email log: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    // =================================================================
+    // REPORTS
+    // =================================================================
+    function bars(rows, labelKey, valueKey, fmt) {
+      const max = Math.max(1, ...rows.map((r) => Number(r[valueKey]) || 0));
+      return `<div class="bars">${rows.map((r) => {
+        const v = Number(r[valueKey]) || 0;
+        return `<div class="bar-row"><span class="nm">${HP.esc(r[labelKey])}</span>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(v / max * 100)}%"></div></div>
+          <span class="vl">${HP.esc(fmt ? fmt(r) : v)}</span></div>`;
+      }).join('')}</div>`;
+    }
+
+    function initReportTabs() {
+      document.querySelectorAll('#report-tabs .tab').forEach((t) => {
+        t.addEventListener('click', () => {
+          document.querySelectorAll('#report-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
+          ['clients', 'contractors', 'business'].forEach((k) => {
+            document.getElementById('report-' + k).hidden = k !== t.dataset.rtab;
+          });
+          loadReportTab(t.dataset.rtab);
+        });
+      });
+    }
+
+    function loadReports() {
+      if (!loaded.reportTabsInit) { loaded.reportTabsInit = true; initReportTabs(); }
+      if (!loaded.reportTabs) { loaded.reportTabs = true; loadReportTab('clients'); }
+    }
+
+    async function loadReportTab(which) {
+      const key = 'report_' + which;
+      if (loaded[key]) return;
+      loaded[key] = true;
+      if (which === 'clients') return reportClients();
+      if (which === 'contractors') return reportContractors();
+      return reportBusiness();
+    }
+
+    async function reportClients() {
+      const box = document.getElementById('report-clients');
+      box.innerHTML = '<p class="muted">Loading client reports…</p>';
+      try {
+        const [funnel, ticket] = await Promise.all([
+          HP.api('GET', '/reports/funnel'),
+          HP.api('GET', '/reports/ticket'),
+        ]);
+        const stages = funnel.client_funnel || [];
+        const top = stages.length ? stages[0].count : 0;
+        box.innerHTML = `
+          <div class="card"><h3 style="margin-top:0">Lead → quote → project funnel</h3>
+            ${stages.length ? bars(stages, 'stage', 'count', (r) => `${r.count} (${top ? Math.round(r.count / top * 100) : 0}%)`) : '<p class="muted">No data yet.</p>'}
+            <p class="small muted">Reviews: <strong>${funnel.post_project.reviews}</strong> · Referrals issued: <strong>${funnel.post_project.referrals_issued}</strong></p>
+          </div>
+          <div class="card"><h3 style="margin-top:0">Average ticket by trade</h3>
+            ${(ticket.by_service_type || []).length ? `<div class="table-scroll"><table>
+              <thead><tr><th>Trade</th><th class="num">Jobs</th><th class="num">Avg ticket</th></tr></thead>
+              <tbody>${ticket.by_service_type.map((r) => `<tr><td>${HP.esc(r.service_type)}</td><td class="num">${r.jobs}</td><td class="num">${HP.fmtMoney(r.avg_cents)}</td></tr>`).join('')}
+              </tbody></table></div>` : '<p class="muted">No completed projects yet.</p>'}</div>
+          <div class="card"><h3 style="margin-top:0">Average ticket by month</h3>
+            ${(ticket.by_month || []).length ? bars(ticket.by_month, 'month', 'avg_cents', (r) => HP.fmtMoney(r.avg_cents)) : '<p class="muted">No data yet.</p>'}</div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load client reports: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    async function reportContractors() {
+      const box = document.getElementById('report-contractors');
+      box.innerHTML = '<p class="muted">Loading contractor reports…</p>';
+      try {
+        const [f, perf] = await Promise.all([
+          HP.api('GET', '/reports/contractor-funnel'),
+          HP.api('GET', '/reports/contractors'),
+        ]);
+        const stages = Object.entries(f.contractor_funnel || {});
+        const total = f.total || 0;
+        box.innerHTML = `
+          <div class="card"><h3 style="margin-top:0">Contractor funnel (${total} total)</h3>
+            ${stages.length ? bars(stages.map(([stage, count]) => ({ stage, count })), 'stage', 'count', (r) => `${r.count} (${total ? Math.round(r.count / total * 100) : 0}%)`) : '<p class="muted">No data yet.</p>'}</div>
+          <div class="card"><h3 style="margin-top:0">Contractor performance</h3>
+            ${perf.length ? `<div class="table-scroll"><table>
+              <thead><tr><th>Contractor</th><th>City</th><th class="num">Done</th><th class="num">Active</th><th class="num">Revenue</th><th class="num">Rating</th><th>Lifecycle</th></tr></thead>
+              <tbody>${perf.map((r) => `<tr><td><strong>${HP.esc(r.legal_name)}</strong><br><span class="small muted">${HP.esc(r.contact_name || '')}</span></td>
+                <td>${HP.esc(r.city || '—')}</td><td class="num">${r.done}</td><td class="num">${r.active_now}</td>
+                <td class="num">${HP.fmtMoney(r.revenue_cents)}</td><td class="num">${Number(r.rating_avg || 0).toFixed(1)}</td>
+                <td>${HP.badge(r.lifecycle || r.status, r.status === 'active' ? 'ok' : 'warn')}</td></tr>`).join('')}
+              </tbody></table></div>` : '<p class="muted">No contractors yet.</p>'}</div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load contractor reports: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    async function reportBusiness() {
+      const box = document.getElementById('report-business');
+      box.innerHTML = '<p class="muted">Loading business reports…</p>';
+      try {
+        const [ov, margins, cal] = await Promise.all([
+          HP.api('GET', '/reports/overview'),
+          HP.api('GET', '/reports/margins'),
+          HP.api('GET', '/reports/calibration'),
+        ]);
+        box.innerHTML = `
+          <div class="card"><h3 style="margin-top:0">Business snapshot</h3>
+            <div class="kpis" style="grid-template-columns:repeat(2,1fr)">
+              <div class="kpi"><div class="v">${HP.fmtMoney(ov.revenue_cents)}</div><div class="l">Revenue</div></div>
+              <div class="kpi"><div class="v">${HP.fmtMoney(ov.cost_cents)}</div><div class="l">Cost</div></div>
+              <div class="kpi"><div class="v">${ov.gross_margin_pct}%</div><div class="l">Gross margin</div></div>
+              <div class="kpi"><div class="v">${HP.fmtMoney(ov.avg_ticket_cents)}</div><div class="l">Avg ticket</div></div>
+            </div></div>
+          <div class="card"><h3 style="margin-top:0">Projected vs actual margins</h3>
+            ${margins.length ? `<div class="table-scroll"><table>
+              <thead><tr><th>Project</th><th>Trade</th><th>Stage</th><th class="num">Proj. price</th><th class="num">Proj. margin</th><th class="num">Actual price</th><th class="num">Actual margin</th></tr></thead>
+              <tbody>${margins.map((m) => `<tr><td>#${m.project_id}</td><td>${HP.esc(m.service_type)}</td><td>${HP.esc(m.stage)}</td>
+                <td class="num">${HP.fmtMoney(m.projected_price_cents)}</td><td class="num">${m.projected_margin_pct}%</td>
+                <td class="num">${HP.fmtMoney(m.actual_price_cents)}</td><td class="num">${m.actual_margin_pct}%</td></tr>`).join('')}
+              </tbody></table></div>` : '<p class="muted">No projects yet.</p>'}</div>
+          <div class="card"><h3 style="margin-top:0">Estimate calibration</h3>
+            <p>Samples: <strong>${cal.samples}</strong> · Within range: <strong>${cal.within_range_pct}%</strong> · Avg deviation from midpoint: <strong>${cal.avg_deviation_from_midpoint_pct}%</strong></p>
+            ${(cal.detail || []).length ? `<div class="table-scroll"><table>
+              <thead><tr><th>Trade</th><th class="num">Low</th><th class="num">High</th><th class="num">Actual</th></tr></thead>
+              <tbody>${cal.detail.map((d) => `<tr><td>${HP.esc(d.service_type)}</td><td class="num">${HP.fmtMoney(d.low_cents)}</td><td class="num">${HP.fmtMoney(d.high_cents)}</td><td class="num">${HP.fmtMoney(d.actual_cents)}</td></tr>`).join('')}
+              </tbody></table></div>` : '<p class="muted small">No completed projects with estimates yet.</p>'}</div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load business reports: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    init();
+  })();
   </script>
 </body>
 </html>

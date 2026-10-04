@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Handyman Pro — Trusted home repairs, one request away</title>
   <meta name="description" content="Handyman Pro is a managed handyman marketplace: instant estimates, vetted pros, upfront pricing, and tracking from request to done.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -172,6 +173,8 @@
       W.scope = {};
       W.photos = [];
       W.questions = [];
+      document.getElementById('wizard-title').textContent = 'Request service';
+      document.querySelector('.modal-foot').style.display = '';
       backdrop.hidden = false;
       document.body.style.overflow = 'hidden';
       renderStep();
@@ -481,7 +484,7 @@
             <div class="estimate-range">${HP.fmtMoney(estimate.low_cents)} – ${HP.fmtMoney(estimate.high_cents)}</div>
             <div class="confidence">
               <div class="bar" role="img" aria-label="Estimate confidence ${estimate.confidence} percent"><div class="fill" style="width:${estimate.confidence}%"></div></div>
-              <div class="cap">Confidence: ${estimate.confidence}% ${estimate.photoCountNote || ''}</div>
+              <div class="cap">Confidence: ${estimate.confidence}%</div>
             </div>
           </div>
           <h3>What is included</h3>
@@ -520,10 +523,7 @@
           <div class="banner banner-info">Your request <strong>#${job.id}</strong> was received. We could not compute an estimate right now, but you can still track it.</div>
           <div class="track-box"><a href="${trackUrl}">Track request #${job.id}</a></div>`;
       }
-      // Reset the wizard shell for the next open.
-      const foot = document.querySelector('.modal-foot');
-      const reset = () => { foot.style.display = ''; document.getElementById('wizard-title').textContent = 'Request service'; };
-      document.getElementById('wizard-close').addEventListener('click', reset, { once: true });
+      // The wizard shell (title, footer buttons) is reset on next open by openWizard.
     }
 
     nextBtn.addEventListener('click', async () => {

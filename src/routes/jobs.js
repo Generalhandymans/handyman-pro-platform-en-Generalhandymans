@@ -5,12 +5,14 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const db = require('../db');
-const { ah, authRequired, requireRole, isEmail, isPhone, isNonEmpty, failIfErrors } = require('../middleware');
+const { ah, authRequired, optionalAuth, requireRole, isEmail, isPhone, isNonEmpty, failIfErrors } = require('../middleware');
 const { TRADES, estimateJob } = require('../services/estimator');
 const vision = require('../services/vision');
 const { touchInteraction, refreshLeadScore } = require('../services/crm');
 
 const router = express.Router();
+// Public intake routes serve guests (claim token) AND logged-in users.
+router.use(optionalAuth);
 
 const UPLOAD_DIR = path.join(__dirname, '..', '..', 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -47,15 +49,7 @@ function loadJob(req, res) {
 
 // ---- Create a job request (public; attaches to the logged-in customer when present) ----
 router.post('/', ah(async (req, res) => {
-  // Optional auth: attach req.user when a valid token is sent, but stay public.
-  const h = req.headers.authorization || '';
-  if (h.startsWith('Bearer ')) {
-    try {
-      const jwt = require('jsonwebtoken');
-      const payload = jwt.verify(h.slice(7), process.env.JWT_SECRET || 'dev-only-secret-change-me');
-      req.user = db.prepare('SELECT id, role FROM users WHERE id = ?').get(payload.id) || undefined;
-    } catch (e) { /* guest */ }
-  }
+  // optionalAuth already attached req.user when a valid token was sent.
   const b = req.body || {};
   const errors = {};
   if (!isNonEmpty(b.name, 120)) errors.name = 'Full name is required.';

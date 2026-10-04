@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Contractor portal — Handyman Pro</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -217,10 +218,10 @@
         ${photos}
         <form class="photo-upload" style="margin-top:.75rem" novalidate>
           <div class="form-grid two">
-            <div class="field"><label>Kind of photos</label>
-              <select name="kind"><option value="progress">Progress</option><option value="completion">Completion</option></select></div>
-            <div class="field"><label>Add photos</label>
-              <input type="file" name="photos" accept="image/*" multiple>
+            <div class="field"><label for="ph-kind-${p.id}">Kind of photos</label>
+              <select id="ph-kind-${p.id}" name="kind"><option value="progress">Progress</option><option value="completion">Completion</option></select></div>
+            <div class="field"><label for="ph-file-${p.id}">Add photos</label>
+              <input type="file" id="ph-file-${p.id}" name="photos" accept="image/*" multiple>
               <div class="hint">Images only, up to 6, 5 MB each.</div></div>
           </div>
           <button class="btn btn-dark btn-sm" type="submit">Upload photos</button>

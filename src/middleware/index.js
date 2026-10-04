@@ -28,6 +28,20 @@ function authRequired(req, res, next) {
   }
 }
 
+// Optional auth: parses "Authorization: Bearer <token>" when present and valid,
+// attaches req.user — but NEVER fails. Lets public routes serve both guests
+// (claim token) and logged-in users transparently.
+function optionalAuth(req, res, next) {
+  const h = req.headers.authorization || '';
+  if (h.startsWith('Bearer ')) {
+    try {
+      const payload = jwt.verify(h.slice(7), JWT_SECRET);
+      req.user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(payload.id) || undefined;
+    } catch (e) { /* stay a guest */ }
+  }
+  next();
+}
+
 // authRequired must run first. Usage: requireRole('admin'), requireRole('admin','contractor')
 function requireRole(...roles) {
   return (req, res, next) => {
@@ -52,11 +66,11 @@ function isInt(v, min, max) {
   const n = Number(v);
   return Number.isInteger(n) && n >= min && n <= max;
 }
-// Collects {field: message} pairs; route returns 400 if any.
+// Collects {field: message} pairs; route returns 422 with {errors} if any.
 function failIfErrors(res, errors) {
   const keys = Object.keys(errors);
   if (keys.length) {
-    res.status(400).json({ error: 'Validation failed', fields: errors });
+    res.status(422).json({ errors });
     return true;
   }
   return false;
@@ -66,4 +80,4 @@ function signToken(user) {
   return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
 }
 
-module.exports = { ah, authRequired, requireRole, isEmail, isPhone, isNonEmpty, isInt, failIfErrors, signToken };
+module.exports = { ah, authRequired, optionalAuth, requireRole, isEmail, isPhone, isNonEmpty, isInt, failIfErrors, signToken };

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>My portal — Handyman Pro</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -117,10 +118,15 @@
     }
 
     async function expandJob(job, body) {
+      // NOTE: the job list row already carries every contact/detail field.
+      // Photos and the estimate are fetched with the claim token saved by the
+      // request wizard (same browser); without it the server denies reads.
+      const claim = HP.loadClaim(job.id);
+      const qs = claim ? `?claim=${encodeURIComponent(claim)}` : '';
       try {
         const [detail, estimate, quotes] = await Promise.all([
-          HP.api('GET', `/jobs/${job.id}`).catch(() => null),
-          HP.api('GET', `/jobs/${job.id}/estimate/latest`).catch((e) => (e.status === 404 ? null : Promise.reject(e))),
+          qs ? HP.api('GET', `/jobs/${job.id}${qs}`).catch(() => null) : Promise.resolve(null),
+          HP.api('GET', `/jobs/${job.id}/estimate/latest${qs}`).catch((e) => (e.status === 404 || e.status === 403 ? null : Promise.reject(e))),
           HP.api('GET', `/quotes?job_request_id=${job.id}`).catch(() => []),
         ]);
         const d = detail || job;
