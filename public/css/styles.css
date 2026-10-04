@@ -418,3 +418,19 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 .auth-card { max-width: 520px; margin: 2rem auto; }
 .review-box { background: #fbfcfe; border: 1px solid var(--line); border-radius: .6rem; padding: .8rem 1rem; margin-bottom: .6rem; }
 .review-box .who { font-size: .82rem; color: var(--muted); }
+
+/* ---- QA pass: classes used in markup but previously unstyled ---- */
+.quote-form, .pay-form {
+  background: #fbfcfe; border: 1px solid var(--line);
+  border-radius: .6rem; padding: 1rem; margin-top: .5rem;
+}
+.photo-upload {
+  border: 1.5px dashed var(--line); border-radius: .6rem;
+  padding: 1rem; background: #fbfcfe;
+}
+.photo-tile-meta .photo-placeholder {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 96px; font-size: 2rem; background: #eef2f7;
+  border-radius: .5rem;
+}
+.rtab-panel { padding-top: .25rem; }
