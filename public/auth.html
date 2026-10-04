@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Log in or sign up — Handyman Pro</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header" id="site-header"></header>
+  <main class="wrap">
+    <div class="card auth-card">
+      <h1 class="page-title" style="margin-top:0">Welcome to Handyman Pro</h1>
+      <p class="page-sub">Log in, create a customer account, or join our contractor network.</p>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="login" role="tab">Log in</button>
+        <button class="tab" data-tab="customer" role="tab">Sign up as customer</button>
+        <button class="tab" data-tab="contractor" role="tab">Join as a contractor</button>
+      </div>
+
+      <!-- LOG IN -->
+      <div class="tab-panel active" id="panel-login" role="tabpanel">
+        <form id="form-login" novalidate>
+          <div class="field">
+            <label for="li-email">Email <span class="req">*</span></label>
+            <input type="email" id="li-email" name="email" autocomplete="email">
+            <span class="field-error" data-error-for="email"></span>
+          </div>
+          <div class="field">
+            <label for="li-password">Password <span class="req">*</span></label>
+            <input type="password" id="li-password" name="password" autocomplete="current-password">
+            <span class="field-error" data-error-for="password"></span>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" id="btn-login">Log in</button>
+        </form>
+      </div>
+
+      <!-- CUSTOMER SIGNUP -->
+      <div class="tab-panel" id="panel-customer" role="tabpanel">
+        <form id="form-customer" novalidate>
+          <div class="field">
+            <label for="sc-name">Full name <span class="req">*</span></label>
+            <input type="text" id="sc-name" name="name" autocomplete="name">
+            <span class="field-error" data-error-for="name"></span>
+          </div>
+          <div class="field">
+            <label for="sc-email">Email <span class="req">*</span></label>
+            <input type="email" id="sc-email" name="email" autocomplete="email">
+            <span class="field-error" data-error-for="email"></span>
+          </div>
+          <div class="field">
+            <label for="sc-phone">Phone</label>
+            <input type="tel" id="sc-phone" name="phone" autocomplete="tel" placeholder="(555) 123-4567">
+            <span class="field-error" data-error-for="phone"></span>
+          </div>
+          <div class="field">
+            <label for="sc-password">Password <span class="req">*</span></label>
+            <input type="password" id="sc-password" name="password" autocomplete="new-password">
+            <div class="hint">At least 8 characters.</div>
+            <span class="field-error" data-error-for="password"></span>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" id="btn-customer">Create my account</button>
+        </form>
+      </div>
+
+      <!-- CONTRACTOR SIGNUP -->
+      <div class="tab-panel" id="panel-contractor" role="tabpanel">
+        <p class="small muted">Join our pro network. Your profile is created as <strong>pending</strong> — we verify license, insurance, and background before you can take jobs.</p>
+        <form id="form-contractor" novalidate>
+          <div class="form-grid two">
+            <div class="field">
+              <label for="sj-name">Your name <span class="req">*</span></label>
+              <input type="text" id="sj-name" name="name" autocomplete="name">
+              <span class="field-error" data-error-for="name"></span>
+            </div>
+            <div class="field">
+              <label for="sj-legal">Legal business name <span class="req">*</span></label>
+              <input type="text" id="sj-legal" name="legal_name">
+              <span class="field-error" data-error-for="legal_name"></span>
+            </div>
+          </div>
+          <div class="form-grid two">
+            <div class="field">
+              <label for="sj-email">Email <span class="req">*</span></label>
+              <input type="email" id="sj-email" name="email" autocomplete="email">
+              <span class="field-error" data-error-for="email"></span>
+            </div>
+            <div class="field">
+              <label for="sj-phone">Phone</label>
+              <input type="tel" id="sj-phone" name="phone" autocomplete="tel">
+              <span class="field-error" data-error-for="phone"></span>
+            </div>
+          </div>
+          <div class="field">
+            <label for="sj-password">Password <span class="req">*</span></label>
+            <input type="password" id="sj-password" name="password" autocomplete="new-password">
+            <div class="hint">At least 8 characters.</div>
+            <span class="field-error" data-error-for="password"></span>
+          </div>
+          <div class="form-grid two">
+            <div class="field">
+              <label for="sj-city">City <span class="req">*</span></label>
+              <input type="text" id="sj-city" name="city" autocomplete="address-level2">
+              <span class="field-error" data-error-for="city"></span>
+            </div>
+            <div class="field">
+              <label for="sj-base">Service base</label>
+              <input type="text" id="sj-base" name="service_base" placeholder="Defaults to your city">
+              <span class="field-error" data-error-for="service_base"></span>
+            </div>
+          </div>
+          <div class="form-grid two">
+            <div class="field">
+              <label for="sj-radius">Service radius (miles)</label>
+              <input type="number" id="sj-radius" name="service_radius_miles" min="1" max="500" placeholder="25">
+              <span class="field-error" data-error-for="service_radius_miles"></span>
+            </div>
+            <div class="field">
+              <label for="sj-years">Years of experience</label>
+              <input type="number" id="sj-years" name="years_experience" min="0" max="80" placeholder="0">
+              <span class="field-error" data-error-for="years_experience"></span>
+            </div>
+          </div>
+          <div class="field">
+            <label for="sj-specialties">Specialties</label>
+            <input type="text" id="sj-specialties" name="specialties" placeholder="e.g. painting, drywall, carpentry">
+            <span class="field-error" data-error-for="specialties"></span>
+          </div>
+          <div class="form-grid two">
+            <div class="field">
+              <label for="sj-license">License number</label>
+              <input type="text" id="sj-license" name="license_number">
+              <span class="field-error" data-error-for="license_number"></span>
+            </div>
+            <div class="field">
+              <label for="sj-insurance">Insurance info</label>
+              <input type="text" id="sj-insurance" name="insurance_info" placeholder="Carrier / policy #">
+              <span class="field-error" data-error-for="insurance_info"></span>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit" id="btn-contractor">Apply as a contractor</button>
+        </form>
+        <div id="contractor-note" style="margin-top:1rem"></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script>
+  // Handyman Pro — login + dual signup.
+  (function () {
+    'use strict';
+    HP.mountHeader('auth');
+
+    // Tabs (supports ?tab=contractor deep link).
+    const tabs = document.querySelectorAll('.tab');
+    function selectTab(name) {
+      tabs.forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+      document.querySelectorAll('.tab-panel').forEach((p) => {
+        p.classList.toggle('active', p.id === 'panel-' + name);
+      });
+    }
+    tabs.forEach((t) => t.addEventListener('click', () => selectTab(t.dataset.tab)));
+    const initial = new URLSearchParams(location.search).get('tab');
+    if (['login', 'customer', 'contractor'].includes(initial)) selectTab(initial);
+    if (new URLSearchParams(location.search).get('expired')) {
+      HP.toast('Your session expired. Please log in again.', 'error');
+    }
+
+    function redirectByRole(user) {
+      if (user.role === 'customer') location.href = 'customer.html';
+      else if (user.role === 'contractor') location.href = 'contractor.html';
+      else if (user.role === 'admin') location.href = 'admin.html';
+      else location.href = 'index.html';
+    }
+
+    // ---- login ----
+    document.getElementById('form-login').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target, btn = document.getElementById('btn-login');
+      HP.clearFieldErrors(form);
+      const email = document.getElementById('li-email').value.trim();
+      const password = document.getElementById('li-password').value;
+      if (!email || !password) {
+        HP.applyFieldErrors(form, {
+          ...(email ? {} : { email: 'Enter your email.' }),
+          ...(password ? {} : { password: 'Enter your password.' }),
+        });
+        return;
+      }
+      HP.busy(btn, true, 'Logging in…');
+      try {
+        const r = await HP.api('POST', '/auth/login', { email, password });
+        HP.setSession(r.token, r.user);
+        HP.toast(`Welcome back, ${r.user.name.split(' ')[0]}.`, 'ok');
+        redirectByRole(r.user);
+      } catch (err) {
+        HP.handleFormError(form, err);
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    // ---- customer signup ----
+    document.getElementById('form-customer').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target, btn = document.getElementById('btn-customer');
+      HP.clearFieldErrors(form);
+      const body = {
+        name: document.getElementById('sc-name').value.trim(),
+        email: document.getElementById('sc-email').value.trim(),
+        phone: document.getElementById('sc-phone').value.trim(),
+        password: document.getElementById('sc-password').value,
+      };
+      HP.busy(btn, true, 'Creating account…');
+      try {
+        const r = await HP.api('POST', '/auth/signup/customer', body);
+        HP.setSession(r.token, r.user);
+        HP.toast('Account created. Welcome to Handyman Pro.', 'ok');
+        redirectByRole(r.user);
+      } catch (err) {
+        HP.handleFormError(form, err);
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    // ---- contractor signup ----
+    document.getElementById('form-contractor').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target, btn = document.getElementById('btn-contractor');
+      HP.clearFieldErrors(form);
+      const v = (id) => document.getElementById(id).value.trim();
+      const body = {
+        name: v('sj-name'), legal_name: v('sj-legal'), email: v('sj-email'),
+        phone: v('sj-phone'), password: document.getElementById('sj-password').value,
+        city: v('sj-city'), service_base: v('sj-base'),
+        specialties: v('sj-specialties'), license_number: v('sj-license'),
+        insurance_info: v('sj-insurance'),
+      };
+      const radius = document.getElementById('sj-radius').value;
+      const years = document.getElementById('sj-years').value;
+      if (radius !== '') body.service_radius_miles = Number(radius);
+      if (years !== '') body.years_experience = Number(years);
+      HP.busy(btn, true, 'Submitting application…');
+      try {
+        const r = await HP.api('POST', '/auth/signup/contractor', body);
+        HP.setSession(r.token, r.user);
+        // Show the platform's verification note before leaving.
+        const noteBox = document.getElementById('contractor-note');
+        noteBox.innerHTML = `<div class="banner banner-warn"><strong>Application received.</strong><br>${HP.esc(r.note || 'Your contractor profile is pending verification.')}</div>`;
+        HP.toast('Application submitted.', 'ok');
+        setTimeout(() => redirectByRole(r.user), 2500);
+      } catch (err) {
+        HP.handleFormError(form, err);
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    // Already logged in? Offer a shortcut instead of re-logging in.
+    (async function () {
+      if (!HP.token()) return;
+      try {
+        const me = await HP.api('GET', '/auth/me');
+        HP.toast(`You are already logged in as ${me.name}.`, 'info');
+        const card = document.querySelector('.auth-card');
+        const link = HP.el(`<p class="small" style="margin-top:1rem"><a href="#" id="goto-portal">Go to my portal</a> · <a href="#" id="switch-user">Log in as someone else</a></p>`);
+        card.appendChild(link);
+        document.getElementById('goto-portal').addEventListener('click', (ev) => { ev.preventDefault(); redirectByRole(me); });
+        document.getElementById('switch-user').addEventListener('click', (ev) => { ev.preventDefault(); HP.clearSession(); location.reload(); });
+      } catch (e) { /* session invalid; api() already redirected or will on use */ }
+    })();
+  })();
+  </script>
+</body>
+</html>

@@ -239,6 +239,13 @@ const ob = db.prepare('SELECT id FROM email_outbox ORDER BY id DESC LIMIT 1').ge
 db.prepare(`INSERT INTO email_log (outbox_id, to_email, subject, status, provider)
   VALUES (?, 'carlos.m@example.com', 'You are a top-rated pro, Carlos Mendez!', 'sent', 'console')`).run(ob);
 
+// Make one past customer "inactive 100 days" so the win-back segment demo is real:
+// Luis's completed job goes quiet (no activity in 100 days).
+const luisJob = db.prepare(`SELECT id FROM job_requests WHERE email = 'luis.h@example.com' ORDER BY id LIMIT 1`).get();
+if (luisJob) {
+  db.prepare(`UPDATE job_requests SET updated_at = datetime(CURRENT_TIMESTAMP,'-100 days') WHERE id = ?`).run(luisJob.id);
+}
+
 // Follow-up tasks from the rules (the 50h-old quote should fire).
 const tasks = crm.generateFollowupTasks();
 console.log(`Seed complete. Follow-up tasks generated: ${tasks.length}`);

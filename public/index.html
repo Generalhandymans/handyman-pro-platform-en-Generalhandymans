@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Handyman Pro — Trusted home repairs, one request away</title>
+  <meta name="description" content="Handyman Pro is a managed handyman marketplace: instant estimates, vetted pros, upfront pricing, and tracking from request to done.">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header" id="site-header"></header>
+
+  <main>
+    <!-- Hero -->
+    <section class="hero">
+      <div class="wrap">
+        <h1>Home repairs, handled by <span class="hl">verified pros</span>.</h1>
+        <p class="lead">Tell us what needs fixing. Get a transparent instant estimate, pick a quote, and follow your job from first visit to final walkthrough — all in one place.</p>
+        <div class="hero-cta">
+          <button class="btn btn-primary" id="cta-estimate">Get a free estimate</button>
+          <a class="btn btn-ghost" href="track.html">Track a job</a>
+        </div>
+        <div class="hero-points">
+          <div><span class="dot">✓</span><span>Instant price ranges computed from real job data — no guesswork, no surprises.</span></div>
+          <div><span class="dot">✓</span><span>Licensed, insured, background-checked contractors assigned to every job.</span></div>
+          <div><span class="dot">✓</span><span>You approve every milestone before the work moves on.</span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="wrap">
+      <!-- How it works -->
+      <section class="section" aria-labelledby="how-title">
+        <h2 class="page-title" id="how-title">How it works</h2>
+        <div class="steps">
+          <div class="step-card">
+            <div class="step-num">1</div>
+            <h3>Describe the job</h3>
+            <p>Answer a few quick questions, add photos if you like, and get an instant price range with a breakdown.</p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">2</div>
+            <h3>Approve your quote</h3>
+            <p>We send a fixed quote. You accept or decline — a deposit only books the job once you say yes.</p>
+          </div>
+          <div class="step-card">
+            <div class="step-num">3</div>
+            <h3>Track it to done</h3>
+            <p>See milestones, progress photos, and payments. Nothing moves to the next step without your approval.</p>
+          </div>
+        </div>
+        <button class="btn btn-dark" id="cta-estimate-2">Start your request</button>
+      </section>
+
+      <!-- Services -->
+      <section class="section" aria-labelledby="services-title">
+        <h2 class="page-title" id="services-title">What we do</h2>
+        <p class="page-sub">Pick a service to start your request — the questions adapt to the job.</p>
+        <div class="services" id="services-grid">
+          <p class="muted">Loading services…</p>
+        </div>
+      </section>
+
+      <!-- Trust -->
+      <section class="section" aria-labelledby="trust-title">
+        <h2 class="page-title" id="trust-title">Why homeowners choose Handyman Pro</h2>
+        <div class="trust">
+          <div class="trust-item">
+            <span class="ico" aria-hidden="true">🔒</span>
+            <div><h3>Vetted pros only</h3><p>Every contractor passes license, insurance, and background checks before touching a job.</p></div>
+          </div>
+          <div class="trust-item">
+            <span class="ico" aria-hidden="true">💲</span>
+            <div><h3>Upfront pricing</h3><p>Fixed quotes with a clear breakdown. You always know what you pay and why.</p></div>
+          </div>
+          <div class="trust-item">
+            <span class="ico" aria-hidden="true">✅</span>
+            <div><h3>Milestone approvals</h3><p>Each phase needs your sign-off. No surprise charges, no unfinished work.</p></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <div>
+        <h4>Handyman Pro</h4>
+        <p>The managed handyman marketplace: real estimates, vetted contractors, and tracking from request to done.</p>
+      </div>
+      <div>
+        <h4>Customers</h4>
+        <p><a href="#" id="foot-estimate">Get a free estimate</a><br><a href="track.html">Track a job</a><br><a href="auth.html">Log in / Sign up</a></p>
+      </div>
+      <div>
+        <h4>Pros</h4>
+        <p><a href="auth.html?tab=contractor">Join as a contractor</a></p>
+      </div>
+      <div class="fine" style="grid-column:1/-1">© 2026 Handyman Pro. All rights reserved.</div>
+    </div>
+  </footer>
+
+  <!-- Request-service wizard modal -->
+  <div class="modal-backdrop" id="wizard-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+      <div class="modal-head">
+        <h2 id="wizard-title">Request service</h2>
+        <button class="modal-close" id="wizard-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="wizard-steps" id="wizard-steps">
+          <span data-s="1">Contact</span><span data-s="2">Job details</span><span data-s="3">Photos</span><span data-s="4">Review</span>
+        </div>
+        <div id="wizard-content"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-outline" id="wizard-back">Back</button>
+        <button class="btn btn-primary" id="wizard-next">Continue</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script>
+  // Handyman Pro — public home: services grid + multi-step request wizard.
+  (function () {
+    'use strict';
+    HP.mountHeader('home');
+
+    const TRADE_DESC = {
+      painting: 'Interior & exterior painting, prep to finish.',
+      plumbing: 'Leaks, clogs, fixtures, water heaters.',
+      electrical: 'Outlets, lighting, fans, panels.',
+      bathroom: 'Full and partial bathroom remodels.',
+      kitchen: 'Partial kitchen remodels and upgrades.',
+      flooring: 'Laminate, vinyl, hardwood, tile.',
+      drywall: 'Repairs, patches, texture matching.',
+      carpentry: 'Trim, doors, millwork, built-ins.',
+    };
+
+    // ---- services grid (real data from /api/trades) ----
+    async function loadServices() {
+      const grid = document.getElementById('services-grid');
+      try {
+        const trades = await HP.api('GET', '/trades');
+        grid.innerHTML = '';
+        trades.forEach((t) => {
+          const card = HP.el(`<button class="service-card" type="button">
+            <span class="ico" aria-hidden="true">${HP.TRADE_ICON[t.service_type] || '🛠'}</span>
+            <h3>${HP.esc(t.label)}</h3>
+            <p>${HP.esc(TRADE_DESC[t.service_type] || 'Professional home service.')}</p>
+          </button>`);
+          card.addEventListener('click', () => openWizard(t.service_type));
+          grid.appendChild(card);
+        });
+      } catch (e) {
+        grid.innerHTML = '<p class="muted">We could not load the services list. Please try again in a moment.</p>';
+      }
+    }
+
+    // ---- wizard state ----
+    const W = { step: 1, contact: {}, service_type: '', questions: [], scope: {}, photos: [] };
+    const backdrop = document.getElementById('wizard-backdrop');
+    const content = document.getElementById('wizard-content');
+    const nextBtn = document.getElementById('wizard-next');
+    const backBtn = document.getElementById('wizard-back');
+
+    function openWizard(serviceType) {
+      W.step = 1;
+      W.contact = {};
+      W.service_type = serviceType || '';
+      W.scope = {};
+      W.photos = [];
+      W.questions = [];
+      backdrop.hidden = false;
+      document.body.style.overflow = 'hidden';
+      renderStep();
+    }
+    function closeWizard() {
+      backdrop.hidden = true;
+      document.body.style.overflow = '';
+    }
+    document.getElementById('wizard-close').addEventListener('click', closeWizard);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeWizard(); });
+    document.getElementById('cta-estimate').addEventListener('click', () => openWizard(''));
+    document.getElementById('cta-estimate-2').addEventListener('click', () => openWizard(''));
+    document.getElementById('foot-estimate').addEventListener('click', (e) => { e.preventDefault(); openWizard(''); });
+
+    function paintSteps() {
+      document.querySelectorAll('#wizard-steps span').forEach((s) => {
+        const n = Number(s.dataset.s);
+        s.className = n < W.step ? 'done' : (n === W.step ? 'now' : '');
+      });
+    }
+
+    function renderStep() {
+      paintSteps();
+      backBtn.style.visibility = W.step === 1 ? 'hidden' : 'visible';
+      nextBtn.textContent = W.step === 4 ? 'Submit request' : 'Continue';
+      if (W.step === 1) renderContact();
+      else if (W.step === 2) renderTrade();
+      else if (W.step === 3) renderPhotos();
+      else renderReview();
+    }
+
+    // ---- step 1: contact ----
+    function renderContact() {
+      const c = W.contact;
+      content.innerHTML = `
+        <form id="wz-contact" novalidate>
+          <div class="form-grid two">
+            <div class="field"><label for="wz-name">Full name <span class="req">*</span></label>
+              <input type="text" id="wz-name" name="name" value="${HP.esc(c.name || '')}" autocomplete="name">
+              <span class="field-error" data-error-for="name"></span></div>
+            <div class="field"><label for="wz-phone">Phone <span class="req">*</span></label>
+              <input type="tel" id="wz-phone" name="phone" value="${HP.esc(c.phone || '')}" autocomplete="tel" placeholder="(555) 123-4567">
+              <span class="field-error" data-error-for="phone"></span></div>
+          </div>
+          <div class="field"><label for="wz-email">Email <span class="muted">(optional — for updates)</span></label>
+            <input type="email" id="wz-email" name="email" value="${HP.esc(c.email || '')}" autocomplete="email">
+            <span class="field-error" data-error-for="email"></span></div>
+          <div class="field"><label for="wz-address">Project address <span class="req">*</span></label>
+            <input type="text" id="wz-address" name="address" value="${HP.esc(c.address || '')}" autocomplete="street-address">
+            <span class="field-error" data-error-for="address"></span></div>
+          <div class="form-grid two">
+            <div class="field"><label for="wz-city">City</label>
+              <input type="text" id="wz-city" name="city" value="${HP.esc(c.city || '')}" autocomplete="address-level2">
+              <span class="field-error" data-error-for="city"></span></div>
+            <div class="form-grid two" style="gap:.6rem;grid-template-columns:1fr 1fr">
+              <div class="field"><label for="wz-state">State</label>
+                <input type="text" id="wz-state" name="state" maxlength="2" value="${HP.esc(c.state || '')}" placeholder="CA" style="text-transform:uppercase">
+                <span class="field-error" data-error-for="state"></span></div>
+              <div class="field"><label for="wz-zip">ZIP</label>
+                <input type="text" id="wz-zip" name="zip" value="${HP.esc(c.zip || '')}" autocomplete="postal-code" inputmode="numeric">
+                <span class="field-error" data-error-for="zip"></span></div>
+            </div>
+          </div>
+          <div class="field"><span class="label">How urgent is it?</span>
+            <div class="radio-row">
+              <label class="radio-card"><input type="radio" name="urgency" value="standard" ${(!c.urgency || c.urgency === 'standard') ? 'checked' : ''}> Standard</label>
+              <label class="radio-card"><input type="radio" name="urgency" value="urgent" ${c.urgency === 'urgent' ? 'checked' : ''}> Urgent <span class="muted small">(+25%)</span></label>
+            </div></div>
+          <div class="field"><label for="wz-desc">Describe the work <span class="req">*</span></label>
+            <textarea id="wz-desc" name="description" placeholder="What needs fixing or building? Be as specific as you can.">${HP.esc(c.description || '')}</textarea>
+            <span class="field-error" data-error-for="description"></span></div>
+        </form>`;
+    }
+
+    function collectContact() {
+      const f = document.getElementById('wz-contact');
+      const fd = new FormData(f);
+      const errors = {};
+      const val = (k) => String(fd.get(k) || '').trim();
+      if (!val('name')) errors.name = 'Please tell us your name.';
+      if (!val('phone')) errors.phone = 'A phone number is required so the pro can reach you.';
+      else if (!/^[+()\-.\s\d]{7,20}$/.test(val('phone'))) errors.phone = 'That phone number does not look right.';
+      if (val('email') && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val('email'))) errors.email = 'That email does not look right.';
+      if (!val('address')) errors.address = 'Where is the work happening?';
+      if (!val('description')) errors.description = 'A short description helps us price the job.';
+      W.contact = {
+        name: val('name'), phone: val('phone'), email: val('email'),
+        address: val('address'), city: val('city'), state: val('state').toUpperCase(),
+        zip: val('zip'), urgency: fd.get('urgency') === 'urgent' ? 'urgent' : 'standard',
+        description: val('description'),
+      };
+      if (Object.keys(errors).length) {
+        HP.applyFieldErrors(f, errors);
+        HP.toast('Please complete the highlighted fields.', 'error');
+        return false;
+      }
+      return true;
+    }
+
+    // ---- step 2: trade + dynamic questionnaire ----
+    async function renderTrade() {
+      content.innerHTML = `<p class="muted">Loading questions…</p>`;
+      let trades = [];
+      try { trades = await HP.api('GET', '/trades'); }
+      catch (e) { content.innerHTML = '<p class="muted">Could not load services. Try again.</p>'; return; }
+      const opts = trades.map((t) =>
+        `<option value="${HP.esc(t.service_type)}" ${W.service_type === t.service_type ? 'selected' : ''}>${HP.esc(t.label)}</option>`).join('');
+      content.innerHTML = `
+        <form id="wz-trade" novalidate>
+          <div class="field"><label for="wz-service">Service type <span class="req">*</span></label>
+            <select id="wz-service" name="service_type"><option value="">Choose a service…</option>${opts}</select>
+            <span class="field-error" data-error-for="service_type"></span></div>
+          <div id="wz-questions"></div>
+        </form>`;
+      const sel = document.getElementById('wz-service');
+      const qbox = document.getElementById('wz-questions');
+      async function loadQuestions() {
+        W.service_type = sel.value;
+        W.scope = {};
+        if (!W.service_type) { qbox.innerHTML = ''; return; }
+        qbox.innerHTML = '<p class="muted">Loading questions…</p>';
+        try {
+          const q = await HP.api('GET', '/trades/' + encodeURIComponent(W.service_type));
+          W.questions = q.questions || [];
+        } catch (e) {
+          qbox.innerHTML = '<p class="muted">Could not load the questionnaire. Try again.</p>';
+          return;
+        }
+        qbox.innerHTML = W.questions.map(renderQuestion).join('');
+      }
+      sel.addEventListener('change', loadQuestions);
+      if (W.service_type) await loadQuestions();
+    }
+
+    function renderQuestion(q) {
+      const req = q.required ? ' <span class="req">*</span>' : '';
+      const id = 'wzq-' + q.key;
+      const prev = W.scope[q.key];
+      let input = '';
+      if (q.type === 'number') {
+        input = `<input type="number" id="${id}" name="${q.key}" min="${q.min ?? ''}" max="${q.max ?? ''}" value="${prev !== undefined ? HP.esc(prev) : ''}">`;
+      } else if (q.type === 'boolean') {
+        input = `<label class="field-check"><input type="checkbox" id="${id}" name="${q.key}" ${prev === true ? 'checked' : ''}> Yes</label>`;
+      } else if (q.type === 'select') {
+        const opts = (q.options || []).map((o) =>
+          `<option value="${HP.esc(o)}" ${String(prev) === String(o) ? 'selected' : ''}>${HP.esc(prettyOpt(o))}</option>`).join('');
+        input = `<select id="${id}" name="${q.key}"><option value="">Choose…</option>${opts}</select>`;
+      }
+      const hint = q.type === 'number' && q.min !== undefined
+        ? `<div class="hint">Between ${q.min} and ${q.max}.</div>` : '';
+      return `<div class="field"><label for="${id}">${HP.esc(q.label)}${req}</label>${input}${hint}
+        <span class="field-error" data-error-for="${HP.esc(q.key)}"></span></div>`;
+    }
+    function prettyOpt(o) {
+      return String(o).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+
+    function collectTrade() {
+      const f = document.getElementById('wz-trade');
+      const errors = {};
+      if (!W.service_type) errors.service_type = 'Please choose a service.';
+      const scope = {};
+      W.questions.forEach((q) => {
+        const input = f.querySelector(`[name="${CSS.escape(q.key)}"]`);
+        if (!input) return;
+        let v;
+        if (q.type === 'boolean') v = input.checked;
+        else if (q.type === 'number') v = input.value === '' ? '' : Number(input.value);
+        else v = input.value;
+        const empty = v === '' || v === undefined || v === null;
+        if (q.required && (empty || (q.type === 'boolean' && false))) {
+          // booleans are never "required-empty": an unchecked box = false
+          if (q.type !== 'boolean') errors[q.key] = 'This answer is required.';
+        }
+        if (!empty) scope[q.key] = v;
+      });
+      W.scope = scope;
+      if (Object.keys(errors).length) {
+        HP.applyFieldErrors(f, errors);
+        HP.toast('A few questions still need answers.', 'error');
+        return false;
+      }
+      return true;
+    }
+
+    // ---- step 3: photos ----
+    function renderPhotos() {
+      content.innerHTML = `
+        <form id="wz-photos" novalidate>
+          <div class="field">
+            <label for="wz-file">Photos <span class="muted">(optional, up to 6 — they sharpen your estimate)</span></label>
+            <label class="dropzone" for="wz-file">📷 Tap to add photos<br><span class="small">Images only, 5 MB max each.</span></label>
+            <input type="file" id="wz-file" accept="image/*" multiple hidden>
+            <div class="photo-previews" id="wz-previews"></div>
+          </div>
+        </form>`;
+      const input = document.getElementById('wz-file');
+      input.addEventListener('change', () => {
+        const files = Array.from(input.files || []);
+        for (const file of files) {
+          if (!file.type.startsWith('image/')) { HP.toast('Only image files are allowed.', 'error'); continue; }
+          if (file.size > 5 * 1024 * 1024) { HP.toast(`"${file.name}" is over 5 MB and was skipped.`, 'error'); continue; }
+          if (W.photos.length >= 6) { HP.toast('You can attach up to 6 photos.', 'error'); break; }
+          W.photos.push(file);
+        }
+        input.value = '';
+        paintPreviews();
+      });
+      paintPreviews();
+    }
+    function paintPreviews() {
+      const box = document.getElementById('wz-previews');
+      if (!box) return;
+      box.innerHTML = '';
+      W.photos.forEach((file, i) => {
+        const fig = HP.el(`<figure><img alt="Preview ${i + 1}"><button type="button" class="photo-remove" aria-label="Remove photo">×</button></figure>`);
+        fig.querySelector('img').src = URL.createObjectURL(file);
+        fig.querySelector('button').addEventListener('click', () => { W.photos.splice(i, 1); paintPreviews(); });
+        box.appendChild(fig);
+      });
+    }
+
+    // ---- step 4: review + submit ----
+    function renderReview() {
+      const c = W.contact;
+      const tradeLabel = document.querySelector('#wz-service')?.selectedOptions?.[0]?.textContent || W.service_type;
+      const scopeRows = W.questions
+        .filter((q) => W.scope[q.key] !== undefined)
+        .map((q) => `<div class="job-meta"><strong>${HP.esc(q.label)}:</strong> ${HP.esc(scopeVal(q, W.scope[q.key]))}</div>`)
+        .join('');
+      content.innerHTML = `
+        <h3 style="margin-top:0;color:var(--navy)">Review your request</h3>
+        <div class="card" style="box-shadow:none">
+          <div class="job-title">${HP.esc(tradeLabel)} — ${HP.esc(c.urgency === 'urgent' ? 'Urgent' : 'Standard')}</div>
+          <p>${HP.esc(c.description)}</p>
+          <dl class="kv">
+            <dt>Name</dt><dd>${HP.esc(c.name)}</dd>
+            <dt>Phone</dt><dd>${HP.esc(c.phone)}</dd>
+            ${c.email ? `<dt>Email</dt><dd>${HP.esc(c.email)}</dd>` : ''}
+            <dt>Address</dt><dd>${HP.esc([c.address, c.city, c.state, c.zip].filter(Boolean).join(', '))}</dd>
+          </dl>
+          ${scopeRows ? `<hr class="divider">${scopeRows}` : ''}
+          ${W.photos.length ? `<div class="job-meta"><strong>${W.photos.length} photo(s)</strong> attached.</div>` : ''}
+        </div>
+        <p class="small muted">Submitting creates your request and runs our instant estimate. No payment is taken now.</p>
+        <div id="wz-submit-error"></div>`;
+    }
+    function scopeVal(q, v) {
+      if (q.type === 'boolean') return v ? 'Yes' : 'No';
+      if (q.type === 'select') return prettyOpt(v);
+      return String(v);
+    }
+
+    async function submitWizard() {
+      HP.busy(nextBtn, true, 'Sending…');
+      try {
+        const c = W.contact;
+        const job = await HP.api('POST', '/jobs', {
+          name: c.name, phone: c.phone, email: c.email || undefined,
+          address: c.address, city: c.city || undefined, state: c.state || undefined, zip: c.zip || undefined,
+          service_type: W.service_type, urgency: c.urgency,
+          description: c.description, scope: W.scope,
+        });
+        HP.saveClaim(job.id, job.claim_token);
+
+        // Photos (optional).
+        if (W.photos.length) {
+          const fd = new FormData();
+          W.photos.forEach((f) => fd.append('photos', f));
+          try {
+            await HP.api('POST', `/jobs/${job.id}/photos?claim=${encodeURIComponent(job.claim_token)}`, fd);
+          } catch (e) {
+            HP.toast('Your request was saved, but some photos did not upload: ' + HP.friendlyMessage(e), 'error');
+          }
+        }
+
+        // Estimate.
+        let estimate = null;
+        try {
+          estimate = await HP.api('POST', `/jobs/${job.id}/estimate?claim=${encodeURIComponent(job.claim_token)}`);
+        } catch (e) {
+          HP.toast('Request saved, but the estimate could not be computed: ' + HP.friendlyMessage(e), 'error');
+        }
+        renderResult(job, estimate);
+      } catch (e) {
+        HP.toast(HP.friendlyMessage(e), 'error');
+        // Map server field errors back to step 1 and jump there.
+        if (e.fields) {
+          W.step = 1;
+          renderStep();
+          const f = document.getElementById('wz-contact');
+          if (f) HP.applyFieldErrors(f, e.fields);
+        }
+      } finally {
+        HP.busy(nextBtn, false);
+      }
+    }
+
+    function renderResult(job, estimate) {
+      document.getElementById('wizard-title').textContent = 'Your estimate';
+      document.querySelector('.modal-foot').style.display = 'none';
+      const trackUrl = `track.html?claim=${encodeURIComponent(job.claim_token)}&id=${job.id}`;
+      if (estimate) {
+        content.innerHTML = `
+          <div class="estimate-hero">
+            <div class="muted" style="color:#cfdaea">Estimated range</div>
+            <div class="estimate-range">${HP.fmtMoney(estimate.low_cents)} – ${HP.fmtMoney(estimate.high_cents)}</div>
+            <div class="confidence">
+              <div class="bar" role="img" aria-label="Estimate confidence ${estimate.confidence} percent"><div class="fill" style="width:${estimate.confidence}%"></div></div>
+              <div class="cap">Confidence: ${estimate.confidence}% ${estimate.photoCountNote || ''}</div>
+            </div>
+          </div>
+          <h3>What is included</h3>
+          <div class="table-scroll"><table>
+            <thead><tr><th>Item</th><th class="num">Low</th><th class="num">High</th></tr></thead>
+            <tbody>${(estimate.line_items || []).map((li) =>
+              `<tr><td>${HP.esc(li.label)}</td><td class="num">${HP.fmtMoney(li.low_cents)}</td><td class="num">${HP.fmtMoney(li.high_cents)}</td></tr>`).join('')}
+            </tbody>
+          </table></div>
+          ${estimate.factors && estimate.factors.length ? `
+            <h3>What moved the price</h3>
+            <ul class="factors">${estimate.factors.map((f) => `<li>${HP.esc(f)}</li>`).join('')}</ul>` : ''}
+          ${estimate.missing && estimate.missing.length ? `
+            <h3>Still to confirm</h3>
+            <ul class="factors">${estimate.missing.map((m) => `<li>${HP.esc(m.label || m.key || m)}</li>`).join('')}</ul>` : ''}
+          ${estimate.risks && estimate.risks.length ? `
+            <h3>Things to watch</h3>
+            ${estimate.risks.map((r) => `<div class="risk"><strong>${HP.esc(prettyOpt(r.flag || 'Note'))}</strong>${HP.esc(r.note || r.detail || '')}</div>`).join('')}` : ''}
+          <div class="track-box">
+            <strong>Request #${job.id} received.</strong><br>
+            <span class="small">Save your tracking link to follow the job:</span><br>
+            <a href="${trackUrl}">${HP.esc(location.origin + location.pathname.replace(/index\.html?$/, '') + trackUrl)}</a>
+            <div class="copy-row" style="margin-top:.6rem">
+              <button class="btn btn-outline btn-sm" id="copy-track">Copy tracking link</button>
+              <a class="btn btn-dark btn-sm" href="${trackUrl}">Track my job</a>
+            </div>
+          </div>
+          <p class="small muted" style="margin-top:1rem">This is a planning estimate. A fixed quote follows after our review — nothing is charged now.</p>`;
+        const copy = document.getElementById('copy-track');
+        if (copy) copy.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(location.origin + location.pathname.replace(/index\.html?$/, '') + trackUrl); HP.toast('Tracking link copied.', 'ok'); }
+          catch (e) { HP.toast('Could not copy the link. Please copy it manually.', 'error'); }
+        });
+      } else {
+        content.innerHTML = `
+          <div class="banner banner-info">Your request <strong>#${job.id}</strong> was received. We could not compute an estimate right now, but you can still track it.</div>
+          <div class="track-box"><a href="${trackUrl}">Track request #${job.id}</a></div>`;
+      }
+      // Reset the wizard shell for the next open.
+      const foot = document.querySelector('.modal-foot');
+      const reset = () => { foot.style.display = ''; document.getElementById('wizard-title').textContent = 'Request service'; };
+      document.getElementById('wizard-close').addEventListener('click', reset, { once: true });
+    }
+
+    nextBtn.addEventListener('click', async () => {
+      if (W.step === 1) { if (collectContact()) { W.step = 2; renderStep(); } }
+      else if (W.step === 2) { if (collectTrade()) { W.step = 3; renderStep(); } }
+      else if (W.step === 3) { W.step = 4; renderStep(); }
+      else if (W.step === 4) { await submitWizard(); }
+    });
+    backBtn.addEventListener('click', () => {
+      if (W.step > 1) { W.step -= 1; renderStep(); }
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !backdrop.hidden) closeWizard();
+    });
+
+    loadServices();
+  })();
+  </script>
+</body>
+</html>

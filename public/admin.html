@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin dashboard — Handyman Pro</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header" id="site-header"></header>
+  <main class="wrap">
+    <h1 class="page-title">Admin dashboard</h1>
+    <p class="page-sub">Operate both sides of the marketplace: clients, contractors, projects, campaigns, and reports.</p>
+
+    <div class="tabs" role="tablist" id="admin-tabs">
+      <button class="tab active" data-tab="overview" role="tab">Overview</button>
+      <button class="tab" data-tab="clients" role="tab">Clients</button>
+      <button class="tab" data-tab="contractors" role="tab">Contractors</button>
+      <button class="tab" data-tab="projects" role="tab">Projects</button>
+      <button class="tab" data-tab="campaigns" role="tab">Campaigns</button>
+      <button class="tab" data-tab="reports" role="tab">Reports</button>
+    </div>
+
+    <section class="tab-panel active" id="panel-overview" role="tabpanel">
+      <div id="mail-badge" style="margin-bottom:1rem"></div>
+      <div class="kpis" id="overview-kpis"><p class="muted">Loading overview…</p></div>
+    </section>
+
+    <section class="tab-panel" id="panel-clients" role="tabpanel">
+      <div class="section">
+        <div class="section-head"><h2>Lead pipeline</h2></div>
+        <div class="pipeline" id="pipeline-cards"><p class="muted">Loading pipeline…</p></div>
+      </div>
+      <div class="section">
+        <div class="section-head">
+          <h2>Job requests</h2>
+          <div class="field" style="margin:0;min-width:200px">
+            <label for="job-status-filter" class="small">Filter by status</label>
+            <select id="job-status-filter"><option value="">All statuses</option></select>
+          </div>
+        </div>
+        <div id="admin-jobs"><p class="muted">Loading jobs…</p></div>
+      </div>
+      <div class="section">
+        <div class="section-head">
+          <h2>Follow-up tasks</h2>
+          <div class="btn-row" style="margin:0">
+            <button class="btn btn-dark btn-sm" id="gen-tasks">Generate tasks</button>
+            <select id="task-status-filter" aria-label="Filter tasks by status" style="font:inherit;padding:.4rem .6rem;border:1.5px solid var(--line);border-radius:.5rem">
+              <option value="">Open tasks</option><option value="done">Done</option><option value="all">All</option>
+            </select>
+          </div>
+        </div>
+        <div class="task-list" id="task-list"><p class="muted">Loading tasks…</p></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-contractors" role="tabpanel">
+      <div class="section">
+        <div class="section-head"><h2>Contractor pipeline</h2></div>
+        <div class="pipeline" id="contractor-stages"><p class="muted">Loading…</p></div>
+        <div id="contractor-table"><p class="muted">Loading contractors…</p></div>
+      </div>
+      <div class="section">
+        <div class="section-head"><h2>Verification</h2></div>
+        <div class="card">
+          <form id="verify-form" novalidate>
+            <div class="field"><label for="verify-select">Contractor</label><select id="verify-select"><option value="">Choose a contractor…</option></select></div>
+            <div id="verify-detail" class="muted small">Select a contractor to review and update verification.</div>
+            <div class="form-grid two">
+              <div class="field"><label class="field-check"><input type="checkbox" id="vf-license"> License verified</label></div>
+              <div class="field"><label class="field-check"><input type="checkbox" id="vf-insurance"> Insurance verified</label></div>
+            </div>
+            <div class="form-grid two">
+              <div class="field"><label for="vf-bg">Background check</label>
+                <select id="vf-bg"><option value="pending">Pending</option><option value="passed">Passed</option><option value="failed">Failed</option></select></div>
+              <div class="field"><label for="vf-status">Status</label>
+                <select id="vf-status"><option value="pending">Pending</option><option value="active">Active</option><option value="suspended">Suspended</option></select></div>
+            </div>
+            <p class="small muted">Activation guardrail: a contractor can only go <strong>active</strong> once license and insurance are verified and the background check has passed.</p>
+            <button class="btn btn-primary" type="submit" id="verify-save">Save verification</button>
+          </form>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-head"><h2>Recruitment gaps</h2></div>
+        <p class="small muted">Open job demand with no active contractor covering that trade in that city.</p>
+        <div id="gaps-box"><p class="muted">Loading…</p></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-projects" role="tabpanel">
+      <div id="stripe-note" style="margin-bottom:1rem"></div>
+      <div id="admin-projects"><p class="muted">Loading projects…</p></div>
+    </section>
+
+    <section class="tab-panel" id="panel-campaigns" role="tabpanel">
+      <div class="section">
+        <div class="section-head"><h2>Email templates</h2></div>
+        <div id="templates-list" style="margin-bottom:1rem"><p class="muted">Loading templates…</p></div>
+        <div class="card">
+          <h3 style="margin-top:0">New template</h3>
+          <form id="template-form" novalidate>
+            <div class="field"><label for="tm-name">Name <span class="req">*</span></label><input type="text" id="tm-name" name="name"><span class="field-error" data-error-for="name"></span></div>
+            <div class="field"><label for="tm-subject">Subject <span class="req">*</span></label><input type="text" id="tm-subject" name="subject"><span class="field-error" data-error-for="subject"></span></div>
+            <div class="field"><label for="tm-body">Body (HTML) <span class="req">*</span></label>
+              <textarea id="tm-body" name="body_html" rows="6"></textarea>
+              <div class="hint">You can use variables like {{name}} and {{company}} — they are filled in per recipient.</div>
+              <span class="field-error" data-error-for="body_html"></span></div>
+            <button class="btn btn-dark btn-sm" type="submit">Save template</button>
+          </form>
+        </div>
+      </div>
+      <div class="section">
+        <div class="section-head"><h2>Campaigns</h2></div>
+        <div class="card">
+          <h3 style="margin-top:0">New campaign</h3>
+          <form id="campaign-form" novalidate>
+            <div class="form-grid two">
+              <div class="field"><label for="cm-name">Name <span class="req">*</span></label><input type="text" id="cm-name" name="name"><span class="field-error" data-error-for="name"></span></div>
+              <div class="field"><label for="cm-segment">Audience segment <span class="req">*</span></label>
+                <select id="cm-segment" name="segment"></select><span class="field-error" data-error-for="segment"></span></div>
+            </div>
+            <div class="field"><label for="cm-template">Template <span class="req">*</span></label><select id="cm-template" name="template_id"></select><span class="field-error" data-error-for="template_id"></span></div>
+            <button class="btn btn-dark btn-sm" type="submit">Create campaign</button>
+          </form>
+        </div>
+        <div id="campaigns-list"><p class="muted">Loading campaigns…</p></div>
+      </div>
+      <div class="section">
+        <div class="section-head"><h2>Email log</h2></div>
+        <div id="email-log"><p class="muted">Loading email log…</p></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-reports" role="tabpanel">
+      <div class="tabs" role="tablist" id="report-tabs" style="margin-bottom:1rem">
+        <button class="tab active" data-rtab="clients" role="tab">Clients</button>
+        <button class="tab" data-rtab="contractors" role="tab">Contractors</button>
+        <button class="tab" data-rtab="business" role="tab">Business</button>
+      </div>
+      <div id="report-clients" class="rtab-panel"></div>
+      <div id="report-contractors" class="rtab-panel" hidden></div>
+      <div id="report-business" class="rtab-panel" hidden></div>
+    </section>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script>
+  // Handyman Pro — admin dashboard.
+  (function () {
+    'use strict';
+    HP.mountHeader('portal');
+
+    const SEGMENTS = ['all_customers', 'past_customers', 'inactive_clients_90d', 'lost_leads', 'all_contractors', 'pending_contractors', 'top_contractors'];
+    const JOB_STATUSES = ['new', 'ai_analyzed', 'quote_sent', 'deposit_paid', 'assigned', 'scheduled', 'in_progress', 'review', 'completed', 'lost', 'cancelled'];
+    const PROJECT_STAGES = ['assigned', 'scheduled', 'in_progress', 'review', 'completed', 'cancelled'];
+    const loaded = {};
+    const toCents = (dollars) => Math.round(Number(dollars) * 100);
+
+    // ---------- tabs ----------
+    document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
+      t.addEventListener('click', () => {
+        document.querySelectorAll('#admin-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
+        document.querySelectorAll('#panel-overview, #panel-clients, #panel-contractors, #panel-projects, #panel-campaigns, #panel-reports')
+          .forEach((p) => p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
+        const fn = { overview: loadOverview, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, campaigns: loadCampaignsTab, reports: loadReports }[t.dataset.tab];
+        if (fn) fn();
+      });
+    });
+
+    async function init() {
+      const me = await HP.requireAuth('admin');
+      if (!me) return;
+      loadOverview();
+    }
+
+    // =================================================================
+    // OVERVIEW
+    // =================================================================
+    async function loadOverview() {
+      if (loaded.overview) return;
+      loaded.overview = true;
+      const box = document.getElementById('overview-kpis');
+      const mailBox = document.getElementById('mail-badge');
+      try {
+        const [ov, health] = await Promise.all([
+          HP.api('GET', '/reports/overview'),
+          HP.api('GET', '/health'),
+        ]);
+        mailBox.innerHTML = `<div class="banner ${health.mail_provider === 'console' ? 'banner-warn' : 'banner-info'}">
+          <strong>Mail provider:</strong> ${HP.esc(health.mail_provider)} · From: ${HP.esc(health.from || '')}
+          ${health.mail_provider === 'console' ? '<br><span class="small">Log mode: campaigns are recorded in the email log — nothing is really sent.</span>' : ''}</div>`;
+        const kpis = [
+          ['Job requests', ov.jobs, ''],
+          ['Quotes sent', ov.quotes_sent, `${ov.quotes_accepted} accepted`],
+          ['Acceptance rate', ov.acceptance_rate + '%', ''],
+          ['Active projects', ov.projects_active, ''],
+          ['Completed projects', ov.projects_completed, ''],
+          ['Revenue', HP.fmtMoney(ov.revenue_cents), 'completed work'],
+          ['Contractor cost', HP.fmtMoney(ov.cost_cents), 'completed work'],
+          ['Gross margin', ov.gross_margin_pct + '%', ''],
+          ['Avg ticket', HP.fmtMoney(ov.avg_ticket_cents), ''],
+          ['Active contractors', ov.contractors_active, `${ov.contractors_pending} pending`],
+          ['Avg rating', Number(ov.avg_rating || 0).toFixed(1), 'out of 5'],
+        ];
+        box.innerHTML = kpis.map(([l, v, s]) =>
+          `<div class="kpi"><div class="v">${HP.esc(v)}</div><div class="l">${HP.esc(l)}</div>${s ? `<div class="s">${HP.esc(s)}</div>` : ''}</div>`).join('');
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load overview: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    // =================================================================
+    // CLIENTS
+    // =================================================================
+    async function loadClients() {
+      if (loaded.clients) return;
+      loaded.clients = true;
+      const sel = document.getElementById('job-status-filter');
+      JOB_STATUSES.forEach((s) => {
+        const o = document.createElement('option');
+        o.value = s; o.textContent = HP.JOB_STATUS[s] || s;
+        sel.appendChild(o);
+      });
+      sel.addEventListener('change', () => loadJobsTable(sel.value));
+      document.getElementById('gen-tasks').addEventListener('click', generateTasks);
+      document.getElementById('task-status-filter').addEventListener('change', loadTasks);
+      loadPipeline();
+      loadJobsTable('');
+      loadTasks();
+    }
+
+    async function loadPipeline() {
+      const box = document.getElementById('pipeline-cards');
+      try {
+        const rows = await HP.api('GET', '/crm/pipeline');
+        if (!rows.length) { box.innerHTML = '<p class="muted">No job requests yet.</p>'; return; }
+        box.innerHTML = rows.map((r) => `
+          <div class="stage-card">
+            <div class="c">${r.count}</div>
+            <div class="n">${HP.esc(HP.JOB_STATUS[r.status] || r.status)}</div>
+            <div class="m">Pipeline value ${HP.fmtMoney(r.value_cents)} · avg lead score ${r.avg_lead_score || 0}</div>
+          </div>`).join('');
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load pipeline: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    async function loadJobsTable(status) {
+      const box = document.getElementById('admin-jobs');
+      box.innerHTML = '<p class="muted">Loading jobs…</p>';
+      try {
+        const jobs = await HP.api('GET', '/jobs' + (status ? `?status=${encodeURIComponent(status)}` : ''));
+        if (!jobs.length) {
+          box.innerHTML = HP.emptyState('No job requests', 'No requests match this filter yet.');
+          return;
+        }
+        box.innerHTML = '<div class="job-list"></div>';
+        const list = box.querySelector('.job-list');
+        jobs.forEach((j) => list.appendChild(adminJobCard(j)));
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load jobs: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    function adminJobCard(job) {
+      const card = HP.el(`<article class="job-card">
+        <div class="job-head">
+          <button type="button" aria-expanded="false">
+            <span class="job-title">#${job.id} — ${HP.esc(job.name || '')}</span><br>
+            <span class="job-meta">${HP.esc(job.service_type || '')} · ${HP.esc(job.city || '')} ${HP.esc(job.state || '')} · score ${job.lead_score || 0} · ${HP.fmtDate(job.created_at)}</span>
+          </button>
+          ${HP.badge(HP.JOB_STATUS[job.status] || job.status, HP.statusKind(job.status))}
+          <span class="chev" aria-hidden="true">▾</span>
+        </div>
+        <div class="job-body"></div>
+      </article>`);
+      const head = card.querySelector('.job-head button');
+      const body = card.querySelector('.job-body');
+      let expanded = false;
+      head.addEventListener('click', async () => {
+        const open = card.classList.toggle('open');
+        head.setAttribute('aria-expanded', open);
+        if (open && !expanded) { expanded = true; await expandAdminJob(job, body); }
+      });
+      return card;
+    }
+
+    async function expandAdminJob(job, body) {
+      body.innerHTML = '<p class="muted">Loading…</p>';
+      try {
+        const quotes = await HP.api('GET', `/quotes?job_request_id=${job.id}`).catch(() => []);
+        body.innerHTML = `
+          <dl class="kv">
+            <dt>Contact</dt><dd>${HP.esc(job.name || '')} · ${HP.esc(job.phone || '')} ${job.email ? '· ' + HP.esc(job.email) : ''}</dd>
+            <dt>Address</dt><dd>${HP.esc([job.address, job.city, job.state, job.zip].filter(Boolean).join(', ') || '—')}</dd>
+            <dt>Description</dt><dd>${HP.esc(job.description || '—')}</dd>
+          </dl>
+          <h4>Quotes</h4>
+          <div class="q-list" style="margin-bottom:1rem">
+            ${quotes.length ? quotes.map(quoteRowAdmin).join('') : '<p class="small muted">No quotes yet.</p>'}
+          </div>
+          <h4>New quote</h4>
+          <form class="quote-form" novalidate>
+            <div class="form-grid two">
+              <div class="field"><label>Customer price ($) <span class="req">*</span></label>
+                <input type="number" name="price" min="1" step="0.01" placeholder="850.00"><span class="field-error" data-error-for="customer_price_cents"></span></div>
+              <div class="field"><label>Contractor cost ($) <span class="req">*</span></label>
+                <input type="number" name="cost" min="0" step="0.01" placeholder="600.00"><span class="field-error" data-error-for="contractor_cost_cents"></span></div>
+            </div>
+            <div class="field"><label>Deposit %</label>
+              <input type="number" name="deposit_pct" min="0" max="100" value="30" style="max-width:140px"><span class="field-error" data-error-for="deposit_pct"></span></div>
+            <div class="small muted" data-margin></div>
+            <div class="btn-row"><button class="btn btn-dark btn-sm" type="submit">Create quote</button></div>
+          </form>`;
+        // live margin preview
+        const form = body.querySelector('.quote-form');
+        const marginBox = form.querySelector('[data-margin]');
+        const preview = () => {
+          const p = Number(form.price.value), c = Number(form.cost.value);
+          if (p > 0 && c >= 0) {
+            const m = p - c, pct = Math.round(m / p * 100);
+            marginBox.textContent = `Margin: $${m.toFixed(2)} (${pct}%) on $${p.toFixed(2)}.`;
+          } else marginBox.textContent = '';
+        };
+        form.price.addEventListener('input', preview);
+        form.cost.addEventListener('input', preview);
+        form.addEventListener('submit', (ev) => createQuote(ev, job, body));
+        body.querySelectorAll('[data-send-quote]').forEach((b) =>
+          b.addEventListener('click', () => sendQuote(b.dataset.sendQuote, body, job)));
+      } catch (e) {
+        body.innerHTML = `<p class="muted">Could not load details: ${HP.esc(HP.friendlyMessage(e))}</p>`;
+      }
+    }
+
+    function quoteRowAdmin(q) {
+      return `<div class="review-box">
+        <div class="section-head">
+          <div><strong>Quote #${q.id}</strong> ${HP.badge(q.status, q.status === 'accepted' ? 'ok' : q.status === 'sent' ? 'info' : 'muted')}</div>
+          <div><strong>${HP.fmtMoney(q.customer_price_cents)}</strong> <span class="small muted">· cost ${HP.fmtMoney(q.contractor_cost_cents)} · deposit ${q.deposit_pct}%</span></div>
+        </div>
+        ${q.status === 'draft' ? `<div class="btn-row" style="margin:.4rem 0 0"><button class="btn btn-primary btn-sm" data-send-quote="${q.id}">Send quote</button></div>` : ''}
+      </div>`;
+    }
+
+    async function createQuote(ev, job, body) {
+      ev.preventDefault();
+      const form = ev.target;
+      HP.clearFieldErrors(form);
+      const price = form.price.value, cost = form.cost.value, dep = form.deposit_pct.value;
+      const errors = {};
+      if (!(Number(price) > 0)) errors.customer_price_cents = 'Enter a valid price in dollars.';
+      if (!(Number(cost) >= 0)) errors.contractor_cost_cents = 'Enter a valid cost in dollars.';
+      if (Number(cost) > Number(price)) errors.contractor_cost_cents = 'Cost cannot exceed the price (negative margin).';
+      if (dep !== '' && !(Number(dep) >= 0 && Number(dep) <= 100)) errors.deposit_pct = 'Deposit % must be 0–100.';
+      if (Object.keys(errors).length) { HP.applyFieldErrors(form, errors); return; }
+      try {
+        await HP.api('POST', '/quotes', {
+          job_request_id: job.id,
+          customer_price_cents: toCents(price),
+          contractor_cost_cents: toCents(cost),
+          deposit_pct: dep === '' ? 30 : Number(dep),
+        });
+        HP.toast('Quote created as a draft.', 'ok');
+        expandAdminJob(job, body);
+        loadPipeline();
+      } catch (e) { HP.handleFormError(form, e); }
+    }
+
+    async function sendQuote(quoteId, body, job) {
+      if (!confirm('Send this quote to the customer?')) return;
+      try {
+        await HP.api('POST', `/quotes/${quoteId}/send`);
+        HP.toast('Quote sent.', 'ok');
+        expandAdminJob(job, body);
+        loadPipeline();
+      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+    }
+
+    // ---- follow-up tasks ----
+    async function generateTasks(e) {
+      const btn = e.target;
+      HP.busy(btn, true, 'Generating…');
+      try {
+        const r = await HP.api('POST', '/crm/tasks/generate');
+        HP.toast(r.created && r.created.length ? `${r.created.length} new task(s) created.` : 'No new tasks needed right now.', 'ok');
+        document.getElementById('task-status-filter').value = '';
+        loadTasks();
+      } catch (err) { HP.toast(HP.friendlyMessage(err), 'error'); }
+      finally { HP.busy(btn, false); }
+    }
+
+    async function loadTasks() {
+      const box = document.getElementById('task-list');
+      const f = document.getElementById('task-status-filter').value;
+      box.innerHTML = '<p class="muted">Loading tasks…</p>';
+      try {
+        const tasks = await HP.api('GET', '/crm/tasks' + (f === 'all' ? '' : (f ? `?status=${f}` : '')));
+        if (!tasks.length) { box.innerHTML = HP.emptyState('All clear', 'No tasks in this view.'); return; }
+        box.innerHTML = '';
+        tasks.forEach((t) => {
+          const n = HP.el(`<div class="task ${t.status === 'done' ? 'done' : ''}">
+            <div class="grow"><div class="ttl">${HP.esc(t.title)}</div>
+              <div class="dt">${HP.esc(t.kind)} · due ${HP.fmtDate(t.due_at)} · job #${t.job_request_id || '—'}${t.status === 'done' ? ' · done' : ''}</div></div>
+            ${t.status !== 'done' ? `<button class="btn btn-ok btn-sm" data-done="${t.id}">Done</button>` : ''}
+          </div>`);
+          const b = n.querySelector('[data-done]');
+          if (b) b.addEventListener('click', async () => {
+            try { await HP.api('PATCH', `/crm/tasks/${t.id}/done`); loadTasks(); }
+            catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+          });
+          box.appendChild(n);
+        });
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load tasks: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+  </script>
+</body>
+</html>

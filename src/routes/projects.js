@@ -35,7 +35,7 @@ function withDetails(p) {
   return {
     ...p,
     milestones: db.prepare('SELECT * FROM milestones WHERE project_id = ? ORDER BY sort_order').all(p.id),
-    photos: db.prepare('SELECT id, original_name, mime, kind, created_at FROM photos WHERE project_id = ? ORDER BY id').all(p.id),
+    photos: db.prepare('SELECT id, filename, original_name, mime, kind, created_at FROM photos WHERE project_id = ? ORDER BY id').all(p.id),
     payments: db.prepare('SELECT * FROM payments WHERE project_id = ? ORDER BY id').all(p.id),
     contractor: p.contractor_id
       ? db.prepare('SELECT c.*, u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id)

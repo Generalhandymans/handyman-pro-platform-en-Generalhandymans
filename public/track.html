@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Track a job — Handyman Pro</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header" id="site-header"></header>
+  <main class="wrap wrap-narrow">
+    <h1 class="page-title">Track a job</h1>
+    <p class="page-sub">Follow your request from estimate to completion — no account needed.</p>
+
+    <div class="card" id="lookup-card">
+      <form id="lookup-form" novalidate>
+        <div class="form-grid two">
+          <div class="field">
+            <label for="f-id">Request ID <span class="req">*</span></label>
+            <input type="text" id="f-id" name="id" inputmode="numeric" placeholder="e.g. 12">
+          </div>
+          <div class="field">
+            <label for="f-claim">Claim code <span class="req">*</span></label>
+            <input type="text" id="f-claim" name="claim" placeholder="From your confirmation link" autocomplete="off">
+          </div>
+        </div>
+        <p class="small muted">You received both right after submitting your request — they are part of your tracking link.</p>
+        <button class="btn btn-primary btn-block" type="submit" id="lookup-btn">Look up my job</button>
+      </form>
+    </div>
+
+    <div id="result"></div>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script>
+  // Handyman Pro — guest job tracking (claim-token based, no login).
+  (function () {
+    'use strict';
+    HP.mountHeader('track');
+
+    const STEPS = [
+      ['new', 'Request received'],
+      ['ai_analyzed', 'Estimate computed'],
+      ['quote_sent', 'Quote sent'],
+      ['deposit_paid', 'Deposit paid — job booked'],
+      ['assigned', 'Contractor assigned'],
+      ['scheduled', 'Visit scheduled'],
+      ['in_progress', 'Work in progress'],
+      ['review', 'Final review'],
+      ['completed', 'Completed'],
+    ];
+
+    const result = document.getElementById('result');
+    const form = document.getElementById('lookup-form');
+
+    function stepIndex(status) { return STEPS.findIndex((s) => s[0] === status); }
+
+    function renderJob(job) {
+      const terminal = ['lost', 'cancelled'].includes(job.status);
+      const idx = stepIndex(job.status);
+      const timeline = terminal
+        ? `<div class="banner banner-warn">This request was <strong>${HP.esc(HP.JOB_STATUS[job.status])}</strong>. If you would like to restart it, please submit a new request.</div>`
+        : `<ul class="timeline">${STEPS.map(([key, label], i) => {
+            const cls = i < idx ? 'done' : (i === idx ? 'now' : '');
+            return `<li class="${cls}"><span class="t-dot"></span><div class="t-label">${HP.esc(label)}</div></li>`;
+          }).join('')}</ul>`;
+
+      const est = job.latest_estimate;
+      const estHtml = est ? `
+        <div class="card">
+          <h3>Latest estimate</h3>
+          <div class="estimate-range" style="font-size:1.6rem">${HP.fmtMoney(est.low_cents)} – ${HP.fmtMoney(est.high_cents)}</div>
+          <div class="score-wrap"><div class="score-track"><div class="score-fill" style="width:${est.confidence}%"></div></div><span class="small muted">${est.confidence}% confidence</span></div>
+          <p class="small muted">Computed ${HP.fmtDate(est.created_at)}.</p>
+        </div>` : '';
+
+      const photosHtml = (job.photos && job.photos.length) ? `
+        <div class="card">
+          <h3>Photos (${job.photos.length})</h3>
+          <div class="photo-grid">${job.photos.map(photoTile).join('')}</div>
+        </div>` : '';
+
+      result.innerHTML = `
+        <div class="card">
+          <div class="section-head">
+            <h2>Request #${job.id} — ${HP.esc(job.service_type_label || job.service_type || '')}</h2>
+            ${HP.badge(HP.JOB_STATUS[job.status] || job.status, HP.statusKind(job.status))}
+          </div>
+          <dl class="kv">
+            <dt>Service</dt><dd>${HP.esc(job.service_type_label || job.service_type || '—')}</dd>
+            <dt>Urgency</dt><dd>${job.urgency === 'urgent' ? 'Urgent' : 'Standard'}</dd>
+            <dt>Address</dt><dd>${HP.esc([job.address, job.city, job.state, job.zip].filter(Boolean).join(', ') || '—')}</dd>
+            <dt>Requested</dt><dd>${HP.fmtDate(job.created_at)}</dd>
+          </dl>
+          <p>${HP.esc(job.description || '')}</p>
+        </div>
+        <div class="card"><h3>Progress</h3>${timeline}</div>
+        ${estHtml}
+        ${photosHtml}
+        <div class="btn-row">
+          <a class="btn btn-outline" href="index.html">Start a new request</a>
+          <a class="btn btn-dark" href="auth.html">Create an account to manage it</a>
+        </div>`;
+    }
+
+    async function lookup(id, claim) {
+      const btn = document.getElementById('lookup-btn');
+      HP.busy(btn, true, 'Looking up…');
+      result.innerHTML = '';
+      try {
+        const job = await HP.api('GET', `/jobs/${encodeURIComponent(id)}?claim=${encodeURIComponent(claim)}`);
+        renderJob(job);
+        try {
+          const url = new URL(location.href);
+          url.searchParams.set('id', id); url.searchParams.set('claim', claim);
+          history.replaceState(null, '', url);
+        } catch (e) { /* ignore */ }
+      } catch (e) {
+        if (e.status === 404) HP.toast('We could not find that request. Check the ID and claim code.', 'error');
+        else if (e.status === 403) HP.toast('That claim code does not match this request.', 'error');
+        else HP.toast(HP.friendlyMessage(e), 'error');
+      } finally {
+        HP.busy(btn, false);
+      }
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const id = document.getElementById('f-id').value.trim();
+      const claim = document.getElementById('f-claim').value.trim();
+      if (!id || !claim) { HP.toast('Enter both your request ID and claim code.', 'error'); return; }
+      lookup(id, claim);
+    });
+
+    // Deep link from the wizard confirmation: ?claim=…&id=…
+    (function init() {
+      const q = new URLSearchParams(location.search);
+      const id = q.get('id'), claim = q.get('claim');
+      if (id && claim) {
+        document.getElementById('f-id').value = id;
+        document.getElementById('f-claim').value = claim;
+        lookup(id, claim);
+      }
+    })();
+  })();
+  </script>
+</body>
+</html>

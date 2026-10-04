@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My portal — Handyman Pro</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header" id="site-header"></header>
+  <main class="wrap">
+    <h1 class="page-title" id="greeting">My portal</h1>
+    <p class="page-sub">Your requests, active projects, and referral rewards — all in one place.</p>
+
+    <div class="tabs" role="tablist" id="portal-tabs">
+      <button class="tab active" data-tab="requests" role="tab">My requests</button>
+      <button class="tab" data-tab="projects" role="tab">My projects</button>
+      <button class="tab" data-tab="referrals" role="tab">Referrals</button>
+    </div>
+
+    <section class="tab-panel active" id="panel-requests" role="tabpanel">
+      <div id="requests-list"><p class="muted">Loading your requests…</p></div>
+    </section>
+
+    <section class="tab-panel" id="panel-projects" role="tabpanel">
+      <div id="projects-list"><p class="muted">Loading your projects…</p></div>
+    </section>
+
+    <section class="tab-panel" id="panel-referrals" role="tabpanel">
+      <div class="card">
+        <h2 style="margin-top:0">Refer friends, earn rewards</h2>
+        <p>Generate your personal referral code. When a friend uses it, they get <strong>10% off</strong> and you get the credit.</p>
+        <button class="btn btn-primary" id="gen-referral">Generate my referral code</button>
+      </div>
+      <div id="referral-list"><p class="muted">Loading your referral codes…</p></div>
+    </section>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script>
+  // Handyman Pro — customer portal: requests, projects, referrals.
+  (function () {
+    'use strict';
+    HP.mountHeader('portal');
+
+    document.querySelectorAll('#portal-tabs .tab').forEach((t) => {
+      t.addEventListener('click', () => {
+        document.querySelectorAll('#portal-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
+        document.querySelectorAll('.tab-panel').forEach((p) =>
+          p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
+      });
+    });
+
+    let reviewsByProject = {};
+
+    async function init() {
+      const me = await HP.requireAuth('customer');
+      if (!me) return;
+      document.getElementById('greeting').textContent = `Hi, ${me.name.split(' ')[0]} — my portal`;
+      try {
+        const all = await HP.api('GET', '/reviews');
+        reviewsByProject = {};
+        all.forEach((r) => { reviewsByProject[r.project_id] = r; });
+      } catch (e) { /* reviews are optional */ }
+      loadRequests();
+      loadProjects();
+      loadReferrals();
+    }
+
+    // ---------------- requests ----------------
+    async function loadRequests() {
+      const box = document.getElementById('requests-list');
+      try {
+        const jobs = await HP.api('GET', '/jobs/mine/list');
+        if (!jobs.length) {
+          box.innerHTML = HP.emptyState(
+            'No requests yet',
+            'You have not requested a service yet. Get an instant estimate in under two minutes.',
+            '<button class="btn btn-primary" id="empty-req">Get a free estimate</button>'
+          );
+          document.getElementById('empty-req').addEventListener('click', () => { location.href = 'index.html'; });
+          return;
+        }
+        box.innerHTML = '<div class="job-list"></div>';
+        const list = box.querySelector('.job-list');
+        jobs.forEach((j) => list.appendChild(jobCard(j)));
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">We could not load your requests: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    function jobCard(job) {
+      const card = HP.el(`<article class="job-card">
+        <div class="job-head">
+          <button type="button" aria-expanded="false">
+            <span class="job-title">#${job.id} — ${HP.esc(prettyTrade(job.service_type))}</span><br>
+            <span class="job-meta">${HP.fmtDate(job.created_at)} · ${HP.esc(job.urgency === 'urgent' ? 'Urgent' : 'Standard')}</span>
+          </button>
+          ${HP.badge(HP.JOB_STATUS[job.status] || job.status, HP.statusKind(job.status))}
+          <span class="chev" aria-hidden="true">▾</span>
+        </div>
+        <div class="job-body"></div>
+      </article>`);
+      const head = card.querySelector('.job-head button');
+      const body = card.querySelector('.job-body');
+      let loaded = false;
+      head.addEventListener('click', async () => {
+        const open = card.classList.toggle('open');
+        head.setAttribute('aria-expanded', open);
+        if (open && !loaded) {
+          loaded = true;
+          body.innerHTML = '<p class="muted">Loading details…</p>';
+          await expandJob(job, body);
+        }
+      });
+      return card;
+    }
+
+    async function expandJob(job, body) {
+      try {
+        const [detail, estimate, quotes] = await Promise.all([
+          HP.api('GET', `/jobs/${job.id}`).catch(() => null),
+          HP.api('GET', `/jobs/${job.id}/estimate/latest`).catch((e) => (e.status === 404 ? null : Promise.reject(e))),
+          HP.api('GET', `/quotes?job_request_id=${job.id}`).catch(() => []),
+        ]);
+        const d = detail || job;
+        const photosHtml = (d.photos && d.photos.length)
+          ? `<h4>Photos (${d.photos.length})</h4><div class="photo-grid">${d.photos.map(photoTile).join('')}</div>`
+          : '';
+        const estHtml = estimate ? `
+          <h4>Estimate</h4>
+          <div class="estimate-range" style="font-size:1.4rem">${HP.fmtMoney(estimate.low_cents)} – ${HP.fmtMoney(estimate.high_cents)}</div>
+          <div class="score-wrap"><div class="score-track"><div class="score-fill" style="width:${estimate.confidence}%"></div></div><span class="small muted">${estimate.confidence}%</span></div>`
+          : `<p class="small muted">No estimate yet for this request.</p>`;
+        const quotesHtml = quotes.length ? `
+          <h4>Quotes</h4>
+          ${quotes.map((q) => quoteRow(q)).join('')}` : '';
+        body.innerHTML = `
+          <dl class="kv">
+            <dt>Description</dt><dd>${HP.esc(d.description || '—')}</dd>
+            <dt>Address</dt><dd>${HP.esc([d.address, d.city, d.state, d.zip].filter(Boolean).join(', ') || '—')}</dd>
+          </dl>
+          ${photosHtml}${estHtml}${quotesHtml}`;
+        body.querySelectorAll('[data-respond]').forEach((btn) => {
+          btn.addEventListener('click', () => respondQuote(btn.dataset.respond, btn.dataset.accept === '1'));
+        });
+      } catch (e) {
+        body.innerHTML = `<p class="muted">Could not load details: ${HP.esc(HP.friendlyMessage(e))}</p>`;
+      }
+    }
+
+    function quoteRow(q) {
+      const canRespond = q.status === 'sent';
+      return `<div class="review-box">
+        <div class="section-head">
+          <div><strong>Quote #${q.id}</strong> ${HP.badge(q.status, q.status === 'accepted' ? 'ok' : q.status === 'sent' ? 'info' : 'muted')}</div>
+          <div><strong>${HP.fmtMoney(q.customer_price_cents)}</strong> <span class="small muted">· ${q.deposit_pct}% deposit (${HP.fmtMoney(q.deposit_cents)})</span></div>
+        </div>
+        ${q.valid_until ? `<div class="small muted">Valid until ${HP.fmtDate(q.valid_until)}</div>` : ''}
+        ${canRespond ? `<div class="btn-row">
+          <button class="btn btn-ok btn-sm" data-respond="${q.id}" data-accept="1">Accept</button>
+          <button class="btn btn-outline btn-sm" data-respond="${q.id}" data-accept="0">Decline</button>
+        </div>` : ''}
+      </div>`;
+    }
+
+    async function respondQuote(quoteId, accept) {
+      const ok = confirm(accept
+        ? 'Accept this quote? A deposit will be recorded and your project will be created.'
+        : 'Decline this quote? We will mark this request as closed.');
+      if (!ok) return;
+      try {
+        const r = await HP.api('POST', `/quotes/${quoteId}/respond`, { accept });
+        HP.toast(accept ? 'Quote accepted — your project is on its way.' : 'Quote declined.', accept ? 'ok' : 'info');
+        if (r.accepted && r.project_id) {
+          document.querySelector('#portal-tabs .tab[data-tab="projects"]').click();
+        }
+        loadRequests();
+        loadProjects();
+      } catch (e) {
+        HP.toast(HP.friendlyMessage(e), 'error');
+      }
+    }
+
+    // ---------------- projects ----------------
+    async function loadProjects() {
+      const box = document.getElementById('projects-list');
+      try {
+        const projects = await HP.api('GET', '/projects');
+        if (!projects.length) {
+          box.innerHTML = HP.emptyState(
+            'No active projects',
+            'When you accept a quote, the project appears here with milestones, photos, and payments.',
+            '<button class="btn btn-primary" id="empty-proj">Get a free estimate</button>'
+          );
+          document.getElementById('empty-proj').addEventListener('click', () => { location.href = 'index.html'; });
+          return;
+        }
+        box.innerHTML = '<div class="proj-list"></div>';
+        const list = box.querySelector('.proj-list');
+        projects.forEach((p) => list.appendChild(projectCard(p)));
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">We could not load your projects: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    function projectCard(p) {
+      const card = HP.el(`<article class="proj-card">
+        <div class="proj-head">
+          <button type="button" aria-expanded="false">
+            <span class="job-title">Project #${p.id}${p.contractor ? ' — ' + HP.esc(p.contractor.name || '') : ''}</span><br>
+            <span class="job-meta">${HP.fmtMoney(p.customer_price_cents)} · started ${HP.fmtDate(p.created_at)}</span>
+          </button>
+          ${HP.badge(HP.PROJECT_STAGE[p.stage] || p.stage, HP.statusKind(p.stage))}
+          <span class="chev" aria-hidden="true">▾</span>
+        </div>
+        <div class="proj-body"></div>
+      </article>`);
+      const head = card.querySelector('.proj-head button');
+      const body = card.querySelector('.proj-body');
+      let loaded = false;
+      head.addEventListener('click', () => {
+        const open = card.classList.toggle('open');
+        head.setAttribute('aria-expanded', open);
+        if (open && !loaded) { loaded = true; renderProjectBody(p, body); }
+      });
+      return card;
+    }
+
+    function renderProjectBody(p, body) {
+      const ms = (p.milestones || []).map((m) => {
+        const needsApproval = m.status === 'completed' && m.customer_approval === 'pending';
+        return `<div class="ms-item">
+          <div class="grow"><div class="ttl">${HP.esc(m.title)}</div>
+            <div class="st">Status: ${HP.esc(m.status)} · Your approval: ${HP.esc(m.customer_approval)}</div></div>
+          ${m.status === 'completed' ? HP.badge('Done', 'ok') : HP.badge('Pending', 'muted')}
+          ${m.customer_approval === 'approved' ? HP.badge('You approved', 'ok') : ''}
+          ${m.customer_approval === 'rejected' ? HP.badge('Changes requested', 'warn') : ''}
+          ${needsApproval ? `<div class="btn-row" style="margin:0">
+            <button class="btn btn-ok btn-sm" data-ms-approve="${m.id}" data-pid="${p.id}" data-ok="1">Approve</button>
+            <button class="btn btn-outline btn-sm" data-ms-approve="${m.id}" data-pid="${p.id}" data-ok="0">Request changes</button>
+          </div>` : ''}
+        </div>`;
+      }).join('');
+      const photos = (p.photos && p.photos.length)
+        ? `<h4>Progress photos (${p.photos.length})</h4><div class="photo-grid">${p.photos.map(photoTile).join('')}</div>`
+        : '<p class="small muted">No progress photos yet.</p>';
+      const payments = (p.payments && p.payments.length)
+        ? `<h4>Payments</h4><div class="table-scroll"><table><thead><tr><th>Type</th><th class="num">Amount</th><th>Status</th><th>Note</th></tr></thead><tbody>
+          ${p.payments.map((pay) => `<tr><td>${HP.esc(pay.kind)}</td><td class="num">${HP.fmtMoney(pay.amount_cents)}</td><td>${HP.esc(pay.status)}</td><td class="small">${HP.esc(pay.notes || '')}</td></tr>`).join('')}
+          </tbody></table></div>`
+        : '<p class="small muted">No payments recorded yet.</p>';
+      const review = renderReview(p);
+      body.innerHTML = `
+        <h4>Milestones</h4>
+        <div class="ms">${ms || '<p class="small muted">No milestones yet.</p>'}</div>
+        <hr class="divider">${photos}
+        <hr class="divider">${payments}
+        ${review}`;
+      body.querySelectorAll('[data-ms-approve]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const approved = btn.dataset.ok === '1';
+          const ok = confirm(approved ? 'Approve this milestone?' : 'Ask the contractor for changes on this milestone?');
+          if (!ok) return;
+          try {
+            await HP.api('POST', `/projects/${btn.dataset.pid}/milestones/${btn.dataset.msApprove}/approve`, { approved });
+            HP.toast(approved ? 'Milestone approved.' : 'Change request sent to your contractor.', 'ok');
+            refreshProject(p.id, body);
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+      });
+      const rf = body.querySelector('#review-form');
+      if (rf) rf.addEventListener('submit', (e) => submitReview(e, p.id, body));
+    }
+
+    async function refreshProject(pid, body) {
+      try {
+        const p = await HP.api('GET', `/projects/${pid}`);
+        renderProjectBody(p, body);
+      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+    }
+
+    function renderReview(p) {
+      if (p.stage !== 'completed') return '';
+      const existing = reviewsByProject[p.id];
+      if (existing) {
+        return `<hr class="divider"><h4>Your review</h4>
+          <div class="review-box"><span class="stars">${'★'.repeat(existing.rating)}${'☆'.repeat(5 - existing.rating)}</span>
+          <p>${HP.esc(existing.comment || '')}</p>
+          <div class="who">${HP.fmtDate(existing.created_at)}</div></div>`;
+      }
+      return `<hr class="divider"><h4>Rate this job</h4>
+        <form id="review-form" novalidate>
+          <div class="field"><label for="rev-rating">Rating <span class="req">*</span></label>
+            <select id="rev-rating" name="rating">
+              <option value="5">★★★★★ — Excellent</option><option value="4">★★★★ — Good</option>
+              <option value="3">★★★ — Okay</option><option value="2">★★ — Poor</option><option value="1">★ — Bad</option>
+            </select></div>
+          <div class="field"><label for="rev-comment">Comment</label>
+            <textarea id="rev-comment" name="comment" placeholder="How did the work go?"></textarea></div>
+          <button class="btn btn-primary btn-sm" type="submit">Submit review</button>
+        </form>`;
+    }
+
+    async function submitReview(e, projectId, body) {
+      e.preventDefault();
+      const form = e.target;
+      try {
+        await HP.api('POST', '/reviews', {
+          project_id: projectId,
+          rating: Number(form.rating.value),
+          comment: form.comment.value.trim() || undefined,
+        });
+        HP.toast('Thanks for the review.', 'ok');
+        try {
+          const all = await HP.api('GET', '/reviews');
+          reviewsByProject = {};
+          all.forEach((r) => { reviewsByProject[r.project_id] = r; });
+        } catch (err) { /* ignore */ }
+        refreshProject(projectId, body);
+      } catch (err) {
+        HP.toast(HP.friendlyMessage(err), 'error');
+      }
+    }
+
+    // ---------------- referrals ----------------
+    async function loadReferrals() {
+      const box = document.getElementById('referral-list');
+      try {
+        const rows = await HP.api('GET', '/referrals/mine');
+        if (!rows.length) {
+          box.innerHTML = HP.emptyState('No referral codes yet', 'Generate a code above and share it with friends to earn rewards.');
+          return;
+        }
+        box.innerHTML = `<div class="table-scroll"><table>
+          <thead><tr><th>Code</th><th class="num">Discount</th><th>Status</th><th>Used by</th><th>Created</th></tr></thead>
+          <tbody>${rows.map((r) => `<tr>
+            <td><span class="code-chip">${HP.esc(r.code)}</span></td>
+            <td class="num">${r.discount_pct}%</td>
+            <td>${HP.badge(r.status, r.status === 'redeemed' ? 'ok' : 'info')}</td>
+            <td class="small">${HP.esc(r.referred_email || '—')}</td>
+            <td class="small">${HP.fmtDate(r.created_at)}</td>
+          </tr>`).join('')}</tbody></table></div>`;
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load referral codes: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    document.getElementById('gen-referral').addEventListener('click', async (e) => {
+      const btn = e.target;
+      HP.busy(btn, true, 'Generating…');
+      try {
+        const r = await HP.api('POST', '/referrals');
+        HP.toast(`Your referral code is ${r.code}.`, 'ok');
+        loadReferrals();
+      } catch (err) {
+        HP.toast(HP.friendlyMessage(err), 'error');
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    function prettyTrade(t) {
+      if (!t) return 'Service request';
+      const map = { painting: 'Painting', plumbing: 'Plumbing', electrical: 'Electrical', bathroom: 'Bathroom remodel', kitchen: 'Kitchen remodel', flooring: 'Flooring', drywall: 'Drywall', carpentry: 'Carpentry' };
+      return map[t] || t.replace(/_/g, ' ');
+    }
+
+    init();
+  })();
+  </script>
+</body>
+</html>

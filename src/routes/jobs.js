@@ -170,7 +170,7 @@ router.get('/:id/estimate/latest', ah(async (req, res) => {
 router.get('/:id', ah(async (req, res) => {
   const job = loadJob(req, res);
   if (!job) return;
-  const photos = db.prepare('SELECT id, original_name, mime, size_bytes, kind, created_at FROM photos WHERE job_request_id = ?').all(job.id);
+  const photos = db.prepare('SELECT id, filename, original_name, mime, size_bytes, kind, created_at FROM photos WHERE job_request_id = ?').all(job.id);
   const est = db.prepare('SELECT id, low_cents, high_cents, confidence, created_at FROM estimates WHERE job_request_id = ? ORDER BY id DESC LIMIT 1').get(job.id);
   res.json({ ...publicJob(job), photos, latest_estimate: est || null });
 }));

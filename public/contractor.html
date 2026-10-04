@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contractor portal — Handyman Pro</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="site-header" id="site-header"></header>
+  <main class="wrap">
+    <h1 class="page-title" id="greeting">Contractor portal</h1>
+    <p class="page-sub">Your profile, verification status, and assigned jobs.</p>
+
+    <div id="pending-banner"></div>
+
+    <div class="tabs" role="tablist" id="portal-tabs">
+      <button class="tab active" data-tab="profile" role="tab">Profile</button>
+      <button class="tab" data-tab="jobs" role="tab">My jobs</button>
+    </div>
+
+    <section class="tab-panel active" id="panel-profile" role="tabpanel">
+      <div class="card" id="profile-card"><p class="muted">Loading your profile…</p></div>
+      <div class="card">
+        <h2 style="margin-top:0">Edit profile</h2>
+        <form id="profile-form" novalidate>
+          <div class="form-grid two">
+            <div class="field"><label for="pf-city">City</label><input type="text" id="pf-city" name="city"><span class="field-error" data-error-for="city"></span></div>
+            <div class="field"><label for="pf-base">Service base</label><input type="text" id="pf-base" name="service_base"><span class="field-error" data-error-for="service_base"></span></div>
+          </div>
+          <div class="form-grid two">
+            <div class="field"><label for="pf-radius">Service radius (miles)</label><input type="number" id="pf-radius" name="service_radius_miles" min="1" max="500"><span class="field-error" data-error-for="service_radius_miles"></span></div>
+            <div class="field"><label for="pf-years">Years of experience</label><input type="number" id="pf-years" name="years_experience" min="0" max="80"><span class="field-error" data-error-for="years_experience"></span></div>
+          </div>
+          <div class="field"><label for="pf-specialties">Specialties</label><input type="text" id="pf-specialties" name="specialties" placeholder="e.g. painting, drywall, carpentry"><span class="field-error" data-error-for="specialties"></span></div>
+          <div class="form-grid two">
+            <div class="field"><label for="pf-license">License number</label><input type="text" id="pf-license" name="license_number"><span class="field-error" data-error-for="license_number"></span></div>
+            <div class="field"><label for="pf-insurance">Insurance info</label><input type="text" id="pf-insurance" name="insurance_info" placeholder="Carrier / policy #"><span class="field-error" data-error-for="insurance_info"></span></div>
+          </div>
+          <button class="btn btn-primary" type="submit" id="profile-save">Save changes</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-jobs" role="tabpanel">
+      <div id="jobs-list"><p class="muted">Loading your jobs…</p></div>
+    </section>
+  </main>
+
+  <script src="js/api.js"></script>
+  <script>
+  // Handyman Pro — contractor portal: profile + verification, assigned jobs.
+  (function () {
+    'use strict';
+    HP.mountHeader('portal');
+
+    document.querySelectorAll('#portal-tabs .tab').forEach((t) => {
+      t.addEventListener('click', () => {
+        document.querySelectorAll('#portal-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
+        document.querySelectorAll('.tab-panel').forEach((p) =>
+          p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
+      });
+    });
+
+    const CONTRACTOR_STAGES = ['scheduled', 'in_progress', 'review'];
+
+    async function init() {
+      const me = await HP.requireAuth('contractor');
+      if (!me) return;
+      document.getElementById('greeting').textContent = `Hi, ${me.name.split(' ')[0]} — contractor portal`;
+      loadProfile();
+      loadJobs();
+    }
+
+    // ---------------- profile ----------------
+    async function loadProfile() {
+      const box = document.getElementById('profile-card');
+      try {
+        const c = await HP.api('GET', '/contractors/me');
+        const checklist = [
+          { label: 'License verified', ok: !!c.license_verified },
+          { label: 'Insurance verified', ok: !!c.insurance_verified },
+          { label: `Background check: ${c.background_check}`, ok: c.background_check === 'passed' },
+          { label: `Account status: ${c.status}`, ok: c.status === 'active' },
+        ];
+        const banner = document.getElementById('pending-banner');
+        banner.innerHTML = c.status === 'pending'
+          ? `<div class="banner banner-warn"><strong>Your application is under review.</strong><br>Our team is verifying your license, insurance, and background. You will be able to take jobs once approved.</div>`
+          : (c.status === 'suspended'
+            ? `<div class="banner banner-warn"><strong>Your account is suspended.</strong><br>Please contact Handyman Pro support for details.</div>` : '');
+        const stars = '★'.repeat(Math.round(c.rating_avg || 0)) + '☆'.repeat(5 - Math.round(c.rating_avg || 0));
+        box.innerHTML = `
+          <div class="section-head">
+            <h2 style="margin:0">${HP.esc(c.legal_name || '')}</h2>
+            ${HP.badge(c.lifecycle || c.status, c.status === 'active' ? 'ok' : 'warn')}
+          </div>
+          <dl class="kv">
+            <dt>Contact</dt><dd>${HP.esc(c.user_name || '')} · ${HP.esc(c.email || '')} ${c.phone ? '· ' + HP.esc(c.phone) : ''}</dd>
+            <dt>Base</dt><dd>${HP.esc([c.city, c.service_base].filter(Boolean).join(' · ') || '—')}</dd>
+            <dt>Radius</dt><dd>${c.service_radius_miles != null ? c.service_radius_miles + ' miles' : '—'}</dd>
+            <dt>Experience</dt><dd>${c.years_experience != null ? c.years_experience + ' years' : '—'}</dd>
+            <dt>Specialties</dt><dd>${HP.esc(c.specialties || '—')}</dd>
+            <dt>Jobs completed</dt><dd>${c.jobs_completed || 0}</dd>
+          </dl>
+          <div class="score-wrap"><span class="small" style="min-width:120px">Performance score</span>
+            <div class="score-track"><div class="score-fill" style="width:${c.score || 0}%"></div></div>
+            <strong>${c.score || 0}</strong></div>
+          <p class="small" style="margin:.6rem 0"><span class="stars">${stars}</span> ${Number(c.rating_avg || 0).toFixed(1)} average rating
+            ${c.retention_at_risk ? ' · ' + HP.badge('Retention risk', 'warn') : ''}</p>
+          <h4>Verification</h4>
+          <ul class="checklist">${checklist.map((i) =>
+            `<li><span aria-hidden="true">${i.ok ? '✅' : '⬜'}</span> ${HP.esc(i.label)}</li>`).join('')}</ul>`;
+        // Prefill the edit form.
+        const f = document.getElementById('profile-form');
+        ['city', 'service_base', 'service_radius_miles', 'years_experience', 'specialties', 'license_number', 'insurance_info']
+          .forEach((k) => { if (f[k] && c[k] !== null && c[k] !== undefined) f[k].value = c[k]; });
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load your profile: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    document.getElementById('profile-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target, btn = document.getElementById('profile-save');
+      HP.clearFieldErrors(form);
+      const body = {};
+      ['city', 'service_base', 'specialties', 'license_number', 'insurance_info'].forEach((k) => {
+        if (form[k].value.trim() !== '') body[k] = form[k].value.trim();
+      });
+      ['service_radius_miles', 'years_experience'].forEach((k) => {
+        if (form[k].value !== '') body[k] = Number(form[k].value);
+      });
+      if (!Object.keys(body).length) { HP.toast('Change at least one field to save.', 'error'); return; }
+      HP.busy(btn, true, 'Saving…');
+      try {
+        await HP.api('PATCH', '/contractors/me', body);
+        HP.toast('Profile updated.', 'ok');
+        loadProfile();
+      } catch (err) {
+        HP.handleFormError(form, err);
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    // ---------------- jobs ----------------
+    async function loadJobs() {
+      const box = document.getElementById('jobs-list');
+      try {
+        const projects = await HP.api('GET', '/projects');
+        if (!projects.length) {
+          box.innerHTML = HP.emptyState(
+            'No jobs assigned yet',
+            'Once Handyman Pro assigns you a job, it will appear here with its milestones and details.'
+          );
+          return;
+        }
+        box.innerHTML = '<div class="proj-list"></div>';
+        const list = box.querySelector('.proj-list');
+        projects.forEach((p) => list.appendChild(jobCard(p)));
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load your jobs: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
+    }
+
+    function jobCard(p) {
+      const card = HP.el(`<article class="proj-card">
+        <div class="proj-head">
+          <button type="button" aria-expanded="false">
+            <span class="job-title">Job #${p.id}</span><br>
+            <span class="job-meta">Payout ${HP.fmtMoney(p.contractor_cost_cents)} · ${HP.fmtDate(p.created_at)}</span>
+          </button>
+          ${HP.badge(HP.PROJECT_STAGE[p.stage] || p.stage, HP.statusKind(p.stage))}
+          <span class="chev" aria-hidden="true">▾</span>
+        </div>
+        <div class="proj-body"></div>
+      </article>`);
+      const head = card.querySelector('.proj-head button');
+      const body = card.querySelector('.proj-body');
+      let loaded = false;
+      head.addEventListener('click', () => {
+        const open = card.classList.toggle('open');
+        head.setAttribute('aria-expanded', open);
+        if (open && !loaded) { loaded = true; renderJobBody(p, body); }
+      });
+      return card;
+    }
+
+    function renderJobBody(p, body) {
+      const stageBtns = CONTRACTOR_STAGES
+        .filter((s) => s !== p.stage)
+        .map((s) => `<button class="btn btn-outline btn-sm" data-stage="${s}" data-pid="${p.id}">Move to “${HP.esc(HP.PROJECT_STAGE[s])}”</button>`)
+        .join('');
+      const ms = (p.milestones || []).map((m) => `
+        <div class="ms-item">
+          <div class="grow"><div class="ttl">${HP.esc(m.title)}</div>
+            <div class="st">Status: ${HP.esc(m.status)} · Customer approval: ${HP.esc(m.customer_approval)}</div></div>
+          ${m.status === 'completed' ? HP.badge('Done', 'ok')
+            : `<button class="btn btn-ok btn-sm" data-ms-done="${m.id}" data-pid="${p.id}">Mark done</button>`}
+        </div>`).join('');
+      const photos = (p.photos && p.photos.length)
+        ? `<div class="photo-grid">${p.photos.map(photoTile).join('')}</div>`
+        : '<p class="small muted">No photos uploaded yet.</p>';
+      body.innerHTML = `
+        <dl class="kv">
+          <dt>Customer price</dt><dd>${HP.fmtMoney(p.customer_price_cents)}</dd>
+          <dt>Your payout</dt><dd><strong>${HP.fmtMoney(p.contractor_cost_cents)}</strong></dd>
+          <dt>Current stage</dt><dd>${HP.esc(HP.PROJECT_STAGE[p.stage] || p.stage)}</dd>
+        </dl>
+        <h4>Move this job</h4>
+        <div class="btn-row" style="margin-top:.4rem">${stageBtns || '<span class="small muted">No further moves available for your role.</span>'}</div>
+        <hr class="divider">
+        <h4>Milestones</h4>
+        <div class="ms">${ms || '<p class="small muted">No milestones yet.</p>'}</div>
+        <hr class="divider">
+        <h4>Job photos</h4>
+        ${photos}
+        <form class="photo-upload" style="margin-top:.75rem" novalidate>
+          <div class="form-grid two">
+            <div class="field"><label>Kind of photos</label>
+              <select name="kind"><option value="progress">Progress</option><option value="completion">Completion</option></select></div>
+            <div class="field"><label>Add photos</label>
+              <input type="file" name="photos" accept="image/*" multiple>
+              <div class="hint">Images only, up to 6, 5 MB each.</div></div>
+          </div>
+          <button class="btn btn-dark btn-sm" type="submit">Upload photos</button>
+        </form>`;
+      body.querySelectorAll('[data-stage]').forEach((b) => b.addEventListener('click', async () => {
+        if (!confirm(`Move this job to “${HP.PROJECT_STAGE[b.dataset.stage]}”?`)) return;
+        try {
+          await HP.api('PATCH', `/projects/${b.dataset.pid}/stage`, { stage: b.dataset.stage });
+          HP.toast('Job stage updated.', 'ok');
+          refreshJob(b.dataset.pid, body);
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      }));
+      body.querySelectorAll('[data-ms-done]').forEach((b) => b.addEventListener('click', async () => {
+        try {
+          await HP.api('POST', `/projects/${b.dataset.pid}/milestones/${b.dataset.msDone}/complete`);
+          HP.toast('Milestone marked done — the customer can now approve it.', 'ok');
+          refreshJob(b.dataset.pid, body);
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      }));
+      body.querySelector('.photo-upload').addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const f = ev.target;
+        const files = Array.from(f.photos.files || []);
+        if (!files.length) { HP.toast('Choose at least one photo to upload.', 'error'); return; }
+        for (const file of files) {
+          if (!file.type.startsWith('image/')) { HP.toast('Only image files are allowed.', 'error'); return; }
+          if (file.size > 5 * 1024 * 1024) { HP.toast(`"${file.name}" is over 5 MB.`, 'error'); return; }
+        }
+        if (files.length > 6) { HP.toast('You can upload at most 6 photos at a time.', 'error'); return; }
+        const btn = f.querySelector('button[type="submit"]');
+        HP.busy(btn, true, 'Uploading…');
+        try {
+          const fd = new FormData();
+          files.forEach((x) => fd.append('photos', x));
+          fd.append('kind', f.kind.value);
+          const r = await HP.api('POST', `/projects/${p.id}/photos`, fd);
+          HP.toast(`${r.photos.length} photo(s) uploaded.`, 'ok');
+          refreshJob(p.id, body);
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(btn, false); }
+      });
+    }
+
+    async function refreshJob(pid, body) {
+      try {
+        const p = await HP.api('GET', `/projects/${pid}`);
+        renderJobBody(p, body);
+      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+    }
+
+    init();
+  })();
+  </script>
+</body>
+</html>
