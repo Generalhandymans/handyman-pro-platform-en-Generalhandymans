@@ -1,0 +1,14 @@
+{
+  "dependencies_to_add": {
+    "pg": "^8",
+    "helmet": "^8",
+    "pino": "^9",
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/s3-request-presigner": "^3"
+  },
+  "notes": [
+    "Keep existing dependencies until migration is complete.",
+    "Pin exact versions in package-lock after installing in the target repository.",
+    "Run npm audit and automated tests before deployment."
+  ]
+}

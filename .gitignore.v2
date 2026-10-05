@@ -1,0 +1,32 @@
+# Secrets
+.env
+.env.*
+!.env.v2.example
+
+# Dependencies
+node_modules/
+
+# Runtime data
+data/
+uploads/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+*.log
+logs/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Local backups
+*.bak
+*.backup

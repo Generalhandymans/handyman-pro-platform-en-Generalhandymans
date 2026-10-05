@@ -1,0 +1,31 @@
+{
+  "target_repository": "Generalhandymans/handyman-pro-platform-en-Generalhandymans",
+  "recommended_branch": "v2-production-upgrade",
+  "merge_target": "main",
+  "strategy": "overlay_and_test",
+  "do_not_delete_existing_app": true,
+  "primary_docs": [
+    "MUSE_GITHUB_INSTRUCTIONS.md",
+    "README_GITHUB_READY.md",
+    "docs/PRODUCTION_CHECKLIST.md",
+    "docs/SECURITY_REVIEW.md",
+    "docs/ROLL_OUT_PLAN.md",
+    "docs/VISUAL_REDESIGN_SUMMARY.md"
+  ],
+  "visual_entrypoints": [
+    "public/index-v2.html",
+    "public/auth-v2.html",
+    "public/customer-v2.html",
+    "public/contractor-v2.html",
+    "public/project-detail-v2.html",
+    "public/dispatch-board-v2.html",
+    "public/admin-v2.html"
+  ],
+  "backend_entrypoints": [
+    "src/server-v2-integration.js",
+    "src/db/postgres.js",
+    "src/db/migrations/001_v2_production.sql",
+    "src/services/matching.js",
+    "src/services/ai/ops-copilot.js"
+  ]
+}

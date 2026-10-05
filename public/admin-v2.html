@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Operations Command Center — General Handyman Solutions</title>
+  <link rel="stylesheet" href="css/admin-v2.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">GH</div>
+      <div>
+        <strong>General Handyman</strong>
+        <span>Operations OS</span>
+      </div>
+    </div>
+    <nav>
+      <button class="nav active">Overview</button>
+      <button class="nav">Leads & CRM</button>
+      <button class="nav">Dispatch</button>
+      <button class="nav">Projects</button>
+      <button class="nav">Contractors</button>
+      <button class="nav">Payments</button>
+      <button class="nav">Messages</button>
+      <button class="nav">AI Copilot</button>
+      <button class="nav">Analytics</button>
+    </nav>
+    <div class="sidebar-foot">
+      <span class="live-dot"></span> Production status
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">OPERATIONS COMMAND CENTER</p>
+        <h1>Good morning, Armando.</h1>
+        <p class="sub">Everything that needs attention across leads, jobs, contractors and cash flow.</p>
+      </div>
+      <div class="top-actions">
+        <button class="ghost">Search</button>
+        <button class="primary">+ New job</button>
+      </div>
+    </header>
+
+    <section class="kpis" id="kpis">
+      <article><span>New leads</span><strong id="kpi-leads">—</strong><small>Awaiting action</small></article>
+      <article><span>Open quotes</span><strong id="kpi-quotes">—</strong><small>Sales pipeline</small></article>
+      <article><span>Active projects</span><strong id="kpi-projects">—</strong><small>In field</small></article>
+      <article><span>Gross margin</span><strong id="kpi-margin">—</strong><small>Completed projects</small></article>
+    </section>
+
+    <div class="grid two">
+      <section class="panel">
+        <div class="panel-head">
+          <div><p class="eyebrow">ATTENTION QUEUE</p><h2>Needs action</h2></div>
+          <button class="link">View all</button>
+        </div>
+        <div class="attention" id="attention">
+          <div class="row critical"><b>Payment monitoring</b><span>Connect production metrics to surface failed payments.</span></div>
+          <div class="row warning"><b>Quote follow-up</b><span>AI recommendations will flag quotes aging beyond target SLA.</span></div>
+          <div class="row"><b>Contractor compliance</b><span>License and insurance expiry should become proactive alerts.</span></div>
+        </div>
+      </section>
+
+      <section class="panel ai-panel">
+        <div class="panel-head">
+          <div><p class="eyebrow">AI COPILOT</p><h2>Recommended next actions</h2></div>
+          <span class="ai-pill">Human approval</span>
+        </div>
+        <div class="rec">
+          <div class="score">94</div>
+          <div><b>Dispatch the highest-match contractor</b><p>Specialty, distance, compliance, workload and performance are all scored deterministically.</p></div>
+        </div>
+        <div class="rec">
+          <div class="score">82</div>
+          <div><b>Follow up on high-intent quotes</b><p>Prioritize open quotes based on age, urgency, project value and interaction history.</p></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="grid two">
+      <section class="panel">
+        <div class="panel-head"><div><p class="eyebrow">PIPELINE</p><h2>Lead → Revenue</h2></div></div>
+        <div class="funnel">
+          <div><span>New lead</span><b id="f-new">—</b></div>
+          <div><span>Estimate</span><b id="f-estimate">—</b></div>
+          <div><span>Quote</span><b id="f-quote">—</b></div>
+          <div><span>Scheduled</span><b id="f-scheduled">—</b></div>
+          <div><span>Completed</span><b id="f-completed">—</b></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div><p class="eyebrow">FIELD OPERATIONS</p><h2>Dispatch readiness</h2></div></div>
+        <div class="metric-line"><span>Verified contractors</span><strong id="verified-contractors">—</strong></div>
+        <div class="metric-line"><span>Projects active</span><strong id="active-projects">—</strong></div>
+        <div class="metric-line"><span>Average rating</span><strong id="avg-rating">—</strong></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+async function getJSON(path) {
+  const token = localStorage.getItem('hp_token');
+  const r = await fetch(path, { headers: token ? { Authorization: 'Bearer ' + token } : {} });
+  if (!r.ok) throw new Error('Request failed ' + r.status);
+  return r.json();
+}
+function pct(n){ return `${Number(n||0).toFixed(0)}%`; }
+
+(async () => {
+  try {
+    const [o, f] = await Promise.all([
+      getJSON('/api/reports/overview'),
+      getJSON('/api/reports/funnel'),
+    ]);
+
+    document.querySelector('#kpi-leads').textContent = o.jobs ?? '—';
+    document.querySelector('#kpi-quotes').textContent = o.quotes_sent ?? '—';
+    document.querySelector('#kpi-projects').textContent = o.projects_active ?? '—';
+    document.querySelector('#kpi-margin').textContent = pct(o.gross_margin_pct);
+    document.querySelector('#verified-contractors').textContent = o.contractors_active ?? '—';
+    document.querySelector('#active-projects').textContent = o.projects_active ?? '—';
+    document.querySelector('#avg-rating').textContent = o.avg_rating ?? '—';
+
+    const by = Object.fromEntries((f.client_funnel||[]).map(x => [x.stage, x.count]));
+    document.querySelector('#f-new').textContent = by.new || 0;
+    document.querySelector('#f-estimate').textContent = by.ai_analyzed || 0;
+    document.querySelector('#f-quote').textContent = by.quote_sent || 0;
+    document.querySelector('#f-scheduled').textContent = by.scheduled || 0;
+    document.querySelector('#f-completed').textContent = by.completed || 0;
+  } catch (e) {
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>
