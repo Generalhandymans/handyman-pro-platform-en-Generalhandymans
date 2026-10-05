@@ -17,6 +17,32 @@ const mailer = require('./src/services/mailer');
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
+// ---- Phase 1 hardening: security headers + structured logging ----
+// NOTE: CSP is intentionally OFF for now — the portals use inline <script>
+// tags, so script-src 'self' would break the app. Full CSP requires moving
+// inline scripts to files (planned follow-up). All other helmet headers apply.
+const helmet = require('helmet');
+const pino = require('pino');
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  redact: {
+    paths: ['req.headers.authorization', 'password', '*.password', '*.password_hash', '*.token', '*.client_secret'],
+    censor: '[REDACTED]',
+  },
+});
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use((req, res, next) => {
+  const started = process.hrtime.bigint();
+  res.on('finish', () => {
+    const ms = Number(process.hrtime.bigint() - started) / 1e6;
+    logger.info({
+      method: req.method, path: req.originalUrl,
+      status: res.statusCode, duration_ms: Math.round(ms * 10) / 10,
+    }, 'http_request');
+  });
+  next();
+});
+
 // ---- First boot: NEVER auto-seed demo data into a fresh database ----
 // Production path: create the real admin from ADMIN_EMAIL + ADMIN_PASSWORD.
 // Demo path: set SEED_DEMO=true to load the demo dataset explicitly.

@@ -76,6 +76,53 @@ router.get('/:id', authRequired, ah(async (req, res) => {
   res.json(withDetails(p));
 }));
 
+// ---- Admin: contractor recommendations for a project (matching engine) ----
+router.get('/:id/recommendations', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found.' });
+  const job = db.prepare('SELECT service_type FROM job_requests WHERE id = ?').get(p.job_request_id);
+  const contractors = db.prepare(
+    `SELECT c.*, u.name AS user_name FROM contractors c
+     JOIN users u ON u.id = c.user_id WHERE c.status = 'active'`
+  ).all();
+  const { rankContractors, matchContractor } = require('../services/matching');
+  const projectInput = {
+    id: p.id,
+    service_type: job ? job.service_type : null,
+    customer_price_cents: p.customer_price_cents,
+    contractor_cost_cents: p.contractor_cost_cents,
+  };
+  const adapted = contractors.map(c => ({
+    ...c,
+    distance_miles: null, // no geodata in current schema yet
+    license_verified: !!c.license_verified,
+    insurance_verified: !!c.insurance_verified,
+    current_workload: 0,
+  }));
+  const ranked = rankContractors(projectInput, adapted).slice(0, 10);
+  const ineligible = adapted
+    .map(c => ({ contractor: c, match: matchContractor(projectInput, c) }))
+    .filter(x => !x.match.eligible)
+    .map(({ contractor, match }) => ({
+      contractor_id: contractor.id,
+      contractor_name: contractor.legal_name || contractor.user_name,
+      reason: match.reason,
+    }));
+  res.json({
+    recommendations: ranked.map(({ contractor, match }) => ({
+      contractor_id: contractor.id,
+      contractor_name: contractor.legal_name || contractor.user_name,
+      city: contractor.city,
+      rating_avg: contractor.rating_avg,
+      score: match.score,
+      parts: match.parts,
+      strongest: match.explanation.strongest,
+      weakest: match.explanation.weakest,
+    })),
+    meta: { eligible: ranked.length, active_total: contractors.length, ineligible },
+  });
+}));
+
 // ---- Admin: offer a project to a contractor (contractor must accept + agree to terms) ----
 router.post('/:id/assign', authRequired, requireRole('admin'), ah(async (req, res) => {
   const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);

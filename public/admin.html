@@ -657,6 +657,7 @@
                   <option value="">—</option>${assignOpts}</select>
                 <button class="btn btn-dark btn-sm" data-assign="${full.id}">Assign</button>
               </div>
+              <div id="recs-${full.id}" class="recs"><span class="hint">Loading recommendations…</span></div>
               ${activeContractors.length ? '' : '<div class="hint">No active contractors yet — verify one first.</div>'}</div>
             <div class="field"><label for="stage-${full.id}">Move stage</label>
               <div class="copy-row">
@@ -700,6 +701,32 @@
             expandedRefresh(full.id, body);
           } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
         });
+        // Contractor recommendations (matching engine).
+        (async () => {
+          const box = document.getElementById(`recs-${full.id}`);
+          if (!box) return;
+          try {
+            const data = await HP.api('GET', `/projects/${full.id}/recommendations`);
+            const recs = data.recommendations || [];
+            if (!recs.length) {
+              box.innerHTML = `<span class="hint">No eligible contractors — ${data.meta.ineligible.length} active but not fully verified.</span>`;
+              return;
+            }
+            box.innerHTML = `<div class="hint" style="margin:.4rem 0">Top matches (${data.meta.eligible} eligible):</div>` +
+              recs.slice(0, 3).map((r) => {
+                const why = (r.strongest || []).slice(0, 2).map(([k, v]) => `${k} ${Math.round(v)}`).join(' · ');
+                return `<button type="button" class="rec-chip" data-rec="${r.contractor_id}" title="${HP.esc(why)}">
+                  <b>${HP.esc(r.contractor_name)}</b><span class="rec-score">${Math.round(r.score)}</span>
+                  <span class="rec-why">${HP.esc(why)}</span></button>`;
+              }).join('');
+            box.querySelectorAll('[data-rec]').forEach((chip) => {
+              chip.addEventListener('click', () => {
+                document.getElementById(`assign-${full.id}`).value = chip.dataset.rec;
+                HP.toast('Contractor selected — review and press Assign to offer the job.', 'ok');
+              });
+            });
+          } catch (e) { box.innerHTML = '<span class="hint">Recommendations unavailable.</span>'; }
+        })();
         body.querySelector('[data-stage-go]').addEventListener('click', async () => {
           const s = document.getElementById(`stage-${full.id}`).value;
           try {

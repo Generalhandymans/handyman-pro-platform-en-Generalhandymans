@@ -358,6 +358,24 @@ test('project completion notifies customer', async () => {
   assert.ok(n, 'project-completed notification logged');
 });
 
+test('contractor recommendations: admin gets ranked matches, others refused', async () => {
+  // Make the test contractor fully verified + active so matching can rank them.
+  db.prepare(`UPDATE contractors SET status='active', license_verified=1, insurance_verified=1, background_check='passed', specialties='["painting"]', rating_avg=4.5 WHERE id=?`).run(contractorId);
+  const r = await api('GET', `/api/projects/${projectId}/recommendations`, undefined, adminToken);
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.data.recommendations), 'recommendations is an array');
+  assert.equal(r.data.meta.eligible, 1);
+  const top = r.data.recommendations[0];
+  assert.equal(top.contractor_id, contractorId);
+  assert.ok(top.score > 0 && top.score <= 100, 'score in range: ' + top.score);
+  assert.ok(top.parts && typeof top.parts.specialty === 'number', 'score parts present');
+
+  const c = await api('GET', `/api/projects/${projectId}/recommendations`, undefined, contToken);
+  assert.equal(c.status, 403);
+  const anon = await api('GET', `/api/projects/${projectId}/recommendations`);
+  assert.equal(anon.status, 401);
+});
+
 after(async () => {
   // leave the server running for manual QA; tests used an isolated DB file.
   process.exit(0);
