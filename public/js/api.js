@@ -228,6 +228,7 @@ const HP = (() => {
     const links = [
       { href: 'index.html', label: 'Home', id: 'home' },
       { href: 'track.html', label: 'Track a job', id: 'track' },
+      { href: 'auth.html?tab=contractor', label: 'Join as a pro', id: 'contractor', cta: true },
     ];
     if (u && u.role) links.push({ href: portalLink(u.role), label: 'My portal', id: 'portal' });
     header.innerHTML = `
@@ -236,7 +237,7 @@ const HP = (() => {
           <img class="brand-logo" src="img/logo-header.jpg" alt="General Handyman Solutions">
         </a>
         <nav class="main-nav" aria-label="Main">
-          ${links.map((l) => `<a href="${l.href}" class="${page === l.id ? 'active' : ''}">${esc(l.label)}</a>`).join('')}
+          ${links.map((l) => `<a href="${l.href}" class="${page === l.id ? 'active' : ''}${l.cta ? ' nav-cta' : ''}">${esc(l.label)}</a>`).join('')}
           ${u ? `<span class="nav-user">Hi, ${esc(u.name.split(' ')[0])}</span><button class="btn btn-ghost btn-sm" id="logout-btn">Log out</button>`
                : `<a href="auth.html" class="${page === 'auth' ? 'active' : ''}">Log in</a>`}
         </nav>
