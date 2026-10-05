@@ -6,15 +6,16 @@
   --muted:#667085;
   --line:#e4e7ec;
   --line-2:#d0d5dd;
-  --nav:#0f172a;
+  --nav:#143d7a;
   --nav-2:#162033;
-  --brand:#2657ff;
+  --brand:#2b6fe3;
   --brand-2:#1743de;
-  --brand-soft:#e9efff;
+  --brand-soft:#e9f1fe;
   --ok:#027a48;
   --ok-soft:#eafaf1;
   --warn:#b54708;
-  --warn-soft:#fff4e8;
+  --warn-soft:#fff4e8
+--brand-red:#c02020;
   --danger:#b42318;
   --danger-soft:#fdeceb;
   --violet:#7c3aed;
@@ -99,8 +100,8 @@ button,input,select,textarea{font:inherit}
 }
 .brand-mark{
   width:40px;height:40px;border-radius:12px;
-  background:linear-gradient(145deg,var(--brand),#5d7dff);
-  color:#fff;display:grid;place-items:center;box-shadow:0 10px 20px rgba(38,87,255,.22)
+  background:#fff;border:1px solid var(--line);
+  display:grid;place-items:center;box-shadow:0 10px 20px rgba(20,61,122,.18);overflow:hidden
 }
 .nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .nav a{
