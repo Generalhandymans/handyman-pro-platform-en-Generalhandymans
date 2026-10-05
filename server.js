@@ -46,8 +46,9 @@ app.use((req, res, next) => {
 // ---- First boot: NEVER auto-seed demo data into a fresh database ----
 // Production path: create the real admin from ADMIN_EMAIL + ADMIN_PASSWORD.
 // Demo path: set SEED_DEMO=true to load the demo dataset explicitly.
+(async () => {
 try {
-  const users = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
+  const users = (await db.prepare('SELECT COUNT(*) AS c FROM users').get()).c;
   if (users === 0) {
     if (process.env.SEED_DEMO === 'true') {
       console.log('[boot] SEED_DEMO=true — loading demo seed data…');
@@ -55,7 +56,7 @@ try {
     } else if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
       const bcrypt = require('bcryptjs');
       const hash = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 10);
-      db.prepare(
+      await db.prepare(
         `INSERT INTO users (name, email, phone, password_hash, role, email_verified)
          VALUES (?,?,?,?,?,1)`
       ).run(
@@ -72,6 +73,7 @@ try {
 } catch (e) {
   console.error('[boot] First-boot setup failed:', e.message);
 }
+})();
 
 // Stripe webhooks need the RAW body for signature verification: register the
 // raw parser for that exact path BEFORE the JSON parser below.
@@ -98,15 +100,28 @@ app.post('/api/jobs', intakeLimiter);
 // Multer stores files under random names with no extension, so we resolve the
 // real MIME type from the photos table. Filenames are 32-char hex tokens,
 // effectively unguessable, which is what keeps them private.
-app.get('/api/photos/:filename', (req, res) => {
-  const fname = String(req.params.filename || '');
-  if (!/^[a-f0-9]{32}$/.test(fname)) return res.status(404).json({ error: 'Photo not found.' });
-  const row = db.prepare('SELECT filename, mime FROM photos WHERE filename = ?').get(fname);
-  if (!row) return res.status(404).json({ error: 'Photo not found.' });
-  const abs = path.join(__dirname, 'uploads', row.filename);
-  if (!fs.existsSync(abs)) return res.status(404).json({ error: 'Photo file missing.' });
-  res.type(row.mime || 'image/jpeg');
-  res.sendFile(abs);
+// When S3 is configured, photos live in the bucket and we redirect to a
+// short-lived signed URL instead of serving from disk.
+app.get('/api/photos/:filename', async (req, res) => {
+  try {
+    const fname = String(req.params.filename || '');
+    if (!/^[a-f0-9]{32}$/.test(fname) && !fname.startsWith('photos/')) {
+      return res.status(404).json({ error: 'Photo not found.' });
+    }
+    const row = await db.prepare('SELECT filename, mime, storage_key, storage_provider FROM photos WHERE filename = ?').get(fname);
+    if (!row) return res.status(404).json({ error: 'Photo not found.' });
+    const storage = require('./src/services/storage');
+    if (row.storage_provider === 's3' && row.storage_key && storage.isConfigured()) {
+      const url = await storage.signedReadUrl(row.storage_key, 300);
+      return res.redirect(302, url);
+    }
+    const abs = path.join(__dirname, 'uploads', row.filename);
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'Photo file missing.' });
+    res.type(row.mime || 'image/jpeg');
+    res.sendFile(abs);
+  } catch (e) {
+    res.status(500).json({ error: 'Could not load photo.' });
+  }
 });
 
 app.get('/api/health', (req, res) => {
@@ -140,7 +155,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ---- Background: drain the campaign outbox every 30s ----
 const { processOutbox } = require('./src/routes/campaigns');
 setInterval(() => {
-  try { processOutbox(50); } catch (e) { console.error('[outbox]', e.message); }
+  processOutbox(50).catch(e => console.error('[outbox]', e.message));
 }, 30 * 1000);
 
 // ---- 404 for unknown API routes ----

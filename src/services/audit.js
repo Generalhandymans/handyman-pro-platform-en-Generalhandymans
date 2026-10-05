@@ -1,9 +1,9 @@
 // Admin audit trail: who did what, when. Called from every admin write path.
 const db = require('../db');
 
-function auditLog(adminId, action, entity, entityId, details) {
+async function auditLog(adminId, action, entity, entityId, details) {
   try {
-    db.prepare(
+    await db.prepare(
       'INSERT INTO admin_audit (admin_id, action, entity, entity_id, details) VALUES (?,?,?,?,?)'
     ).run(
       adminId || null, action, entity, entityId == null ? null : entityId,

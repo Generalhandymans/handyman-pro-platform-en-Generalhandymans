@@ -11,14 +11,14 @@ function makeCode() {
 }
 
 router.post('/', authRequired, requireRole('customer'), ah(async (req, res) => {
-  const info = db.prepare(
+  const info = await db.prepare(
     'INSERT INTO referrals (code, referrer_user_id, discount_pct) VALUES (?,?,?)'
   ).run(makeCode(), req.user.id, 10);
-  res.status(201).json(db.prepare('SELECT * FROM referrals WHERE id = ?').get(info.lastInsertRowid));
+  res.status(201).json(await db.prepare('SELECT * FROM referrals WHERE id = ?').get(info.lastInsertRowid));
 }));
 
 router.get('/mine', authRequired, requireRole('customer'), ah(async (req, res) => {
-  res.json(db.prepare('SELECT * FROM referrals WHERE referrer_user_id = ? ORDER BY id DESC').all(req.user.id));
+  res.json(await db.prepare('SELECT * FROM referrals WHERE referrer_user_id = ? ORDER BY id DESC').all(req.user.id));
 }));
 
 // Redeem a code for a new customer email (public; validated at quote time by admin).
@@ -28,10 +28,10 @@ router.post('/redeem', ah(async (req, res) => {
   if (!code || typeof code !== 'string') errors.code = 'Code required.';
   if (!isEmail(email)) errors.email = 'Valid email required.';
   if (failIfErrors(res, errors)) return;
-  const r = db.prepare('SELECT * FROM referrals WHERE code = ?').get(code.trim().toUpperCase());
+  const r = await db.prepare('SELECT * FROM referrals WHERE code = ?').get(code.trim().toUpperCase());
   if (!r) return res.status(404).json({ error: 'Unknown referral code.' });
   if (r.status === 'redeemed') return res.status(409).json({ error: 'Code already redeemed.' });
-  db.prepare(`UPDATE referrals SET status = 'redeemed', referred_email = ?, redeemed_at = CURRENT_TIMESTAMP WHERE id = ?`)
+  await db.prepare(`UPDATE referrals SET status = 'redeemed', referred_email = ?, redeemed_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(email.trim().toLowerCase(), r.id);
   res.json({ ok: true, discount_pct: r.discount_pct });
 }));

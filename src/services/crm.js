@@ -3,18 +3,28 @@
 // CONTRACTOR side: applicant -> verification -> active -> performance -> retention
 const db = require('../db');
 
+// Backend-aware datetime arithmetic: SQLite datetime() vs PostgreSQL INTERVAL.
+const dt = (modifier) => {
+  if (db._isPg) {
+    const sign = modifier.startsWith('-') ? '-' : '+';
+    const unit = modifier.replace(/^[+-]/, '');
+    return `CURRENT_TIMESTAMP ${sign} INTERVAL '${unit}'`;
+  }
+  return `datetime(CURRENT_TIMESTAMP,'${modifier}')`;
+};
+
 // ---------------------------------------------------------------------------
 // CLIENT SIDE
 // ---------------------------------------------------------------------------
 
 // Lead score 0-100. Recomputed whenever the job or its interactions change.
-function computeLeadScore(job) {
+async function computeLeadScore(job) {
   let s = 0;
   if (job.email) s += 8;
   if (job.phone) s += 8;
   if (job.address) s += 8;
   if (job.description && job.description.trim().length > 50) s += 8;
-  const photos = db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id).c;
+  const photos = await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id).c;
   if (photos > 0) s += 8;                       // 40 max for completeness
   if (job.urgency === 'urgent') s += 10;        // urgency signal
   const ageDays = (Date.now() - new Date(job.created_at + 'Z').getTime()) / 86400000;
@@ -22,7 +32,7 @@ function computeLeadScore(job) {
   else if (ageDays <= 7) s += 15;
   else if (ageDays <= 30) s += 10;
   else s += 5;                                  // recency
-  const kinds = db.prepare(
+  const kinds = await db.prepare(
     'SELECT kind, COUNT(*) c FROM interactions WHERE job_request_id = ? GROUP BY kind'
   ).all(job.id);
   for (const k of kinds) {
@@ -33,61 +43,65 @@ function computeLeadScore(job) {
   return Math.max(0, Math.min(100, Math.round(s)));
 }
 
-function refreshLeadScore(jobId) {
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(jobId);
-  if (!job) return;
-  const score = computeLeadScore(job);
-  db.prepare('UPDATE job_requests SET lead_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(score, jobId);
+async function refreshLeadScore(jobId) {
+  try {
+    const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(jobId);
+    if (!job) return;
+    const score = await computeLeadScore(job);
+    await db.prepare('UPDATE job_requests SET lead_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(score, jobId);
+  } catch (e) { /* lead scoring must never break the request */ }
 }
 
-function touchInteraction(jobId, kind, detail) {
-  db.prepare('INSERT INTO interactions (job_request_id, kind, detail) VALUES (?,?,?)')
-    .run(jobId, kind, detail || null);
-  refreshLeadScore(jobId);
+async function touchInteraction(jobId, kind, detail) {
+  try {
+    await db.prepare('INSERT INTO interactions (job_request_id, kind, detail) VALUES (?,?,?)')
+      .run(jobId, kind, detail || null);
+    await refreshLeadScore(jobId);
+  } catch (e) { /* interactions must never break the request */ }
 }
 
 // Follow-up task rules. Returns the tasks created on this run.
-function generateFollowupTasks() {
+async function generateFollowupTasks() {
   const created = [];
-  const addTask = (jobId, quoteId, kind, title) => {
-    const dup = db.prepare(
+  const addTask = async (jobId, quoteId, kind, title) => {
+    const dup = await db.prepare(
       'SELECT id FROM followup_tasks WHERE kind = ? AND status = \'open\' AND ' +
       '(job_request_id = ? OR (job_request_id IS NULL AND ? IS NULL))'
     ).get(kind, jobId, jobId);
     if (dup) return;
-    const info = db.prepare(
+    const info = await db.prepare(
       'INSERT INTO followup_tasks (job_request_id, quote_id, kind, title, due_at) VALUES (?,?,?,?,datetime(CURRENT_TIMESTAMP,\'+1 day\'))'
     ).run(jobId, quoteId, kind, title);
     created.push({ id: info.lastInsertRowid, kind, title, job_request_id: jobId });
   };
 
   // Rule 1: quote sent, no response for 48h+ -> follow up.
-  const stale = db.prepare(
+  const stale = await db.prepare(
     `SELECT q.id AS qid, q.job_request_id AS jid FROM quotes q
-     WHERE q.status = 'sent' AND q.sent_at < datetime(CURRENT_TIMESTAMP,'-48 hours')`
+     WHERE q.status = 'sent' AND q.sent_at < ${dt('-48 hours')}`
   ).all();
   for (const r of stale) {
-    addTask(r.jid, r.qid, 'quote_followup_48h',
+    await addTask(r.jid, r.qid, 'quote_followup_48h',
       `Quote #${r.qid} sent 48h+ ago with no response — follow up (job #${r.jid}).`);
   }
 
   // Rule 2: new request older than 24h with no estimate -> run estimate.
-  const noEst = db.prepare(
+  const noEst = await db.prepare(
     `SELECT j.id FROM job_requests j
      LEFT JOIN estimates e ON e.job_request_id = j.id
-     WHERE j.status = 'new' AND j.created_at < datetime(CURRENT_TIMESTAMP,'-24 hours') AND e.id IS NULL`
+     WHERE j.status = 'new' AND j.created_at < ${dt('-24 hours')} AND e.id IS NULL`
   ).all();
   for (const r of noEst) {
-    addTask(r.id, null, 'missing_estimate_24h', `New request #${r.id} is 24h+ old with no estimate — review it.`);
+    await addTask(r.id, null, 'missing_estimate_24h', `New request #${r.id} is 24h+ old with no estimate — review it.`);
   }
 
   // Rule 3: project stuck "in_progress" 14d+ with no milestone movement -> check in.
-  const stuck = db.prepare(
+  const stuck = await db.prepare(
     `SELECT p.id, p.job_request_id FROM projects p
-     WHERE p.stage = 'in_progress' AND p.updated_at < datetime(CURRENT_TIMESTAMP,'-14 days')`
+     WHERE p.stage = 'in_progress' AND p.updated_at < ${dt('-14 days')}`
   ).all();
   for (const r of stuck) {
-    addTask(r.job_request_id, null, 'stalled_project_14d',
+    await addTask(r.job_request_id, null, 'stalled_project_14d',
       `Project #${r.id} (job #${r.job_request_id}) shows no progress in 14+ days — check in with contractor.`);
   }
   return created;
@@ -122,9 +136,9 @@ function contractorScore(c) {
 }
 
 // Retention risk: active contractor with no project activity in 60+ days.
-function retentionAtRisk(c) {
+async function retentionAtRisk(c) {
   if (c.status !== 'active') return false;
-  const row = db.prepare(
+  const row = await db.prepare(
     `SELECT MAX(p.updated_at) AS last FROM projects p WHERE p.contractor_id = ?`
   ).get(c.id);
   if (!row.last) return (c.jobs_completed || 0) === 0;
@@ -135,15 +149,15 @@ function retentionAtRisk(c) {
 // ---------------------------------------------------------------------------
 // CAMPAIGN SEGMENTS (email-able audiences, resolved with real queries)
 // ---------------------------------------------------------------------------
-function segmentMembers(segment) {
+async function segmentMembers(segment) {
   switch (segment) {
     case 'all_customers':
-      return db.prepare(
+      return await db.prepare(
         `SELECT DISTINCT email AS email, name FROM job_requests WHERE email IS NOT NULL AND email != ''`
       ).all().map(r => ({ ...r, context: {} }));
 
     case 'past_customers':
-      return db.prepare(
+      return await db.prepare(
         `SELECT DISTINCT j.email AS email, j.name AS name FROM job_requests j
          JOIN projects p ON p.job_request_id = j.id
          WHERE p.stage = 'completed' AND j.email IS NOT NULL AND j.email != ''`
@@ -151,17 +165,17 @@ function segmentMembers(segment) {
 
     case 'inactive_clients_90d': {
       // Real customers (completed project or accepted quote) with no activity in 90+ days.
-      return db.prepare(
+      return await db.prepare(
         `SELECT DISTINCT j.email AS email, j.name AS name FROM job_requests j
          WHERE j.email IS NOT NULL AND j.email != ''
-           AND j.updated_at < datetime(CURRENT_TIMESTAMP,'-90 days')
+           AND j.updated_at < ${dt('-90 days')}
            AND (EXISTS (SELECT 1 FROM projects p WHERE p.job_request_id = j.id AND p.stage = 'completed')
                 OR EXISTS (SELECT 1 FROM quotes q WHERE q.job_request_id = j.id AND q.status = 'accepted'))`
       ).all().map(r => ({ ...r, context: {} }));
     }
 
     case 'lost_leads':
-      return db.prepare(
+      return await db.prepare(
         `SELECT DISTINCT j.email AS email, j.name AS name, j.service_type AS service_type
          FROM job_requests j
          WHERE j.email IS NOT NULL AND j.email != ''
@@ -170,18 +184,18 @@ function segmentMembers(segment) {
       ).all().map(r => ({ email: r.email, name: r.name, context: { service_type: r.service_type } }));
 
     case 'all_contractors':
-      return db.prepare(
+      return await db.prepare(
         `SELECT u.email AS email, u.name AS name FROM contractors c JOIN users u ON u.id = c.user_id`
       ).all().map(r => ({ ...r, context: {} }));
 
     case 'pending_contractors':
-      return db.prepare(
+      return await db.prepare(
         `SELECT u.email AS email, u.name AS name FROM contractors c JOIN users u ON u.id = c.user_id
          WHERE c.status = 'pending'`
       ).all().map(r => ({ ...r, context: {} }));
 
     case 'top_contractors':
-      return db.prepare(
+      return await db.prepare(
         `SELECT u.email AS email, u.name AS name FROM contractors c JOIN users u ON u.id = c.user_id
          WHERE c.status = 'active' AND c.rating_avg >= 4.5`
       ).all().map(r => ({ ...r, context: {} }));
@@ -194,14 +208,14 @@ function segmentMembers(segment) {
 // Demand-vs-supply gaps: open job requests in (service_type, city) cells with
 // zero ACTIVE contractors listing that specialty. Used for recruitment planning
 // (a report, not emails — we do not invent prospect addresses).
-function recruitmentGaps() {
-  const open = db.prepare(
+async function recruitmentGaps() {
+  const open = await db.prepare(
     `SELECT service_type, COALESCE(city,'') AS city, COUNT(*) AS open_jobs
      FROM job_requests WHERE status IN ('new','ai_analyzed') GROUP BY service_type, city`
   ).all();
   const gaps = [];
   for (const o of open) {
-    const supply = db.prepare(
+    const supply = await db.prepare(
       `SELECT COUNT(*) c FROM contractors
        WHERE status = 'active' AND (specialties LIKE '%' || ? || '%') AND (city = ? OR ? = '')`
     ).get(o.service_type, o.city, o.city).c;

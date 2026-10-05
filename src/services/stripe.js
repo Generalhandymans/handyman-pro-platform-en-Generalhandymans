@@ -30,28 +30,27 @@ function getClient() {
 // Creates a PaymentIntent for a project deposit and records it as pending.
 // Returns { client_secret, payment_id } — the frontend confirms with the
 // publishable key via Stripe.js, the webhook marks it paid.
-function createDepositIntent({ projectId, amountCents, customerEmail, description }) {
+async function createDepositIntent({ projectId, amountCents, customerEmail, description }) {
   const db = require('../db');
   const stripe = getClient();
-  return stripe.paymentIntents.create({
+  const pi = await stripe.paymentIntents.create({
     amount: amountCents,
     currency: 'usd',
     receipt_email: customerEmail || undefined,
     description: description || `General Handyman Solutions — deposit for project #${projectId}`,
     metadata: { project_id: String(projectId), kind: 'deposit' },
     automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
-  }).then((pi) => {
-    const info = db.prepare(
-      `INSERT INTO payments (project_id, kind, amount_cents, status, provider, provider_ref, notes)
-       VALUES (?,?,?,'pending','stripe',?,?)`
-    ).run(projectId, 'deposit', amountCents, pi.id, 'Stripe PaymentIntent created');
-    return { client_secret: pi.client_secret, payment_id: info.lastInsertRowid, payment_intent_id: pi.id };
   });
+  const info = await db.prepare(
+    `INSERT INTO payments (project_id, kind, amount_cents, status, provider, provider_ref, notes)
+     VALUES (?,?,?,'pending','stripe',?,?)`
+  ).run(projectId, 'deposit', amountCents, pi.id, 'Stripe PaymentIntent created');
+  return { client_secret: pi.client_secret, payment_id: info.lastInsertRowid, payment_intent_id: pi.id };
 }
 
 // Verifies the webhook signature and applies the event to our ledger.
 // Returns the event type handled, or null when signature verification fails.
-function handleWebhook(rawBody, signature) {
+async function handleWebhook(rawBody, signature) {
   const db = require('../db');
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) throw new Error('STRIPE_WEBHOOK_SECRET is not set.');
@@ -64,16 +63,17 @@ function handleWebhook(rawBody, signature) {
   }
   if (event.type === 'payment_intent.succeeded') {
     const pi = event.data.object;
-    db.prepare(
-      `UPDATE payments SET status = 'paid', notes = COALESCE(notes,'') || ' | Stripe confirmed ' || datetime('now')
+    const nowSql = db._isPg ? 'CURRENT_TIMESTAMP::text' : "datetime('now')";
+    await db.prepare(
+      `UPDATE payments SET status = 'paid', notes = COALESCE(notes,'') || ' | Stripe confirmed ' || ${nowSql}
        WHERE provider_ref = ? AND provider = 'stripe'`
     ).run(pi.id);
     // A confirmed deposit moves the job forward in the pipeline.
     const pid = pi.metadata && pi.metadata.project_id;
     if (pid) {
-      const proj = db.prepare('SELECT job_request_id FROM projects WHERE id = ?').get(pid);
+      const proj = await db.prepare('SELECT job_request_id FROM projects WHERE id = ?').get(pid);
       if (proj) {
-        db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        await db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
           .run(proj.job_request_id);
       }
     }
@@ -81,7 +81,7 @@ function handleWebhook(rawBody, signature) {
   }
   if (event.type === 'payment_intent.payment_failed') {
     const pi = event.data.object;
-    db.prepare(
+    await db.prepare(
       `UPDATE payments SET status = 'failed', notes = COALESCE(notes,'') || ' | Stripe failed ' || datetime('now')
        WHERE provider_ref = ? AND provider = 'stripe'`
     ).run(pi.id);

@@ -41,7 +41,7 @@ function jobVisibleTo(req, job) {
 router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
   const b = req.body || {};
   const errors = {};
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(b.job_request_id);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(b.job_request_id);
   if (!job) errors.job_request_id = 'Job request not found.';
   if (!isInt(b.customer_price_cents, 100, 100000000)) errors.customer_price_cents = 'Customer price (cents) required.';
   if (!isInt(b.contractor_cost_cents, 0, 100000000)) errors.contractor_cost_cents = 'Contractor cost (cents) required.';
@@ -53,15 +53,18 @@ router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
   if (failIfErrors(res, errors)) return;
 
   const deposit = Math.round(b.customer_price_cents * depositPct / 100);
-  const info = db.prepare(
+  const validUntilSql = db._isPg
+    ? `CURRENT_TIMESTAMP + INTERVAL '14 days'`
+    : `datetime(CURRENT_TIMESTAMP,'+14 days')`;
+  const info = await db.prepare(
     `INSERT INTO quotes (job_request_id, estimate_id, customer_price_cents, contractor_cost_cents,
       deposit_cents, deposit_pct, valid_until)
-     VALUES (?,?,?,?,?,?, datetime(CURRENT_TIMESTAMP,'+14 days'))`
+     VALUES (?,?,?,?,?,?, ${validUntilSql})`
   ).run(job.id, b.estimate_id || null, b.customer_price_cents, b.contractor_cost_cents, deposit, depositPct);
   auditLog(req.user.id, 'quote.created', 'quotes', info.lastInsertRowid,
     `Job #${job.id}: customer ${fmt(b.customer_price_cents)}, contractor ${fmt(b.contractor_cost_cents)}, deposit ${depositPct}%`);
   res.status(201).json({
-    ...db.prepare('SELECT * FROM quotes WHERE id = ?').get(info.lastInsertRowid),
+    ...await db.prepare('SELECT * FROM quotes WHERE id = ?').get(info.lastInsertRowid),
     margin_cents: b.customer_price_cents - b.contractor_cost_cents,
     margin_note: `Platform spread ${fmt(b.customer_price_cents - b.contractor_cost_cents)} on ${fmt(b.customer_price_cents)}.`,
   });
@@ -69,21 +72,21 @@ router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
 
 // ---- Admin: send the quote to the customer ----
 router.post('/:id/send', authRequired, requireRole('admin'), ah(async (req, res) => {
-  const q = db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
+  const q = await db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Quote not found.' });
   if (q.status !== 'draft') return res.status(400).json({ error: 'Only draft quotes can be sent.' });
-  db.prepare(`UPDATE quotes SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
-  db.prepare(`UPDATE job_requests SET status = 'quote_sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.job_request_id);
+  await db.prepare(`UPDATE quotes SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
+  await db.prepare(`UPDATE job_requests SET status = 'quote_sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.job_request_id);
   touchInteraction(q.job_request_id, 'quote_sent', `quote #${q.id}`);
   auditLog(req.user.id, 'quote.sent', 'quotes', q.id, `Sent to customer, ${fmt(q.customer_price_cents)}`);
 
   // Notify the customer by email.
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
   const to = job.customer_id
-    ? (db.prepare('SELECT email, name FROM users WHERE id = ?').get(job.customer_id) || {}).email
+    ? (await db.prepare('SELECT email, name FROM users WHERE id = ?').get(job.customer_id) || {}).email
     : job.email;
   if (to) {
-    notify({
+    await notify({
       to,
       subject: `Your General Handyman Solutions quote is ready — ${fmt(q.customer_price_cents)}`,
       html: shell('Your quote is ready', 'We prepared a fixed quote for your project. Review and accept it from your portal:', [
@@ -94,24 +97,24 @@ router.post('/:id/send', authRequired, requireRole('admin'), ah(async (req, res)
       ]),
     }).catch(() => {});
   }
-  res.json(db.prepare('SELECT * FROM quotes WHERE id = ?').get(q.id));
+  res.json(await db.prepare('SELECT * FROM quotes WHERE id = ?').get(q.id));
 }));
 
 // ---- List quotes for a job (owner customer or admin) ----
 router.get('/', authRequired, ah(async (req, res) => {
   const { job_request_id } = req.query;
   if (!job_request_id) return res.status(400).json({ error: 'job_request_id is required.' });
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job_request_id);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job_request_id);
   if (!job) return res.status(404).json({ error: 'Job request not found.' });
   if (!jobVisibleTo(req, job)) return res.status(403).json({ error: 'Not allowed.' });
-  res.json(db.prepare('SELECT * FROM quotes WHERE job_request_id = ? ORDER BY id DESC').all(job.id));
+  res.json(await db.prepare('SELECT * FROM quotes WHERE job_request_id = ? ORDER BY id DESC').all(job.id));
 }));
 
 // ---- Read a quote (owner customer or admin) ----
 router.get('/:id', authRequired, ah(async (req, res) => {
-  const q = db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
+  const q = await db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Quote not found.' });
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
   if (!jobVisibleTo(req, job)) return res.status(403).json({ error: 'Not allowed.' });
   res.json(q);
 }));
@@ -119,17 +122,17 @@ router.get('/:id', authRequired, ah(async (req, res) => {
 // ---- Customer: accept / reject. Accepting requires Terms acceptance and
 // spins up the project + deposit record. ----
 router.post('/:id/respond', authRequired, ah(async (req, res) => {
-  const q = db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
+  const q = await db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Quote not found.' });
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
   if (!jobVisibleTo(req, job)) return res.status(403).json({ error: 'Not allowed.' });
   const accept = (req.body || {}).accept === true;
   const termsAccepted = (req.body || {}).terms_accepted === true;
 
   if (!accept) {
     if (q.status !== 'sent') return res.status(400).json({ error: 'This quote is no longer awaiting a response.' });
-    db.prepare(`UPDATE quotes SET status = 'rejected', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
-    db.prepare(`UPDATE job_requests SET status = 'lost', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+    await db.prepare(`UPDATE quotes SET status = 'rejected', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
+    await db.prepare(`UPDATE job_requests SET status = 'lost', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
     touchInteraction(job.id, 'customer_reply', 'quote rejected');
     return res.json({ accepted: false });
   }
@@ -147,45 +150,44 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
 
   let projectId;
   try {
-    const tx = db.transaction(() => {
+    projectId = await db.transaction(async (t) => {
       // Re-check inside the transaction: prevents double-accept races.
-      const fresh = db.prepare('SELECT status FROM quotes WHERE id = ?').get(q.id);
+      const fresh = await t.prepare('SELECT status FROM quotes WHERE id = ?').get(q.id);
       if (fresh.status !== 'sent') throw Object.assign(new Error('This quote is no longer awaiting a response.'), { statusCode: 400 });
-      db.prepare(`UPDATE quotes SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
-      const p = db.prepare(
+      await t.prepare(`UPDATE quotes SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
+      const p = await t.prepare(
         `INSERT INTO projects (job_request_id, quote_id, customer_price_cents, contractor_cost_cents, stage)
          VALUES (?,?,?,?, 'assigned')`
       ).run(job.id, q.id, q.customer_price_cents, q.contractor_cost_cents);
       const names = MILESTONES[job.service_type] || GENERIC_MILESTONES;
-      const ins = db.prepare('INSERT INTO milestones (project_id, title, sort_order) VALUES (?,?,?)');
-      names.forEach((t, i) => ins.run(p.lastInsertRowid, t, i));
+      const ins = t.prepare('INSERT INTO milestones (project_id, title, sort_order) VALUES (?,?,?)');
+      for (let i = 0; i < names.length; i++) await ins.run(p.lastInsertRowid, names[i], i);
       if (stripeOn) {
         // The deposit is collected via Stripe PaymentIntent (frontend drives it
         // right after this response). The webhook flips the job to
         // deposit_paid when the charge succeeds. Nothing is recorded yet.
       } else {
         // Bookkeeping: the deposit the platform collects (Stripe NOT configured).
-        db.prepare(
+        await t.prepare(
           `INSERT INTO payments (project_id, kind, amount_cents, status, provider, notes)
            VALUES (?,?,?,'recorded','manual',?)`
         ).run(p.lastInsertRowid, 'deposit', q.deposit_cents,
           `Deposit ${q.deposit_pct}% of ${fmt(q.customer_price_cents)} — recorded manually (Stripe not configured).`);
-        db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+        await t.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
       }
       // Legal proof: who accepted which terms version, when.
-      recordAcceptance({ userId: req.user.id, kind: 'client_quote', referenceId: q.id, version: CLIENT_TERMS_VERSION, ip });
+      await recordAcceptance({ userId: req.user.id, kind: 'client_quote', referenceId: q.id, version: CLIENT_TERMS_VERSION, ip });
       return p.lastInsertRowid;
     });
-    projectId = tx();
   } catch (e) {
     return res.status(e.statusCode || 500).json({ error: e.statusCode ? e.message : 'Something went wrong on our end. Please try again.' });
   }
-  touchInteraction(job.id, 'customer_reply', 'quote accepted');
+  await touchInteraction(job.id, 'customer_reply', 'quote accepted');
 
   // Notify admins: a customer accepted — time to assign a contractor.
-  const admins = db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
+  const admins = await db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
   for (const a of admins) {
-    notify({
+    await notify({
       to: a.email,
       subject: `Quote accepted — project #${projectId} needs a contractor`,
       html: shell('Quote accepted', `${job.name} accepted the quote. Assign a contractor to start:`, [

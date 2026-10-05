@@ -9,7 +9,7 @@ router.use(authRequired, requireRole('admin'));
 
 // ---- CLIENT pipeline: counts + pipeline value per stage ----
 router.get('/pipeline', ah(async (req, res) => {
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT j.status,
             COUNT(*) AS count,
             COALESCE(SUM(q.customer_price_cents), 0) AS value_cents
@@ -19,7 +19,7 @@ router.get('/pipeline', ah(async (req, res) => {
      )
      GROUP BY j.status ORDER BY count DESC`
   ).all();
-  const scores = db.prepare(
+  const scores = await db.prepare(
     `SELECT status, ROUND(AVG(lead_score)) AS avg_score FROM job_requests GROUP BY status`
   ).all();
   const avgByStatus = Object.fromEntries(scores.map(s => [s.status, s.avg_score]));
@@ -30,44 +30,45 @@ router.get('/pipeline', ah(async (req, res) => {
 router.get('/tasks', ah(async (req, res) => {
   const { status } = req.query;
   const rows = status
-    ? db.prepare('SELECT * FROM followup_tasks WHERE status = ? ORDER BY id DESC').all(status)
-    : db.prepare('SELECT * FROM followup_tasks ORDER BY status, id DESC LIMIT 200').all();
+    ? await db.prepare('SELECT * FROM followup_tasks WHERE status = ? ORDER BY id DESC').all(status)
+    : await db.prepare('SELECT * FROM followup_tasks ORDER BY status, id DESC LIMIT 200').all();
   res.json(rows);
 }));
 
 router.post('/tasks/generate', ah(async (req, res) => {
-  res.json({ created: crm.generateFollowupTasks() });
+  res.json({ created: await crm.generateFollowupTasks() });
 }));
 
 router.patch('/tasks/:id/done', ah(async (req, res) => {
-  db.prepare(`UPDATE followup_tasks SET status = 'done' WHERE id = ?`).run(req.params.id);
+  await db.prepare(`UPDATE followup_tasks SET status = 'done' WHERE id = ?`).run(req.params.id);
   res.json({ ok: true });
 }));
 
 // ---- CONTRACTOR pipeline: lifecycle stages with counts ----
 router.get('/contractors', ah(async (req, res) => {
-  const rows = db.prepare('SELECT * FROM contractors').all();
+  const rows = await db.prepare('SELECT * FROM contractors').all();
   const by = {};
-  const list = rows.map(c => {
+  const list = [];
+  for (const c of rows) {
     const lc = crm.contractorLifecycle(c);
     by[lc] = (by[lc] || 0) + 1;
-    return {
+    list.push({
       id: c.id, legal_name: c.legal_name, city: c.city, specialties: c.specialties,
       status: c.status, lifecycle: lc, score: crm.contractorScore(c),
-      retention_at_risk: crm.retentionAtRisk(c), rating_avg: c.rating_avg, jobs_completed: c.jobs_completed,
-    };
-  });
+      retention_at_risk: await crm.retentionAtRisk(c), rating_avg: c.rating_avg, jobs_completed: c.jobs_completed,
+    });
+  }
   res.json({ stages: by, contractors: list });
 }));
 
 // ---- Demand vs supply gaps (recruitment planning, not emails) ----
 router.get('/recruitment-gaps', ah(async (req, res) => {
-  res.json(crm.recruitmentGaps());
+  res.json(await crm.recruitmentGaps());
 }));
 
 // ---- Email log (everything ever sent/attempted) ----
 router.get('/email-log', ah(async (req, res) => {
-  res.json(db.prepare('SELECT * FROM email_log ORDER BY id DESC LIMIT 200').all());
+  res.json(await db.prepare('SELECT * FROM email_log ORDER BY id DESC LIMIT 200').all());
 }));
 
 // ---- Admin audit trail ----
@@ -75,12 +76,12 @@ router.get('/audit', ah(async (req, res) => {
   const { action, limit } = req.query;
   const lim = Math.min(Number(limit) || 100, 500);
   const rows = action
-    ? db.prepare(
+    ? await db.prepare(
         `SELECT a.*, u.name AS admin_name FROM admin_audit a
          LEFT JOIN users u ON u.id = a.admin_id
          WHERE a.action = ? ORDER BY a.id DESC LIMIT ?`
       ).all(action, lim)
-    : db.prepare(
+    : await db.prepare(
         `SELECT a.*, u.name AS admin_name FROM admin_audit a
          LEFT JOIN users u ON u.id = a.admin_id
          ORDER BY a.id DESC LIMIT ?`
@@ -91,7 +92,7 @@ router.get('/audit', ah(async (req, res) => {
 // ---- Segments preview (for the campaign builder) ----
 router.get('/segments/:name', ah(async (req, res) => {
   try {
-    const members = crm.segmentMembers(req.params.name);
+    const members = await crm.segmentMembers(req.params.name);
     res.json({ segment: req.params.name, count: members.length, sample: members.slice(0, 5) });
   } catch (e) {
     res.status(400).json({ error: e.message });

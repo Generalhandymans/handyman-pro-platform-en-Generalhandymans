@@ -46,7 +46,7 @@ router.post('/deposit-intent', authRequired, ah(async (req, res) => {
   if (failIfErrors(res, errors)) return;
 
   // Customers may only pay for their OWN projects.
-  const project = db.prepare(
+  const project = await db.prepare(
     `SELECT p.*, q.deposit_cents AS expected_deposit
      FROM projects p JOIN job_requests j ON j.id = p.job_request_id
      LEFT JOIN quotes q ON q.id = p.quote_id
@@ -54,7 +54,7 @@ router.post('/deposit-intent', authRequired, ah(async (req, res) => {
   ).get(b.project_id);
   if (!project) return res.status(404).json({ error: 'Project not found.' });
   if (req.user.role !== 'admin') {
-    const job = db.prepare('SELECT customer_id FROM job_requests WHERE id = ?').get(project.job_request_id);
+    const job = await db.prepare('SELECT customer_id FROM job_requests WHERE id = ?').get(project.job_request_id);
     if (!job || job.customer_id !== req.user.id) {
       return res.status(403).json({ error: 'Not allowed.' });
     }
@@ -66,13 +66,13 @@ router.post('/deposit-intent', authRequired, ah(async (req, res) => {
   // Supersede any earlier pending intents for this deposit (keeps the ledger clean).
   try {
     const stripe = stripeSvc.getClient();
-    const pend = db.prepare(
+    const pend = await db.prepare(
       `SELECT id, provider_ref FROM payments
        WHERE project_id = ? AND kind = 'deposit' AND provider = 'stripe' AND status = 'pending'`
     ).all(project.id);
     for (const row of pend) {
       try { await stripe.paymentIntents.cancel(row.provider_ref); } catch (e) { /* already gone */ }
-      db.prepare(`UPDATE payments SET status = 'failed', notes = COALESCE(notes,'') || ' | superseded by a new intent' WHERE id = ?`).run(row.id);
+      await db.prepare(`UPDATE payments SET status = 'failed', notes = COALESCE(notes,'') || ' | superseded by a new intent' WHERE id = ?`).run(row.id);
     }
     const out = await stripeSvc.createDepositIntent({
       projectId: project.id,
@@ -91,11 +91,11 @@ router.get('/', authRequired, ah(async (req, res) => {
   let rows;
   if (req.user.role === 'admin') {
     rows = project_id
-      ? db.prepare('SELECT * FROM payments WHERE project_id = ? ORDER BY id').all(project_id)
-      : db.prepare('SELECT * FROM payments ORDER BY id DESC LIMIT 200').all();
+      ? await db.prepare('SELECT * FROM payments WHERE project_id = ? ORDER BY id').all(project_id)
+      : await db.prepare('SELECT * FROM payments ORDER BY id DESC LIMIT 200').all();
   } else {
     // Customers/contractors only see payments for their own projects.
-    rows = db.prepare(
+    rows = await db.prepare(
       `SELECT pay.* FROM payments pay
        JOIN projects p ON p.id = pay.project_id
        JOIN job_requests j ON j.id = p.job_request_id
@@ -111,16 +111,16 @@ router.get('/', authRequired, ah(async (req, res) => {
 router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
   const b = req.body || {};
   const errors = {};
-  if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(b.project_id)) errors.project_id = 'Project not found.';
+  if (!await db.prepare('SELECT id FROM projects WHERE id = ?').get(b.project_id)) errors.project_id = 'Project not found.';
   if (!['deposit', 'milestone', 'final', 'refund'].includes(b.kind)) errors.kind = 'Invalid kind.';
   if (!isInt(b.amount_cents, 1, 100000000)) errors.amount_cents = 'Amount (cents) required.';
   if (b.notes && !isNonEmpty(b.notes, 1000)) errors.notes = 'Notes too long.';
   if (failIfErrors(res, errors)) return;
-  const info = db.prepare(
+  const info = await db.prepare(
     `INSERT INTO payments (project_id, kind, amount_cents, status, provider, notes)
      VALUES (?,?,?,'recorded','manual',?)`
   ).run(b.project_id, b.kind, b.amount_cents, (b.notes || '').trim());
-  res.status(201).json(db.prepare('SELECT * FROM payments WHERE id = ?').get(info.lastInsertRowid));
+  res.status(201).json(await db.prepare('SELECT * FROM payments WHERE id = ?').get(info.lastInsertRowid));
 }));
 
 module.exports = router;

@@ -7,25 +7,25 @@ const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 
-function enriched(c) {
-  const u = db.prepare('SELECT name, email, phone FROM users WHERE id = ?').get(c.user_id);
+async function enriched(c) {
+  const u = await db.prepare('SELECT name, email, phone FROM users WHERE id = ?').get(c.user_id);
   return {
     ...c, user_name: u.name, email: u.email, phone: u.phone,
-    lifecycle: contractorLifecycle(c), score: contractorScore(c), retention_at_risk: retentionAtRisk(c),
+    lifecycle: contractorLifecycle(c), score: contractorScore(c), retention_at_risk: await retentionAtRisk(c),
   };
 }
 
 // Admin: everyone with lifecycle + score.
 router.get('/', authRequired, requireRole('admin'), ah(async (req, res) => {
-  const rows = db.prepare('SELECT * FROM contractors ORDER BY id DESC').all();
+  const rows = await db.prepare('SELECT * FROM contractors ORDER BY id DESC').all();
   res.json(rows.map(enriched));
 }));
 
 // Contractor: own profile.
 router.get('/me', authRequired, requireRole('contractor'), ah(async (req, res) => {
-  const c = db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id);
+  const c = await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id);
   if (!c) return res.status(404).json({ error: 'Contractor profile not found.' });
-  res.json(enriched(c));
+  res.json(await enriched(c));
 }));
 
 // Contractor: update own editable profile fields.
@@ -44,13 +44,13 @@ router.patch('/me', authRequired, requireRole('contractor'), ah(async (req, res)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update.' });
   vals.push(req.user.id);
-  db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE user_id = ?`).run(...vals);
-  res.json(enriched(db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id)));
+  await db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE user_id = ?`).run(...vals);
+  res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id)));
 }));
 
 // Admin: verification workflow — license, insurance, background check, activation.
 router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, res) => {
-  const c = db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
+  const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Contractor not found.' });
   const b = req.body || {};
   const errors = {};
@@ -78,15 +78,15 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
   }
   if (failIfErrors(res, errors)) return;
   const sets = Object.keys(patch).map(k => `${k} = ?`);
-  if (sets.length) db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE id = ?`).run(...Object.values(patch), c.id);
+  if (sets.length) await db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE id = ?`).run(...Object.values(patch), c.id);
   auditLog(req.user.id, 'contractor.verified', 'contractors', c.id, JSON.stringify(patch));
-  res.json(enriched(db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id)));
+  res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id)));
 }));
 
 router.get('/:id', authRequired, requireRole('admin'), ah(async (req, res) => {
-  const c = db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
+  const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Contractor not found.' });
-  res.json(enriched(c));
+  res.json(await enriched(c));
 }));
 
 module.exports = router;

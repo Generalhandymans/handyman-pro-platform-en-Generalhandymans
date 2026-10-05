@@ -5,9 +5,11 @@
 const db = require('../db');
 const mailer = require('./mailer');
 
-const logStmt = () => db.prepare(
-  'INSERT INTO email_log (outbox_id, to_email, subject, status, provider) VALUES (NULL,?,?,?,?)'
-);
+async function logEmail(to, subject, status, provider) {
+  await db.prepare(
+    'INSERT INTO email_log (outbox_id, to_email, subject, status, provider) VALUES (NULL,?,?,?,?)'
+  ).run(to, subject, status, provider);
+}
 
 async function notify({ to, subject, html }) {
   if (!to) return { ok: false, skipped: 'no recipient' };
@@ -18,7 +20,7 @@ async function notify({ to, subject, html }) {
     result = { ok: false, provider: mailer.activeProvider(), error: String(e.message).slice(0, 200) };
   }
   try {
-    logStmt().run(to, subject, result.ok ? 'sent' : 'failed', result.provider || mailer.activeProvider());
+    await logEmail(to, subject, result.ok ? 'sent' : 'failed', result.provider || mailer.activeProvider());
   } catch (e) { /* logging must never break the request */ }
   return result;
 }
@@ -42,17 +44,17 @@ function shell(title, intro, rows) {
 }
 
 // Look up the people involved in a project for notifications.
-function projectParties(projectId) {
-  const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
+async function projectParties(projectId) {
+  const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
   if (!p) return {};
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
   const customer = job && (job.customer_id
-    ? db.prepare('SELECT name, email FROM users WHERE id = ?').get(job.customer_id)
+    ? await db.prepare('SELECT name, email FROM users WHERE id = ?').get(job.customer_id)
     : (job.email ? { name: job.name, email: job.email } : null));
   const contractor = p.contractor_id
-    ? db.prepare('SELECT u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id)
+    ? await db.prepare('SELECT u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id)
     : null;
-  const admins = db.prepare("SELECT name, email FROM users WHERE role = 'admin'").all();
+  const admins = await db.prepare("SELECT name, email FROM users WHERE role = 'admin'").all();
   return { project: p, job, customer, contractor, admins };
 }
 

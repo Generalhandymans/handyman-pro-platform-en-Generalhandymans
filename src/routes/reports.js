@@ -10,7 +10,7 @@ router.use(authRequired, requireRole('admin'));
 
 // ---- Consolidated overview KPIs ----
 router.get('/overview', ah(async (req, res) => {
-  const g = (sql, ...a) => db.prepare(sql).get(...a);
+  const g = async (sql, ...a) => await db.prepare(sql).get(...a);
   const jobs = g(`SELECT COUNT(*) c FROM job_requests`).c;
   const quotesSent = g(`SELECT COUNT(*) c FROM quotes WHERE status IN ('sent','accepted')`).c;
   const quotesAccepted = g(`SELECT COUNT(*) c FROM quotes WHERE status = 'accepted'`).c;
@@ -36,15 +36,15 @@ router.get('/overview', ah(async (req, res) => {
 
 // ---- Client funnel: lead -> quote -> project -> review -> referral ----
 router.get('/funnel', ah(async (req, res) => {
-  const stages = db.prepare(
+  const stages = await db.prepare(
     `SELECT status, COUNT(*) AS count FROM job_requests GROUP BY status`
   ).all();
   const order = ['new', 'ai_analyzed', 'quote_sent', 'deposit_paid', 'assigned', 'scheduled', 'in_progress', 'review', 'completed', 'lost', 'cancelled'];
   const byStatus = Object.fromEntries(stages.map(s => [s.status, s.count]));
   const funnel = order.filter(s => byStatus[s]).map(s => ({ stage: s, count: byStatus[s] }));
   const first = funnel.length ? funnel[0].count : 0;
-  const reviews = db.prepare(`SELECT COUNT(*) c FROM reviews`).get().c;
-  const referrals = db.prepare(`SELECT COUNT(*) c FROM referrals`).get().c;
+  const reviews = await db.prepare(`SELECT COUNT(*) c FROM reviews`).get().c;
+  const referrals = await db.prepare(`SELECT COUNT(*) c FROM referrals`).get().c;
   res.json({
     client_funnel: funnel.map(f => ({ ...f, pct_of_top: first ? Math.round(f.count / first * 100) : 0 })),
     post_project: { reviews, referrals_issued: referrals },
@@ -53,7 +53,7 @@ router.get('/funnel', ah(async (req, res) => {
 
 // ---- Contractor funnel: applicant -> verification -> active -> performance ----
 router.get('/contractor-funnel', ah(async (req, res) => {
-  const rows = db.prepare('SELECT * FROM contractors').all();
+  const rows = await db.prepare('SELECT * FROM contractors').all();
   const by = {};
   for (const c of rows) {
     const lc = crm.contractorLifecycle(c);
@@ -64,7 +64,7 @@ router.get('/contractor-funnel', ah(async (req, res) => {
 
 // ---- Projected (quote) vs actual (project) margins ----
 router.get('/margins', ah(async (req, res) => {
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT p.id, p.stage, j.service_type,
             q.customer_price_cents AS q_price, q.contractor_cost_cents AS q_cost,
             p.customer_price_cents AS p_price, p.contractor_cost_cents AS p_cost
@@ -83,12 +83,12 @@ router.get('/margins', ah(async (req, res) => {
 
 // ---- Average ticket by service type and by month ----
 router.get('/ticket', ah(async (req, res) => {
-  const byTrade = db.prepare(
+  const byTrade = await db.prepare(
     `SELECT j.service_type, COUNT(*) AS jobs, ROUND(AVG(p.customer_price_cents)) AS avg_cents
      FROM projects p JOIN job_requests j ON j.id = p.job_request_id
      GROUP BY j.service_type ORDER BY jobs DESC`
   ).all();
-  const byMonth = db.prepare(
+  const byMonth = await db.prepare(
     `SELECT substr(p.created_at,1,7) AS month, COUNT(*) AS jobs, ROUND(AVG(p.customer_price_cents)) AS avg_cents
      FROM projects p GROUP BY month ORDER BY month`
   ).all();
@@ -97,7 +97,7 @@ router.get('/ticket', ah(async (req, res) => {
 
 // ---- Contractor performance ----
 router.get('/contractors', ah(async (req, res) => {
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT c.id, c.legal_name, c.city, c.status, c.rating_avg, c.jobs_completed,
             u.name AS contact_name,
             (SELECT COUNT(*) FROM projects p WHERE p.contractor_id = c.id AND p.stage = 'completed') AS done,
@@ -105,12 +105,17 @@ router.get('/contractors', ah(async (req, res) => {
             (SELECT COALESCE(SUM(customer_price_cents),0) FROM projects p WHERE p.contractor_id = c.id AND p.stage = 'completed') AS revenue_cents
      FROM contractors c JOIN users u ON u.id = c.user_id ORDER BY revenue_cents DESC`
   ).all();
-  res.json(rows.map(r => ({ ...r, lifecycle: crm.contractorLifecycle(db.prepare('SELECT * FROM contractors WHERE id = ?').get(r.id)) })));
+  const enriched = [];
+  for (const r of rows) {
+    const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(r.id);
+    enriched.push({ ...r, lifecycle: crm.contractorLifecycle(c) });
+  }
+  res.json(enriched);
 }));
 
 // ---- Estimate-vs-actual calibration ----
 router.get('/calibration', ah(async (req, res) => {
-  const rows = db.prepare(
+  const rows = await db.prepare(
     `SELECT e.low_cents, e.high_cents, p.customer_price_cents AS actual_cents, j.service_type
      FROM estimates e
      JOIN job_requests j ON j.id = e.job_request_id

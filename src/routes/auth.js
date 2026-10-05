@@ -16,9 +16,9 @@ function publicUser(u) {
   return { id: u.id, name: u.name, email: u.email, phone: u.phone, role: u.role, email_verified: !!u.email_verified };
 }
 
-function sendVerificationEmail(user, token) {
+async function sendVerificationEmail(user, token) {
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/api/auth/verify?token=${token}`;
-  return notify({
+  return await notify({
     to: user.email,
     subject: 'Verify your General Handyman Solutions email',
     html: shell('Verify your email', `Hi ${user.name.split(' ')[0]}, please confirm this is your email address:`, [
@@ -38,16 +38,16 @@ router.post('/signup/customer', ah(async (req, res) => {
   if (typeof password !== 'string' || password.length < 8) errors.password = 'Password must be at least 8 characters.';
   if (failIfErrors(res, errors)) return;
 
-  const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email.trim().toLowerCase());
+  const exists = await db.prepare('SELECT id FROM users WHERE email = ?').get(email.trim().toLowerCase());
   if (exists) return res.status(409).json({ error: 'An account with this email already exists.' });
 
   const token = newToken();
   const verifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
-  const info = db.prepare(
+  const info = await db.prepare(
     'INSERT INTO users (name, email, phone, password_hash, role, verify_token, verify_expires) VALUES (?,?,?,?,?,?,?)'
   ).run(name.trim(), email.trim().toLowerCase(), (phone || '').trim(), hashPassword(password), 'customer', token, verifyExpires);
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
-  sendVerificationEmail(user, token);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  await sendVerificationEmail(user, token);
   res.status(201).json({ token: signToken(user), user: publicUser(user), verify_sent: true });
 }));
 
@@ -63,14 +63,14 @@ router.post('/signup/contractor', ah(async (req, res) => {
   if (!isNonEmpty(b.city, 120)) errors.city = 'City is required.';
   if (failIfErrors(res, errors)) return;
 
-  const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(b.email.trim().toLowerCase());
+  const exists = await db.prepare('SELECT id FROM users WHERE email = ?').get(b.email.trim().toLowerCase());
   if (exists) return res.status(409).json({ error: 'An account with this email already exists.' });
 
-  const tx = db.transaction(() => {
-    const u = db.prepare(
+  const userId = await db.transaction(async (t) => {
+    const u = await t.prepare(
       'INSERT INTO users (name, email, phone, password_hash, role) VALUES (?,?,?,?,?)'
     ).run(b.name.trim(), b.email.trim().toLowerCase(), (b.phone || '').trim(), hashPassword(b.password), 'contractor');
-    db.prepare(
+    await t.prepare(
       `INSERT INTO contractors (user_id, legal_name, city, service_base, service_radius_miles,
         years_experience, specialties, license_number, insurance_info)
        VALUES (?,?,?,?,?,?,?,?,?)`
@@ -81,12 +81,11 @@ router.post('/signup/contractor', ah(async (req, res) => {
     );
     return u.lastInsertRowid;
   });
-  const userId = tx();
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   const vtoken = newToken();
   const vexp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
-  db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(vtoken, vexp, userId);
-  sendVerificationEmail(user, vtoken);
+  await db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(vtoken, vexp, userId);
+  await sendVerificationEmail(user, vtoken);
   res.status(201).json({
     token: signToken(user),
     user: publicUser(user),
@@ -101,7 +100,7 @@ router.post('/login', ah(async (req, res) => {
   if (!isEmail(email) || typeof password !== 'string') {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
+  const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
@@ -111,7 +110,7 @@ router.post('/login', ah(async (req, res) => {
 router.get('/me', authRequired, ah(async (req, res) => {
   const out = { ...publicUser(req.user) };
   if (req.user.role === 'contractor') {
-    out.contractor = db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id) || null;
+    out.contractor = await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id) || null;
   }
   res.json(out);
 }));
@@ -120,23 +119,23 @@ router.get('/me', authRequired, ah(async (req, res) => {
 router.get('/verify', ah(async (req, res) => {
   const token = String(req.query.token || '');
   if (!token) return res.status(400).json({ error: 'Verification token is required.' });
-  const user = db.prepare('SELECT * FROM users WHERE verify_token = ?').get(token);
+  const user = await db.prepare('SELECT * FROM users WHERE verify_token = ?').get(token);
   if (!user) return res.status(400).json({ error: 'Invalid or expired verification token.' });
   if (user.verify_expires && new Date(user.verify_expires).getTime() < Date.now()) {
     return res.status(400).json({ error: 'Verification link expired. Request a new one.' });
   }
-  db.prepare('UPDATE users SET email_verified = 1, verify_token = NULL, verify_expires = NULL WHERE id = ?').run(user.id);
+  await db.prepare('UPDATE users SET email_verified = 1, verify_token = NULL, verify_expires = NULL WHERE id = ?').run(user.id);
   res.json({ verified: true, email: user.email });
 }));
 
 // Resend the verification email (logged-in user).
 router.post('/verify/resend', authRequired, ah(async (req, res) => {
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (user.email_verified) return res.json({ verified: true, already: true });
   const token = newToken();
   const vexp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
-  db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(token, vexp, user.id);
-  sendVerificationEmail(user, token);
+  await db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(token, vexp, user.id);
+  await sendVerificationEmail(user, token);
   res.json({ verify_sent: true });
 }));
 
@@ -146,13 +145,13 @@ router.post('/forgot', ah(async (req, res) => {
   // Always respond the same way: never reveal whether the email exists.
   const done = () => res.json({ sent: true, note: 'If that email is registered, a reset link is on its way.' });
   if (!isEmail(email)) return done();
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
+  const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
   if (!user) return done();
   const token = newToken();
   const expires = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
-  db.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id);
+  await db.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id);
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/auth.html?reset=${token}`;
-  notify({
+  await notify({
     to: user.email,
     subject: 'Reset your General Handyman Solutions password',
     html: shell('Reset your password', `Hi ${user.name.split(' ')[0]}, use the link below within 1 hour:`, [
@@ -169,11 +168,11 @@ router.post('/reset', ah(async (req, res) => {
   if (typeof token !== 'string' || !token) errors.token = 'Reset token is required.';
   if (typeof password !== 'string' || password.length < 8) errors.password = 'Password must be at least 8 characters.';
   if (failIfErrors(res, errors)) return;
-  const user = db.prepare('SELECT * FROM users WHERE reset_token = ?').get(token);
+  const user = await db.prepare('SELECT * FROM users WHERE reset_token = ?').get(token);
   if (!user || !user.reset_expires || new Date(user.reset_expires).getTime() < Date.now()) {
     return res.status(400).json({ error: 'Invalid or expired reset token.' });
   }
-  db.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?')
+  await db.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?')
     .run(hashPassword(password), user.id);
   res.json({ reset: true });
 }));
