@@ -34,17 +34,17 @@ function publicJob(j) {
 
 // Who may see/modify a job: owner customer, assigned contractor (via project), or admin.
 // Guests use the claim token returned at creation (?claim=...).
-function canAccess(req, job) {
+async function canAccess(req, job) {
   if (!req.user && req.query.claim && job.claim_token && req.query.claim === job.claim_token) return true;
   if (!req.user) return false;
   if (req.user.role === 'admin') return true;
   if (job.customer_id && job.customer_id === req.user.id) return true;
   return false;
 }
-function loadJob(req, res) {
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(req.params.id);
+async function loadJob(req, res) {
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(req.params.id);
   if (!job) { res.status(404).json({ error: 'Job request not found.' }); return null; }
-  if (!canAccess(req, job)) { res.status(403).json({ error: 'Not allowed to view this request.' }); return null; }
+  if (!await canAccess(req, job)) { res.status(403).json({ error: 'Not allowed to view this request.' }); return null; }
   return job;
 }
 
@@ -63,7 +63,7 @@ router.post('/', ah(async (req, res) => {
   if (failIfErrors(res, errors)) return;
 
   const claimToken = crypto.randomBytes(16).toString('hex');
-  const info = db.prepare(
+  const info = await db.prepare(
     `INSERT INTO job_requests (customer_id, name, phone, email, address, city, state, zip,
       service_type, urgency, description, scope_json, claim_token)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -75,14 +75,14 @@ router.post('/', ah(async (req, res) => {
     JSON.stringify(b.scope && typeof b.scope === 'object' ? b.scope : {}),
     claimToken
   );
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(info.lastInsertRowid);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(info.lastInsertRowid);
   refreshLeadScore(job.id);
-  res.status(201).json({ ...publicJob(db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id)), claim_token: claimToken });
+  res.status(201).json({ ...publicJob(await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id)), claim_token: claimToken });
 }));
 
 // ---- Upload photos for a request (runs the vision hook, optimizes images) ----
 router.post('/:id/photos', upload.array('photos', 6), ah(async (req, res) => {
-  const job = loadJob(req, res);
+  const job = await loadJob(req, res);
   if (!job) return;
   if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No photos received.' });
 
@@ -90,15 +90,29 @@ router.post('/:id/photos', upload.array('photos', 6), ah(async (req, res) => {
     path: f.path, mime: f.mimetype, filename: f.filename, originalName: f.originalname,
   })));
 
+  const storage = require('../services/storage');
+  const useS3 = storage.isConfigured();
   const saved = [];
   for (const f of req.files) {
     const opt = await photoSvc.optimize(f.path, f.mimetype);
-    const info = db.prepare(
-      `INSERT INTO photos (job_request_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
-    ).run(job.id, f.filename, f.originalname, f.mimetype, opt.size, opt.width, opt.height, 'request',
-      JSON.stringify(analyzed), req.user ? req.user.id : null);
-    saved.push(db.prepare('SELECT * FROM photos WHERE id = ?').get(info.lastInsertRowid));
+    let storageKey = null;
+    let storageProvider = 'local';
+    let filename = f.filename;
+    if (useS3) {
+      // Upload the optimized file to object storage; keep the local temp copy only briefly.
+      const ext = (f.originalname.split('.').pop() || 'jpg');
+      storageKey = storage.objectKey({ kind: 'request', extension: ext });
+      await storage.putObject({ key: storageKey, filePath: opt.path || f.path, contentType: f.mimetype });
+      storageProvider = 's3';
+      filename = storageKey; // photos.filename doubles as the lookup key
+      try { require('fs').unlinkSync(f.path); } catch (e) { /* best effort */ }
+    }
+    const info = await db.prepare(
+      `INSERT INTO photos (job_request_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by, storage_key, storage_provider)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).run(job.id, filename, f.originalname, f.mimetype, opt.size, opt.width, opt.height, 'request',
+      JSON.stringify(analyzed), req.user ? req.user.id : null, storageKey, storageProvider);
+    saved.push(await db.prepare('SELECT * FROM photos WHERE id = ?').get(info.lastInsertRowid));
   }
   touchInteraction(job.id, 'photos_uploaded', `${saved.length} photo(s)${photoSvc.available() ? ' (optimized)' : ''}`);
   res.status(201).json({ photos: saved, vision: { mode: analyzed.mode, observations: analyzed.observations }, optimized: photoSvc.available() });
@@ -106,14 +120,14 @@ router.post('/:id/photos', upload.array('photos', 6), ah(async (req, res) => {
 
 // ---- Run the REAL estimation engine on a request ----
 router.post('/:id/estimate', ah(async (req, res) => {
-  const job = loadJob(req, res);
+  const job = await loadJob(req, res);
   if (!job) return;
   const scope = { ...(JSON.parse(job.scope_json || '{}')), ...((req.body && req.body.scope) || {}) };
   if (req.body && req.body.scope) {
-    db.prepare('UPDATE job_requests SET scope_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+    await db.prepare('UPDATE job_requests SET scope_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
       .run(JSON.stringify(scope), job.id);
   }
-  const photoCount = db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id).c;
+  const photoCount = await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id).c;
 
   let result;
   try {
@@ -126,7 +140,7 @@ router.post('/:id/estimate', ah(async (req, res) => {
   }
 
   // Merge vision-derived risks from the request photos (stored at upload time).
-  const photoRows = db.prepare('SELECT vision_json FROM photos WHERE job_request_id = ?').all(job.id);
+  const photoRows = await db.prepare('SELECT vision_json FROM photos WHERE job_request_id = ?').all(job.id);
   const seen = new Set(result.risks.map(r => r.flag));
   for (const p of photoRows) {
     try {
@@ -138,22 +152,22 @@ router.post('/:id/estimate', ah(async (req, res) => {
     } catch (e) { /* ignore malformed */ }
   }
 
-  const info = db.prepare(
+  const info = await db.prepare(
     `INSERT INTO estimates (job_request_id, low_cents, high_cents, line_items_json, missing_json,
       risks_json, confidence, factors_json, engine_version)
      VALUES (?,?,?,?,?,?,?,?,?)`
   ).run(job.id, result.low_cents, result.high_cents,
     JSON.stringify(result.line_items), JSON.stringify(result.missing),
     JSON.stringify(result.risks), result.confidence, JSON.stringify(result.factors), result.engine_version);
-  db.prepare(`UPDATE job_requests SET status = 'ai_analyzed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+  await db.prepare(`UPDATE job_requests SET status = 'ai_analyzed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
   touchInteraction(job.id, 'estimate_requested', `engine v${result.engine_version}`);
   res.status(201).json({ id: info.lastInsertRowid, job_request_id: job.id, ...result });
 }));
 
 router.get('/:id/estimate/latest', ah(async (req, res) => {
-  const job = loadJob(req, res);
+  const job = await loadJob(req, res);
   if (!job) return;
-  const e = db.prepare('SELECT * FROM estimates WHERE job_request_id = ? ORDER BY id DESC LIMIT 1').get(job.id);
+  const e = await db.prepare('SELECT * FROM estimates WHERE job_request_id = ? ORDER BY id DESC LIMIT 1').get(job.id);
   if (!e) return res.status(404).json({ error: 'No estimate yet for this request.' });
   res.json({
     ...e,
@@ -164,16 +178,16 @@ router.get('/:id/estimate/latest', ah(async (req, res) => {
 
 // ---- Read one request (with photos + latest estimate summary) ----
 router.get('/:id', ah(async (req, res) => {
-  const job = loadJob(req, res);
+  const job = await loadJob(req, res);
   if (!job) return;
-  const photos = db.prepare('SELECT id, filename, original_name, mime, size_bytes, kind, created_at FROM photos WHERE job_request_id = ?').all(job.id);
-  const est = db.prepare('SELECT id, low_cents, high_cents, confidence, created_at FROM estimates WHERE job_request_id = ? ORDER BY id DESC LIMIT 1').get(job.id);
+  const photos = await db.prepare('SELECT id, filename, original_name, mime, size_bytes, kind, created_at FROM photos WHERE job_request_id = ?').all(job.id);
+  const est = await db.prepare('SELECT id, low_cents, high_cents, confidence, created_at FROM estimates WHERE job_request_id = ? ORDER BY id DESC LIMIT 1').get(job.id);
   res.json({ ...publicJob(job), photos, latest_estimate: est || null });
 }));
 
 // ---- Customer: my requests ----
 router.get('/mine/list', authRequired, requireRole('customer'), ah(async (req, res) => {
-  const rows = db.prepare('SELECT * FROM job_requests WHERE customer_id = ? ORDER BY id DESC').all(req.user.id);
+  const rows = await db.prepare('SELECT * FROM job_requests WHERE customer_id = ? ORDER BY id DESC').all(req.user.id);
   res.json(rows.map(publicJob));
 }));
 
@@ -181,19 +195,19 @@ router.get('/mine/list', authRequired, requireRole('customer'), ah(async (req, r
 router.get('/', authRequired, requireRole('admin'), ah(async (req, res) => {
   const { status } = req.query;
   const rows = status
-    ? db.prepare('SELECT * FROM job_requests WHERE status = ? ORDER BY id DESC').all(status)
-    : db.prepare('SELECT * FROM job_requests ORDER BY id DESC LIMIT 200').all();
+    ? await db.prepare('SELECT * FROM job_requests WHERE status = ? ORDER BY id DESC').all(status)
+    : await db.prepare('SELECT * FROM job_requests ORDER BY id DESC LIMIT 200').all();
   res.json(rows);
 }));
 
 router.patch('/:id', authRequired, requireRole('admin'), ah(async (req, res) => {
-  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(req.params.id);
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Job request not found.' });
   const allowed = ['new', 'ai_analyzed', 'quote_sent', 'deposit_paid', 'assigned', 'scheduled', 'in_progress', 'review', 'completed', 'lost', 'cancelled'];
   const { status } = req.body || {};
   if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status.' });
-  db.prepare('UPDATE job_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, job.id);
-  res.json(db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id));
+  await db.prepare('UPDATE job_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, job.id);
+  res.json(await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id));
 }));
 
 module.exports = router;

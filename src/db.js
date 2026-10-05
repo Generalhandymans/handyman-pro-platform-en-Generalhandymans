@@ -1,5 +1,17 @@
-// Database layer: single SQLite file via better-sqlite3.
+// Database layer: SQLite (better-sqlite3) by default, PostgreSQL when
+// DATABASE_URL is set. Both expose the same async-compatible API:
+//   await db.prepare(sql).get(...params) -> row | undefined
+//   await db.prepare(sql).all(...params) -> rows[]
+//   await db.prepare(sql).run(...params) -> { lastInsertRowid, changes }
+//   await db.exec(sql)
+//   await db.transaction(async (t) => { ... })
+//
 // Money is stored in integer CENTS everywhere to avoid float errors.
+if (process.env.DATABASE_URL) {
+  module.exports = require('./db/pg');
+  return;
+}
+
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
@@ -315,6 +327,12 @@ if (!columnExists('users', 'reset_expires')) {
 if (!columnExists('projects', 'contractor_status')) {
   db.exec(`ALTER TABLE projects ADD COLUMN contractor_status TEXT CHECK (contractor_status IN ('offered','accepted','declined'))`);
 }
+if (!columnExists('photos', 'storage_key')) {
+  db.exec(`ALTER TABLE photos ADD COLUMN storage_key TEXT`);
+}
+if (!columnExists('photos', 'storage_provider')) {
+  db.exec(`ALTER TABLE photos ADD COLUMN storage_provider TEXT NOT NULL DEFAULT 'local'`);
+}
 
 // ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----
 // Also adds 'paid' to the status CHECK for Stripe-confirmed payments.
@@ -348,3 +366,23 @@ try {
 }
 
 module.exports = db;
+
+// ---- Async-compatible API (mirrors src/db/pg.js) ----
+// New pattern: await db.transaction(async (t) => { await t.prepare(...).run(...); })
+// On SQLite this is best-effort (no multi-statement atomicity); on PostgreSQL
+// it is a real transaction.
+{
+  const asyncDb = {
+    _isPg: false,
+    prepare: (sql) => {
+      const stmt = db.prepare(sql);
+      return {
+        get: async (...p) => stmt.get(...p),
+        all: async (...p) => stmt.all(...p),
+        run: async (...p) => stmt.run(...p),
+      };
+    },
+    exec: async (sql) => db.exec(sql),
+  };
+  db.transaction = (fn) => fn(asyncDb);
+}

@@ -19,10 +19,18 @@ process.env.PORT = '3457';
 process.env.JWT_SECRET = 'test-secret-for-automated-tests-only';
 
 const db = require('../src/db');
-// Pre-insert admin so server.js does NOT auto-seed demo data.
-db.prepare(
-  "INSERT INTO users (name, email, phone, password_hash, role, email_verified) VALUES (?,?,?,?,?,1)"
-).run('Test Admin', 'admin@test.local', '555-000-0001', bcrypt.hashSync('Admin123!', 10), 'admin');
+
+// When testing against PostgreSQL, start from a clean slate.
+async function cleanPg() {
+  if (!db._isPg) return;
+  const tables = ['terms_acceptances','admin_audit','messages','message_threads','interactions',
+    'followup_tasks','referrals','reviews','email_log','email_outbox','campaigns','email_templates',
+    'payments','milestones','photos','projects','quotes','estimates','job_requests','contractors','users',
+    'media_objects','stripe_events','contractor_payables','dispatch_assignments','ai_recommendations'];
+  for (const t of tables) {
+    try { await db.exec(`TRUNCATE "${t}" RESTART IDENTITY CASCADE`); } catch (e) { /* may not exist */ }
+  }
+}
 
 require('../server'); // starts listening on :3457
 
@@ -37,7 +45,7 @@ async function api(method, p, body, token, form) {
   try { data = await res.json(); } catch (e) { /* empty */ }
   return { status: res.status, data, headers: res.headers };
 }
-const emailLogCount = () => db.prepare('SELECT COUNT(*) c FROM email_log').get().c;
+const emailLogCount = async () => (await db.prepare('SELECT COUNT(*) c FROM email_log').get()).c;
 
 let adminToken, custToken, contToken, adminId, custId, contUserId, contractorId, jobId, quoteId, projectId, csThread, scThread;
 
@@ -46,6 +54,15 @@ before(async () => {
   for (let i = 0; i < 50; i++) {
     try { const r = await fetch(BASE + '/api/health'); if (r.ok) break; } catch (e) { /* retry */ }
     await new Promise(r => setTimeout(r, 100));
+  }
+  await cleanPg();
+  // Pre-insert admin so server.js does NOT auto-seed demo data.
+  // (Upsert-safe: the suite may run against a reused database.)
+  const existing = await db.prepare('SELECT id FROM users WHERE email = ?').get('admin@test.local');
+  if (!existing) {
+    await db.prepare(
+      "INSERT INTO users (name, email, phone, password_hash, role, email_verified) VALUES (?,?,?,?,?,1)"
+    ).run('Test Admin', 'admin@test.local', '555-000-0001', bcrypt.hashSync('Admin123!', 10), 'admin');
   }
   const a = await api('POST', '/api/auth/login', { email: 'admin@test.local', password: 'Admin123!' });
   assert.equal(a.status, 200);
@@ -66,12 +83,12 @@ test('dual signup: customer + contractor, verification email queued', async () =
   contToken = k.data.token; contUserId = k.data.user.id;
 
   // verification email was "sent" (logged)
-  const row = db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%Verify%'").get();
+  const row = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%Verify%'").get();
   assert.ok(row, 'verification email logged');
 });
 
 test('email verification flow', async () => {
-  const u = db.prepare('SELECT verify_token FROM users WHERE email=?').get('cust@test.local');
+  const u = await db.prepare('SELECT verify_token FROM users WHERE email=?').get('cust@test.local');
   assert.ok(u.verify_token);
   const bad = await api('GET', '/api/auth/verify?token=nope');
   assert.equal(bad.status, 400);
@@ -85,7 +102,7 @@ test('email verification flow', async () => {
 test('password recovery flow (forgot/reset, expiring token)', async () => {
   const f = await api('POST', '/api/auth/forgot', { email: 'cust@test.local' });
   assert.equal(f.status, 200);
-  const u = db.prepare('SELECT reset_token, reset_expires FROM users WHERE email=?').get('cust@test.local');
+  const u = await db.prepare('SELECT reset_token, reset_expires FROM users WHERE email=?').get('cust@test.local');
   assert.ok(u.reset_token && u.reset_expires);
 
   // unknown email → same generic response (no user enumeration)
@@ -123,7 +140,7 @@ test('job intake + photo upload (optimized) + estimate', async () => {
   const up = await api('POST', `/api/jobs/${jobId}/photos`, undefined, custToken, form);
   assert.equal(up.status, 201);
   assert.equal(up.data.optimized, true);
-  const photo = db.prepare('SELECT width, height, size_bytes FROM photos WHERE job_request_id=?').get(jobId);
+  const photo = await db.prepare('SELECT width, height, size_bytes FROM photos WHERE job_request_id=?').get(jobId);
   assert.ok(photo.width <= 1600 && photo.height <= 1600, `resized to ${photo.width}x${photo.height}`);
   assert.ok(photo.size_bytes < buf.length, 'compressed smaller than original');
 
@@ -133,7 +150,7 @@ test('job intake + photo upload (optimized) + estimate', async () => {
 });
 
 test('quote create → send (customer notified) → accept requires terms (admin notified, project born)', async () => {
-  const before = emailLogCount();
+  const before = await emailLogCount();
   const q = await api('POST', '/api/quotes', {
     job_request_id: jobId, customer_price_cents: 120000, contractor_cost_cents: 80000, deposit_pct: 30,
   }, adminToken);
@@ -145,14 +162,14 @@ test('quote create → send (customer notified) → accept requires terms (admin
   assert.equal(s.data.status, 'sent');
 
   // customer got the "quote ready" email (logged)
-  const n1 = db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%quote%ready%' ORDER BY id DESC").get();
+  const n1 = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%quote%ready%' ORDER BY id DESC").get();
   assert.ok(n1, 'quote-ready notification logged');
 
   // Legal gate: accepting without terms_accepted is rejected.
   const noTerms = await api('POST', `/api/quotes/${quoteId}/respond`, { accept: true }, custToken);
   assert.equal(noTerms.status, 400);
   assert.match(noTerms.data.error, /Terms of Service/);
-  const stillSent = db.prepare('SELECT status FROM quotes WHERE id=?').get(quoteId);
+  const stillSent = await db.prepare('SELECT status FROM quotes WHERE id=?').get(quoteId);
   assert.equal(stillSent.status, 'sent');
 
   const r = await api('POST', `/api/quotes/${quoteId}/respond`, { accept: true, terms_accepted: true }, custToken);
@@ -162,7 +179,7 @@ test('quote create → send (customer notified) → accept requires terms (admin
   assert.ok(projectId);
 
   // Legal proof recorded: who accepted which terms version, when.
-  const acc = db.prepare(
+  const acc = await db.prepare(
     "SELECT * FROM terms_acceptances WHERE kind='client_quote' AND reference_id=? AND user_id=?"
   ).get(quoteId, custId);
   assert.ok(acc, 'client terms acceptance recorded');
@@ -170,14 +187,14 @@ test('quote create → send (customer notified) → accept requires terms (admin
   assert.ok(acc.accepted_at, 'acceptance timestamp recorded');
 
   // admins got the "quote accepted" email
-  const n2 = db.prepare("SELECT * FROM email_log WHERE to_email='admin@test.local' AND subject LIKE '%accepted%' ORDER BY id DESC").get();
+  const n2 = await db.prepare("SELECT * FROM email_log WHERE to_email='admin@test.local' AND subject LIKE '%accepted%' ORDER BY id DESC").get();
   assert.ok(n2, 'quote-accepted notification logged');
 
-  assert.ok(emailLogCount() > before, 'notifications were logged');
+  assert.ok(await emailLogCount() > before, 'notifications were logged');
 });
 
 test('contractor offer → accept requires terms; decline releases the project', async () => {
-  const c = db.prepare('SELECT id FROM contractors WHERE user_id=?').get(contUserId);
+  const c = await db.prepare('SELECT id FROM contractors WHERE user_id=?').get(contUserId);
   contractorId = c.id;
   const v = await api('PATCH', `/api/contractors/${contractorId}/verify`, {
     license_verified: true, insurance_verified: true, background_check: 'passed', status: 'active',
@@ -191,7 +208,7 @@ test('contractor offer → accept requires terms; decline releases the project',
   assert.equal(a.data.contractor_id, contractorId);
   assert.equal(a.data.contractor_status, 'offered');
 
-  const n1 = db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%offer%' ORDER BY id DESC").get();
+  const n1 = await db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%offer%' ORDER BY id DESC").get();
   assert.ok(n1, 'contractor offer notification logged');
 
   // Contractor cannot move stages before accepting.
@@ -209,7 +226,7 @@ test('contractor offer → accept requires terms; decline releases the project',
   assert.equal(ok.data.accepted, true);
   assert.equal(ok.data.project.contractor_status, 'accepted');
   assert.equal(ok.data.project.stage, 'scheduled');
-  const acc = db.prepare(
+  const acc = await db.prepare(
     "SELECT * FROM terms_acceptances WHERE kind='contractor_job' AND reference_id=? AND user_id=?"
   ).get(projectId, contUserId);
   assert.ok(acc, 'contractor terms acceptance recorded');
@@ -225,7 +242,7 @@ test('contractor offer → accept requires terms; decline releases the project',
   const d = await api('POST', `/api/projects/${p2}/contractor-respond`, { accept: false }, contToken);
   assert.equal(d.status, 200);
   assert.equal(d.data.accepted, false);
-  const released = db.prepare('SELECT contractor_id, contractor_status FROM projects WHERE id=?').get(p2);
+  const released = await db.prepare('SELECT contractor_id, contractor_status FROM projects WHERE id=?').get(p2);
   assert.equal(released.contractor_id, null);
   assert.equal(released.contractor_status, null);
 });
@@ -268,7 +285,7 @@ test('MEDIATED messaging: no direct client<->contractor contact possible', async
   // admin replies in the customer thread → customer gets an email
   const m3 = await api('POST', `/api/threads/${csThread}/messages`, { body: 'We start Monday at 9am.' }, adminToken);
   assert.equal(m3.status, 201);
-  const n = db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%New message%' ORDER BY id DESC").get();
+  const n = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%New message%' ORDER BY id DESC").get();
   assert.ok(n, 'message notification email logged');
 
   // empty message rejected
@@ -282,12 +299,12 @@ test('milestone complete → customer notified; approve → contractor notified'
 
   const c1 = await api('POST', `/api/projects/${projectId}/milestones/${mid}/complete`, {}, contToken);
   assert.equal(c1.status, 200);
-  const n1 = db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%Milestone done%' ORDER BY id DESC").get();
+  const n1 = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%Milestone done%' ORDER BY id DESC").get();
   assert.ok(n1, 'milestone-done notification logged');
 
   const a1 = await api('POST', `/api/projects/${projectId}/milestones/${mid}/approve`, { approved: true }, custToken);
   assert.equal(a1.status, 200);
-  const n2 = db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%Milestone approved%' ORDER BY id DESC").get();
+  const n2 = await db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%Milestone approved%' ORDER BY id DESC").get();
   assert.ok(n2, 'milestone-approved notification logged');
 });
 
@@ -338,7 +355,7 @@ test('stripe disabled: status off, deposit-intent refused, manual deposit record
   assert.equal(d.status, 503);
 
   // Without Stripe keys the accept flow keeps the manual bookkeeping path.
-  const pay = db.prepare("SELECT * FROM payments WHERE project_id=? AND kind='deposit'").get(projectId);
+  const pay = await db.prepare("SELECT * FROM payments WHERE project_id=? AND kind='deposit'").get(projectId);
   assert.ok(pay, 'manual deposit record exists');
   assert.equal(pay.provider, 'manual');
   assert.equal(pay.status, 'recorded');
@@ -354,8 +371,26 @@ test('rate limiting headers present on auth endpoints', async () => {
 test('project completion notifies customer', async () => {
   const s = await api('PATCH', `/api/projects/${projectId}/stage`, { stage: 'completed' }, adminToken);
   assert.equal(s.status, 200);
-  const n = db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%complete%' ORDER BY id DESC").get();
+  const n = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%complete%' ORDER BY id DESC").get();
   assert.ok(n, 'project-completed notification logged');
+});
+
+test('contractor recommendations: admin gets ranked matches, others refused', async () => {
+  // Make the test contractor fully verified + active so matching can rank them.
+  await db.prepare(`UPDATE contractors SET status='active', license_verified=1, insurance_verified=1, background_check='passed', specialties='["painting"]', rating_avg=4.5 WHERE id=?`).run(contractorId);
+  const r = await api('GET', `/api/projects/${projectId}/recommendations`, undefined, adminToken);
+  assert.equal(r.status, 200);
+  assert.ok(Array.isArray(r.data.recommendations), 'recommendations is an array');
+  assert.equal(r.data.meta.eligible, 1);
+  const top = r.data.recommendations[0];
+  assert.equal(top.contractor_id, contractorId);
+  assert.ok(top.score > 0 && top.score <= 100, 'score in range: ' + top.score);
+  assert.ok(top.parts && typeof top.parts.specialty === 'number', 'score parts present');
+
+  const c = await api('GET', `/api/projects/${projectId}/recommendations`, undefined, contToken);
+  assert.equal(c.status, 403);
+  const anon = await api('GET', `/api/projects/${projectId}/recommendations`);
+  assert.equal(anon.status, 401);
 });
 
 after(async () => {

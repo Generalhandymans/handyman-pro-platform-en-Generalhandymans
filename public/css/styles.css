@@ -561,3 +561,40 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 @media (min-width: 720px) {
   .msg-list { max-height: 460px; }
 }
+
+/* ---- Contractor recommendations (matching engine, Phase 1) ---- */
+.recs { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.rec-chip {
+  display: inline-flex; align-items: center; gap: .45rem;
+  border: 1.5px solid var(--line); background: #fff; border-radius: 999px;
+  padding: .3rem .35rem .3rem .7rem; cursor: pointer; font: inherit; font-size: .82rem;
+}
+.rec-chip:hover { border-color: var(--amber); box-shadow: 0 2px 8px rgba(43,111,227,.15); }
+.rec-chip b { font-weight: 650; }
+.rec-score {
+  background: var(--amber-soft); color: var(--amber-dark);
+  font-weight: 700; border-radius: 999px; padding: .1rem .5rem; font-size: .78rem;
+}
+.rec-why { color: var(--muted); font-size: .75rem; }
+
+/* ---- V2 design refinements (Phase 1) ---- */
+.eyebrow {
+  display: inline-block; font-size: .72rem; font-weight: 800;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--amber-dark);
+  margin-bottom: .5rem;
+}
+.page-title, h1 { letter-spacing: -.02em; }
+.btn { transition: transform .15s ease, box-shadow .15s ease, background .15s ease; }
+.btn:hover { transform: translateY(-1px); }
+.btn-primary { box-shadow: 0 8px 20px rgba(43,111,227,.22); }
+.badge {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-size: .72rem; font-weight: 700; padding: .2rem .6rem; border-radius: 999px;
+}
+.badge.ok { background: var(--ok-bg); color: var(--ok); }
+.badge.warn { background: var(--warn-bg); color: var(--warn); }
+.badge.info { background: var(--amber-soft); color: var(--amber-dark); }
+.badge.err { background: var(--err-bg); color: var(--err); }
+.card { box-shadow: 0 4px 16px rgba(16,36,63,.06); }
+.hero h1 { letter-spacing: -.03em; }
+.section { padding: 3.5rem 0; }

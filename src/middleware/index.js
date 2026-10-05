@@ -13,13 +13,17 @@ function ah(fn) {
 }
 
 // Reads "Authorization: Bearer <token>", attaches req.user = {id, role, name}.
+// Async-safe wrapper: Express 4 does not catch rejected promises in middleware.
 function authRequired(req, res, next) {
+  authRequiredAsync(req, res, next).catch(next);
+}
+async function authRequiredAsync(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!token) return res.status(401).json({ error: 'Authentication required' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id);
+    const user = await db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id);
     if (!user) return res.status(401).json({ error: 'User no longer exists' });
     req.user = user;
     next();
@@ -32,11 +36,14 @@ function authRequired(req, res, next) {
 // attaches req.user — but NEVER fails. Lets public routes serve both guests
 // (claim token) and logged-in users transparently.
 function optionalAuth(req, res, next) {
+  optionalAuthAsync(req, res, next).catch(() => next());
+}
+async function optionalAuthAsync(req, res, next) {
   const h = req.headers.authorization || '';
   if (h.startsWith('Bearer ')) {
     try {
       const payload = jwt.verify(h.slice(7), JWT_SECRET);
-      req.user = db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id) || undefined;
+      req.user = (await db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id)) || undefined;
     } catch (e) { /* stay a guest */ }
   }
   next();
