@@ -335,6 +335,27 @@ const TRADES = {
     ],
     risks: [],
   },
+  general: {
+    label: 'General Handyman',
+    base: { low_cents: 7500, high_cents: 12500, label: 'Service call and assessment' },
+    questions: [
+      { key: 'hours', label: 'Estimated hours of work', type: 'number', required: true, min: 1, max: 40 },
+      { key: 'tasks', label: 'How many small tasks?', type: 'number', required: false, min: 1, max: 30 },
+      { key: 'materials', label: 'Materials needed', type: 'select', options: ['none', 'minor', 'major'], required: true },
+      { key: 'special_equipment', label: 'Needs ladder or special equipment?', type: 'boolean', required: false },
+    ],
+    drivers: [
+      { key: 'hours', label: 'Labor', low_cents: 6500, high_cents: 9500, per: 'hour' },
+      { key: 'materials_minor', label: 'Minor materials', low_cents: 5000, high_cents: 10000, per: 'job', when: a => a.materials === 'minor' },
+      { key: 'materials_major', label: 'Major materials', low_cents: 15000, high_cents: 40000, per: 'job', when: a => a.materials === 'major' },
+    ],
+    options: [
+      { when: a => a.special_equipment === true, mult: 1.1, note: 'Special equipment (+10%)' },
+    ],
+    risks: [
+      { when: a => a.hours > 8, flag: 'multi_day', note: 'Jobs over 8 hours may span multiple days.', contingency: 0.05 },
+    ],
+  },
 };
 
 function round50(cents) {

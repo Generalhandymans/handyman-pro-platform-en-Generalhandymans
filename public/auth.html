@@ -167,6 +167,10 @@
             </div>
             <span class="field-error" data-error-for="specialties"></span>
           </div>
+          <div class="field">
+            <label for="sj-specialties-other">Other specialties <span class="hint">— anything not listed above</span></label>
+            <input type="text" id="sj-specialties-other" name="specialties_other" placeholder="e.g. pool equipment, smart home setup">
+          </div>
           <div class="form-grid two">
             <div class="field">
               <label for="sj-license">License number</label>
@@ -368,6 +372,8 @@
       HP.clearFieldErrors(form);
       const v = (id) => document.getElementById(id).value.trim();
       const picked = Array.from(document.querySelectorAll('#sj-specialties-grid input[name="specialty"]:checked')).map((c) => c.value);
+      const other = v('sj-specialties-other');
+      if (other) picked.push(other);
       const body = {
         name: v('sj-name'), legal_name: v('sj-legal'), email: v('sj-email'),
         phone: v('sj-phone'), password: document.getElementById('sj-password').value,

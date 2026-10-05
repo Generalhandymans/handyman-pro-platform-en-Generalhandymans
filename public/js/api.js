@@ -205,6 +205,7 @@ const HP = (() => {
     kitchen: '🍳', flooring: '🪵', drywall: '🧱', carpentry: '🪚',
     roofing: '🏠', hvac: '❄️', landscaping: '🌳', fencing: '🚧',
     concrete: '🏗️', appliance: '🔌', garage_door: '🚪', pressure_washing: '💦',
+    general: '🛠️',
   };
   function badge(text, kind = 'info') {
     return `<span class="badge badge-${kind}">${esc(text)}</span>`;
