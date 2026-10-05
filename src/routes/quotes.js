@@ -141,6 +141,8 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
   }
 
   const { CLIENT_TERMS_VERSION, recordAcceptance } = require('../services/terms');
+  const stripeSvc = require('../services/stripe');
+  const stripeOn = stripeSvc.isEnabled();
   const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || null;
 
   let projectId;
@@ -157,13 +159,19 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
       const names = MILESTONES[job.service_type] || GENERIC_MILESTONES;
       const ins = db.prepare('INSERT INTO milestones (project_id, title, sort_order) VALUES (?,?,?)');
       names.forEach((t, i) => ins.run(p.lastInsertRowid, t, i));
-      // Bookkeeping: the deposit the platform collects (Stripe NOT integrated).
-      db.prepare(
-        `INSERT INTO payments (project_id, kind, amount_cents, status, provider, notes)
-         VALUES (?,?,?,'recorded','manual',?)`
-      ).run(p.lastInsertRowid, 'deposit', q.deposit_cents,
-        `Deposit ${q.deposit_pct}% of ${fmt(q.customer_price_cents)} — recorded manually (no Stripe integration).`);
-      db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+      if (stripeOn) {
+        // The deposit is collected via Stripe PaymentIntent (frontend drives it
+        // right after this response). The webhook flips the job to
+        // deposit_paid when the charge succeeds. Nothing is recorded yet.
+      } else {
+        // Bookkeeping: the deposit the platform collects (Stripe NOT configured).
+        db.prepare(
+          `INSERT INTO payments (project_id, kind, amount_cents, status, provider, notes)
+           VALUES (?,?,?,'recorded','manual',?)`
+        ).run(p.lastInsertRowid, 'deposit', q.deposit_cents,
+          `Deposit ${q.deposit_pct}% of ${fmt(q.customer_price_cents)} — recorded manually (Stripe not configured).`);
+        db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+      }
       // Legal proof: who accepted which terms version, when.
       recordAcceptance({ userId: req.user.id, kind: 'client_quote', referenceId: q.id, version: CLIENT_TERMS_VERSION, ip });
       return p.lastInsertRowid;
@@ -185,10 +193,11 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
         ['Customer', `${job.name} (${job.phone})`],
         ['Quoted price', fmt(q.customer_price_cents)],
         ['Contractor budget', fmt(q.contractor_cost_cents)],
+        ['Deposit', stripeOn ? `${fmt(q.deposit_cents)} — collecting via Stripe` : `${fmt(q.deposit_cents)} — recorded manually`],
       ]),
     }).catch(() => {});
   }
-  res.json({ accepted: true, project_id: projectId });
+  res.json({ accepted: true, project_id: projectId, stripe: { enabled: stripeOn } });
 }));
 
 module.exports = router;

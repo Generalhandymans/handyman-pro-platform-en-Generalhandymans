@@ -327,6 +327,23 @@ test('admin audit trail records everything', async () => {
   assert.equal(f.status, 403);
 });
 
+test('stripe disabled: status off, deposit-intent refused, manual deposit recorded', async () => {
+  const s = await api('GET', '/api/payments/stripe-status');
+  assert.equal(s.status, 200);
+  assert.equal(s.data.implemented, true);
+  assert.equal(s.data.enabled, false);
+  assert.equal(s.data.publishable_key, null);
+
+  const d = await api('POST', '/api/payments/deposit-intent', { project_id: projectId }, custToken);
+  assert.equal(d.status, 503);
+
+  // Without Stripe keys the accept flow keeps the manual bookkeeping path.
+  const pay = db.prepare("SELECT * FROM payments WHERE project_id=? AND kind='deposit'").get(projectId);
+  assert.ok(pay, 'manual deposit record exists');
+  assert.equal(pay.provider, 'manual');
+  assert.equal(pay.status, 'recorded');
+});
+
 test('rate limiting headers present on auth endpoints', async () => {
   const r = await api('POST', '/api/auth/login', { email: 'admin@test.local', password: 'wrong' });
   assert.equal(r.status, 401);

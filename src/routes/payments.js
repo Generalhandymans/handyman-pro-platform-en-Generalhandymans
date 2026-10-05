@@ -34,6 +34,8 @@ router.post('/webhook', ah(async (req, res) => {
 }));
 
 // ---- Create a Stripe PaymentIntent for a project deposit (customer) ----
+// The amount is ALWAYS derived from the accepted quote — never trusted from
+// the client — so nobody can underpay by tampering with the request.
 router.post('/deposit-intent', authRequired, ah(async (req, res) => {
   if (!stripeSvc.isEnabled()) {
     return res.status(503).json({ error: 'Online payments are not enabled yet. Please contact support to arrange your deposit.' });
@@ -41,12 +43,14 @@ router.post('/deposit-intent', authRequired, ah(async (req, res) => {
   const b = req.body || {};
   const errors = {};
   if (!isInt(b.project_id, 1, 1e9)) errors.project_id = 'Project is required.';
-  if (!isInt(b.amount_cents, 100, 100000000)) errors.amount_cents = 'Amount (cents) required, minimum $1.';
   if (failIfErrors(res, errors)) return;
 
   // Customers may only pay for their OWN projects.
   const project = db.prepare(
-    `SELECT p.* FROM projects p JOIN job_requests j ON j.id = p.job_request_id WHERE p.id = ?`
+    `SELECT p.*, q.deposit_cents AS expected_deposit
+     FROM projects p JOIN job_requests j ON j.id = p.job_request_id
+     LEFT JOIN quotes q ON q.id = p.quote_id
+     WHERE p.id = ?`
   ).get(b.project_id);
   if (!project) return res.status(404).json({ error: 'Project not found.' });
   if (req.user.role !== 'admin') {
@@ -55,13 +59,27 @@ router.post('/deposit-intent', authRequired, ah(async (req, res) => {
       return res.status(403).json({ error: 'Not allowed.' });
     }
   }
+  const amountCents = project.expected_deposit;
+  if (!amountCents || amountCents < 100) {
+    return res.status(400).json({ error: 'This project has no deposit to collect.' });
+  }
+  // Supersede any earlier pending intents for this deposit (keeps the ledger clean).
   try {
+    const stripe = stripeSvc.getClient();
+    const pend = db.prepare(
+      `SELECT id, provider_ref FROM payments
+       WHERE project_id = ? AND kind = 'deposit' AND provider = 'stripe' AND status = 'pending'`
+    ).all(project.id);
+    for (const row of pend) {
+      try { await stripe.paymentIntents.cancel(row.provider_ref); } catch (e) { /* already gone */ }
+      db.prepare(`UPDATE payments SET status = 'failed', notes = COALESCE(notes,'') || ' | superseded by a new intent' WHERE id = ?`).run(row.id);
+    }
     const out = await stripeSvc.createDepositIntent({
-      projectId: b.project_id,
-      amountCents: b.amount_cents,
+      projectId: project.id,
+      amountCents,
       customerEmail: req.user.email,
     });
-    res.status(201).json(out);
+    res.status(201).json({ ...out, amount_cents: amountCents });
   } catch (e) {
     console.error('[stripe]', e.message);
     res.status(502).json({ error: 'Payment service unavailable. Please try again.' });

@@ -68,6 +68,15 @@ function handleWebhook(rawBody, signature) {
       `UPDATE payments SET status = 'paid', notes = COALESCE(notes,'') || ' | Stripe confirmed ' || datetime('now')
        WHERE provider_ref = ? AND provider = 'stripe'`
     ).run(pi.id);
+    // A confirmed deposit moves the job forward in the pipeline.
+    const pid = pi.metadata && pi.metadata.project_id;
+    if (pid) {
+      const proj = db.prepare('SELECT job_request_id FROM projects WHERE id = ?').get(pid);
+      if (proj) {
+        db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+          .run(proj.job_request_id);
+      }
+    }
     return 'payment_intent.succeeded';
   }
   if (event.type === 'payment_intent.payment_failed') {

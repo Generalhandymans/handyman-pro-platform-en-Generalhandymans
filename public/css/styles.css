@@ -305,6 +305,13 @@ a { color: var(--info); }
 }
 .offer-box p { margin: .4rem 0 .8rem; }
 
+/* ---------- Stripe Payment Element ---------- */
+#pay-stripe-element {
+  border: 1px solid var(--line); border-radius: .75rem; padding: 1rem;
+  background: #fff; margin-top: .75rem;
+}
+#pay-error { margin-top: .75rem; }
+
 /* ---------- wizard modal ---------- */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(10, 22, 38, .62);
@@ -463,6 +470,7 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 .banner-warn { background: var(--warn-bg); border: 1px solid #f0d9a8; color: #7a5410; }
 .banner-info { background: var(--info-bg); border: 1px solid #c4d9ef; color: #1d4e85; }
 .banner-ok { background: var(--ok-bg); border: 1px solid #bfe6cc; color: #14532d; }
+.banner-error { background: #fdecec; border: 1px solid #f3c1c1; color: #8f1d1d; }
 .checklist { list-style: none; padding: 0; margin: .75rem 0; display: grid; gap: .45rem; }
 .checklist li { display: flex; gap: .6rem; align-items: center; font-size: .93rem; }
 

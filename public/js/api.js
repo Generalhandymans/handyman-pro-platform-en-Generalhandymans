@@ -211,9 +211,10 @@ const HP = (() => {
     return `<span class="badge badge-${kind}">${esc(text)}</span>`;
   }
   function statusKind(s) {
-    if (['completed'].includes(s)) return 'ok';
+    if (['completed', 'paid', 'accepted'].includes(s)) return 'ok';
     if (['lost', 'cancelled'].includes(s)) return 'muted';
-    if (['new'].includes(s)) return 'warn';
+    if (['new', 'pending'].includes(s)) return 'warn';
+    if (['failed'].includes(s)) return 'error';
     return 'info';
   }
 

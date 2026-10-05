@@ -67,6 +67,28 @@
     </div>
   </div>
 
+  <!-- Stripe deposit payment modal (Payment Element: cards + Klarna/Affirm/Afterpay) -->
+  <div class="modal-backdrop" id="pay-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pay-modal-title">
+      <div class="modal-head">
+        <h2 id="pay-modal-title">Pay deposit</h2>
+        <button class="modal-close" id="pay-modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="pay-summary"></div>
+        <div id="pay-stripe-wrap">
+          <div id="pay-stripe-element"></div>
+          <div id="pay-error" class="banner banner-error" hidden></div>
+        </div>
+        <div id="pay-loading" class="small muted">Preparing secure payment…</div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-outline" id="pay-modal-cancel">Cancel</button>
+        <button class="btn btn-primary" id="pay-btn" disabled>Pay</button>
+      </div>
+    </div>
+  </div>
+
   <script src="js/api.js"></script>
   <script src="js/messages.js"></script>
   <script>
@@ -263,15 +285,137 @@
       HP.busy(btn, true, 'Accepting…');
       try {
         const r = await HP.api('POST', `/quotes/${acceptQuoteId}/respond`, { accept: true, terms_accepted: true });
+        const qid = acceptQuoteId;
         closeAcceptModal();
+        if (r.stripe && r.stripe.enabled) {
+          // Online payment: collect the deposit with Stripe Elements.
+          const q = await HP.api('GET', `/quotes/${qid}`);
+          openStripePay({ projectId: r.project_id, amountCents: q.deposit_cents, onSuccess });
+        } else {
+          onSuccess(r);
+        }
+      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      finally { HP.busy(btn, false); }
+
+      function onSuccess(r) {
         HP.toast('Quote accepted — your project is on its way.', 'ok');
         if (r.accepted && r.project_id) {
           document.querySelector('#portal-tabs .tab[data-tab="projects"]').click();
         }
         loadRequests(); loadProjects();
-      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
-      finally { HP.busy(btn, false); }
+      }
     });
+
+    // ---------------- Stripe deposit payment (Payment Element) ----------------
+    // Loads Stripe.js on demand, mounts the Payment Element (cards + BNPL
+    // methods enabled in the Stripe dashboard: Klarna, Affirm, Afterpay),
+    // and confirms the PaymentIntent created by /api/payments/deposit-intent.
+    let stripeJsPromise = null, stripeObj = null, stripeElements = null, payCtx = null;
+    function loadStripeJs() {
+      if (!stripeJsPromise) {
+        stripeJsPromise = new Promise((resolve, reject) => {
+          if (window.Stripe) return resolve();
+          const s = document.createElement('script');
+          s.src = 'https://js.stripe.com/v3/';
+          s.onload = resolve;
+          s.onerror = () => reject(new Error('Could not load the payment form. Check your connection and try again.'));
+          document.head.appendChild(s);
+        });
+      }
+      return stripeJsPromise;
+    }
+    async function openStripePay({ projectId, amountCents, onSuccess }) {
+      payCtx = { projectId, amountCents, onSuccess };
+      document.getElementById('pay-summary').innerHTML =
+        `<dl class="kv"><dt>Deposit due</dt><dd><strong>${HP.fmtMoney(amountCents)}</strong></dd></dl>
+         <p class="small muted">Secured by Stripe. Cards, Klarna, Affirm and Afterpay are accepted where available.</p>`;
+      document.getElementById('pay-error').hidden = true;
+      document.getElementById('pay-stripe-element').innerHTML = '';
+      document.getElementById('pay-stripe-wrap').style.display = 'none';
+      document.getElementById('pay-loading').style.display = '';
+      const payBtn = document.getElementById('pay-btn');
+      payBtn.disabled = true;
+      payBtn.textContent = `Pay ${HP.fmtMoney(amountCents)}`;
+      document.getElementById('pay-modal').hidden = false;
+      document.body.style.overflow = 'hidden';
+      try {
+        const status = await HP.api('GET', '/payments/stripe-status');
+        if (!status.enabled || !status.publishable_key) throw new Error('Online payments are not enabled right now.');
+        const intent = await HP.api('POST', '/payments/deposit-intent', { project_id: projectId });
+        await loadStripeJs();
+        stripeObj = window.Stripe(status.publishable_key);
+        stripeElements = stripeObj.elements({ clientSecret: intent.client_secret });
+        const paymentEl = stripeElements.create('payment');
+        paymentEl.mount('#pay-stripe-element');
+        document.getElementById('pay-loading').style.display = 'none';
+        document.getElementById('pay-stripe-wrap').style.display = '';
+        payBtn.disabled = false;
+      } catch (e) {
+        document.getElementById('pay-loading').style.display = 'none';
+        showPayError(HP.friendlyMessage(e));
+      }
+    }
+    function showPayError(msg) {
+      const el = document.getElementById('pay-error');
+      el.textContent = msg;
+      el.hidden = false;
+    }
+    function closePayModal() {
+      document.getElementById('pay-modal').hidden = true;
+      document.body.style.overflow = '';
+      if (stripeElements) { try { stripeElements.getElement('payment').unmount(); } catch (e) {} stripeElements = null; }
+      payCtx = null;
+    }
+    document.getElementById('pay-modal-close').addEventListener('click', closePayModal);
+    document.getElementById('pay-modal-cancel').addEventListener('click', closePayModal);
+    document.getElementById('pay-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'pay-modal') closePayModal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.getElementById('pay-modal').hidden) closePayModal();
+    });
+    document.getElementById('pay-btn').addEventListener('click', async () => {
+      if (!stripeObj || !stripeElements || !payCtx) return;
+      const btn = document.getElementById('pay-btn');
+      HP.busy(btn, true, 'Processing…');
+      document.getElementById('pay-error').hidden = true;
+      try {
+        const { error, paymentIntent } = await stripeObj.confirmPayment({
+          elements: stripeElements,
+          confirmParams: { return_url: `${location.origin}/customer.html#projects` },
+          redirect: 'if_required',
+        });
+        if (error) {
+          showPayError(error.message || 'Payment failed. Please try again.');
+          return;
+        }
+        // Card payments resolve here; redirect-based methods (some BNPL)
+        // return via return_url after the customer approves.
+        if (paymentIntent && paymentIntent.status === 'succeeded') {
+          closePayModal();
+          HP.toast('Deposit paid — thank you!', 'ok');
+          if (payCtx.onSuccess) payCtx.onSuccess({ accepted: true, project_id: payCtx.projectId });
+          else { loadProjects(); loadRequests(); }
+        } else {
+          closePayModal();
+          HP.toast('Payment is processing — we will confirm it shortly.', 'info');
+          loadProjects(); loadRequests();
+        }
+      } catch (e) {
+        showPayError(HP.friendlyMessage(e));
+      } finally {
+        HP.busy(btn, false);
+      }
+    });
+
+    // Retry button when a Stripe deposit is still pending/failed.
+    function pendingDepositBtn(p) {
+      const pend = (p.payments || []).find((x) => x.kind === 'deposit' && ['pending', 'failed'].includes(x.status));
+      if (!pend) return '';
+      return `<div class="btn-row" style="margin-top:.6rem">
+        <button class="btn btn-primary btn-sm" data-pay-retry="${p.id}" data-amount="${pend.amount_cents}">Complete deposit payment (${HP.fmtMoney(pend.amount_cents)})</button>
+      </div>`;
+    }
 
     // ---------------- projects ----------------
     async function loadProjects() {
@@ -338,8 +482,8 @@
         : '<p class="small muted">No progress photos yet.</p>';
       const payments = (p.payments && p.payments.length)
         ? `<h4>Payments</h4><div class="table-scroll"><table><thead><tr><th>Type</th><th class="num">Amount</th><th>Status</th><th>Note</th></tr></thead><tbody>
-          ${p.payments.map((pay) => `<tr><td>${HP.esc(pay.kind)}</td><td class="num">${HP.fmtMoney(pay.amount_cents)}</td><td>${HP.esc(pay.status)}</td><td class="small">${HP.esc(pay.notes || '')}</td></tr>`).join('')}
-          </tbody></table></div>`
+          ${p.payments.map((pay) => `<tr><td>${HP.esc(pay.kind)}</td><td class="num">${HP.fmtMoney(pay.amount_cents)}</td><td>${HP.badge(pay.status, HP.statusKind(pay.status))}</td><td class="small">${HP.esc(pay.notes || '')}</td></tr>`).join('')}
+          </tbody></table></div>${pendingDepositBtn(p)}`
         : '<p class="small muted">No payments recorded yet.</p>';
       const review = renderReview(p);
       body.innerHTML = `
@@ -362,6 +506,15 @@
       });
       const rf = body.querySelector('#review-form');
       if (rf) rf.addEventListener('submit', (e) => submitReview(e, p.id, body));
+      body.querySelectorAll('[data-pay-retry]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          openStripePay({
+            projectId: Number(btn.dataset.payRetry),
+            amountCents: Number(btn.dataset.amount),
+            onSuccess: null,
+          });
+        });
+      });
     }
 
     async function refreshProject(pid, body) {
