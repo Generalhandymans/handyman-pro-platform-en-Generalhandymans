@@ -1,10 +1,20 @@
 // Seed: coherent demo data across the whole lifecycle (both sides).
-// Run: npm run seed. Refuses to run twice.
+// Run: SEED_DEMO=true npm run seed
+// SECURITY: this file creates a demo admin with KNOWN credentials. It REFUSES
+// to run unless SEED_DEMO=true is set explicitly, so production databases
+// never get demo accounts by accident. In production, create the real admin
+// via ADMIN_EMAIL + ADMIN_PASSWORD (see server.js first-boot).
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
 const db = require('./db');
 const { estimateJob } = require('./services/estimator');
 const crm = require('./services/crm');
+
+if (process.env.SEED_DEMO !== 'true') {
+  console.error('Refusing to seed: set SEED_DEMO=true to load demo data explicitly.');
+  console.error('For production, set ADMIN_EMAIL and ADMIN_PASSWORD instead (server.js creates the admin on first boot).');
+  process.exit(1);
+}
 
 if (db.prepare('SELECT COUNT(*) c FROM users').get().c > 0) {
   console.log('Database already has users — skipping seed.');
@@ -12,7 +22,10 @@ if (db.prepare('SELECT COUNT(*) c FROM users').get().c > 0) {
 }
 
 const pw = p => bcrypt.hashSync(p, 10);
-const ADMIN_PW = 'Admin123!';
+// Demo credentials come from env when provided (CI, staging); otherwise the
+// well-known demo values below — NEVER use these in production.
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@generalhandymansolutions.test';
+const ADMIN_PW = process.env.ADMIN_PASSWORD || 'Admin123!';
 const CUST_PW = 'Customer123!';
 const CONT_PW = 'Contractor123!';
 
@@ -21,7 +34,8 @@ const addUser = (name, email, phone, role, password) =>
     .run(name, email, phone, pw(password), role).lastInsertRowid;
 
 // ---------------- users ----------------
-const adminId = addUser('Dana Admin', 'admin@handymanpro.test', '555-010-0001', 'admin', ADMIN_PW);
+const adminId = addUser('Dana Admin', ADMIN_EMAIL, '555-010-0001', 'admin', ADMIN_PW);
+db.prepare('UPDATE users SET email_verified = 1 WHERE id = ?').run(adminId);
 
 const customers = [
   ['Maya Thompson', 'maya.t@example.com', '555-201-0001'],
@@ -220,11 +234,11 @@ db.prepare(`INSERT INTO referrals (code, referrer_user_id, referred_email, statu
 // Email templates + campaigns.
 const t1 = db.prepare(`INSERT INTO email_templates (name, subject, body_html) VALUES (?,?,?)`).run(
   'Inactive win-back', 'We miss you, {{name}} — 10% off your next project',
-  '<p>Hi {{name}},</p><p>It has been a while since your last project with Handyman Pro. Here is 10% off your next booking — reply to this email and we will schedule it.</p><p>— The Handyman Pro team</p>'
+  '<p>Hi {{name}},</p><p>It has been a while since your last project with General Handyman Solutions. Here is 10% off your next booking — reply to this email and we will schedule it.</p><p>— The General Handyman Solutions team</p>'
 ).lastInsertRowid;
 const t2 = db.prepare(`INSERT INTO email_templates (name, subject, body_html) VALUES (?,?,?)`).run(
   'Top contractor kudos', 'You are a top-rated pro, {{name}}!',
-  '<p>Hi {{name}},</p><p>Your rating keeps you among our top contractors. New high-value jobs are coming your way first this month.</p><p>— The Handyman Pro team</p>'
+  '<p>Hi {{name}},</p><p>Your rating keeps you among our top contractors. New high-value jobs are coming your way first this month.</p><p>— The General Handyman Solutions team</p>'
 ).lastInsertRowid;
 const camp1 = db.prepare(`INSERT INTO campaigns (name, segment, template_id, status) VALUES (?,?,?,'queued')`)
   .run('Q4 win-back: inactive 90d', 'inactive_clients_90d', t1).lastInsertRowid;
@@ -249,4 +263,4 @@ if (luisJob) {
 // Follow-up tasks from the rules (the 50h-old quote should fire).
 const tasks = crm.generateFollowupTasks();
 console.log(`Seed complete. Follow-up tasks generated: ${tasks.length}`);
-console.log('Demo logins -> admin: admin@handymanpro.test / Admin123! | customer: maya.t@example.com / Customer123! | contractor: carlos.m@example.com / Contractor123!');
+console.log('Demo logins -> admin: admin@generalhandymansolutions.test / Admin123! | customer: maya.t@example.com / Customer123! | contractor: carlos.m@example.com / Contractor123!');

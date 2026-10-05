@@ -20,7 +20,7 @@ function sendVerificationEmail(user, token) {
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/api/auth/verify?token=${token}`;
   return notify({
     to: user.email,
-    subject: 'Verify your Handyman Pro email',
+    subject: 'Verify your General Handyman Solutions email',
     html: shell('Verify your email', `Hi ${user.name.split(' ')[0]}, please confirm this is your email address:`, [
       ['Account', user.email],
       ['Verify link', link],
@@ -42,9 +42,10 @@ router.post('/signup/customer', ah(async (req, res) => {
   if (exists) return res.status(409).json({ error: 'An account with this email already exists.' });
 
   const token = newToken();
+  const verifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
   const info = db.prepare(
-    'INSERT INTO users (name, email, phone, password_hash, role, verify_token) VALUES (?,?,?,?,?,?)'
-  ).run(name.trim(), email.trim().toLowerCase(), (phone || '').trim(), hashPassword(password), 'customer', token);
+    'INSERT INTO users (name, email, phone, password_hash, role, verify_token, verify_expires) VALUES (?,?,?,?,?,?,?)'
+  ).run(name.trim(), email.trim().toLowerCase(), (phone || '').trim(), hashPassword(password), 'customer', token, verifyExpires);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   sendVerificationEmail(user, token);
   res.status(201).json({ token: signToken(user), user: publicUser(user), verify_sent: true });
@@ -83,7 +84,8 @@ router.post('/signup/contractor', ah(async (req, res) => {
   const userId = tx();
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
   const vtoken = newToken();
-  db.prepare('UPDATE users SET verify_token = ? WHERE id = ?').run(vtoken, userId);
+  const vexp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+  db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(vtoken, vexp, userId);
   sendVerificationEmail(user, vtoken);
   res.status(201).json({
     token: signToken(user),
@@ -120,7 +122,10 @@ router.get('/verify', ah(async (req, res) => {
   if (!token) return res.status(400).json({ error: 'Verification token is required.' });
   const user = db.prepare('SELECT * FROM users WHERE verify_token = ?').get(token);
   if (!user) return res.status(400).json({ error: 'Invalid or expired verification token.' });
-  db.prepare('UPDATE users SET email_verified = 1, verify_token = NULL WHERE id = ?').run(user.id);
+  if (user.verify_expires && new Date(user.verify_expires).getTime() < Date.now()) {
+    return res.status(400).json({ error: 'Verification link expired. Request a new one.' });
+  }
+  db.prepare('UPDATE users SET email_verified = 1, verify_token = NULL, verify_expires = NULL WHERE id = ?').run(user.id);
   res.json({ verified: true, email: user.email });
 }));
 
@@ -129,7 +134,8 @@ router.post('/verify/resend', authRequired, ah(async (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
   if (user.email_verified) return res.json({ verified: true, already: true });
   const token = newToken();
-  db.prepare('UPDATE users SET verify_token = ? WHERE id = ?').run(token, user.id);
+  const vexp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
+  db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(token, vexp, user.id);
   sendVerificationEmail(user, token);
   res.json({ verify_sent: true });
 }));
@@ -148,7 +154,7 @@ router.post('/forgot', ah(async (req, res) => {
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/auth.html?reset=${token}`;
   notify({
     to: user.email,
-    subject: 'Reset your Handyman Pro password',
+    subject: 'Reset your General Handyman Solutions password',
     html: shell('Reset your password', `Hi ${user.name.split(' ')[0]}, use the link below within 1 hour:`, [
       ['Reset link', link],
     ]) + `<p style="text-align:center;margin:20px 0;"><a href="${link}" style="background:#111827;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Reset password</a></p>`,

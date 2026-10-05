@@ -37,7 +37,7 @@ function shell(title, intro, rows) {
     <h2 style="margin:8px 0 4px;">${esc(title)}</h2>
     <p style="color:#475569;">${esc(intro)}</p>
     ${rowHtml ? `<table>${rowHtml}</table>` : ''}
-    <p style="color:#94a3b8;font-size:12px;margin-top:24px;">This is an automated notification from Handyman Pro. Please do not reply directly — message us from your portal instead.</p>
+    <p style="color:#94a3b8;font-size:12px;margin-top:24px;">This is an automated notification from General Handyman Solutions. Please do not reply directly — message us from your portal instead.</p>
   </body></html>`;
 }
 

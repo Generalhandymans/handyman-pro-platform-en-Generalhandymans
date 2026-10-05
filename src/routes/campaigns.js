@@ -74,7 +74,7 @@ router.post('/:id/queue', ah(async (req, res) => {
   const tx = db.transaction(() => {
     for (const m of members) {
       if (!m.email || have.has(m.email)) continue;
-      const vars = { name: m.name || 'there', company: 'Handyman Pro', ...(m.context || {}) };
+      const vars = { name: m.name || 'there', company: 'General Handyman Solutions', ...(m.context || {}) };
       ins.run(c.id, m.email, m.name, crm.renderTemplate(t.subject, vars),
         crm.renderTemplate(t.body_html, vars), mailer.activeProvider());
       queued++;

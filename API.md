@@ -1,4 +1,4 @@
-# API.md — Handyman Pro
+# API.md — General Handyman Solutions
 
 Base: `http://localhost:3000`. JSON everywhere. Money is integer **cents**.
 Auth: `Authorization: Bearer <JWT>` (7-day expiry). Roles: `customer`,

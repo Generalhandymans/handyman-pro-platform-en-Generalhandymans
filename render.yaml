@@ -1,9 +1,9 @@
-# Handyman Pro — Render blueprint (one-click deploy)
-# https://render.com — connect the Generalhandymans/handyman-pro-platform repo,
+# General Handyman Solutions — Render blueprint (one-click deploy)
+# https://render.com — connect the Generalhandymans/general-handyman-solutions-platform repo,
 # create a new Blueprint, and Render provisions everything below.
 services:
   - type: web
-    name: handyman-pro
+    name: general-handyman-solutions
     runtime: node
     plan: free
     buildCommand: npm install
@@ -25,9 +25,21 @@ services:
       - key: HANDYMAN_FROM_EMAIL
         value: generalhandymans@gmail.com
       - key: HANDYMAN_FROM_NAME
-        value: Handyman Pro
+        value: General Handyman Solutions
       - key: EMAIL_PROVIDER
         value: console
+      # First admin (set these BEFORE first deploy — no demo accounts are created):
+      # - key: ADMIN_EMAIL
+      #   sync: false
+      # - key: ADMIN_PASSWORD
+      #   sync: false
+      # Stripe — set after creating your Stripe account (see src/services/stripe.js):
+      # - key: STRIPE_SECRET_KEY
+      #   sync: false
+      # - key: STRIPE_PUBLISHABLE_KEY
+      #   sync: false
+      # - key: STRIPE_WEBHOOK_SECRET
+      #   sync: false
       # Optional — set in the Render dashboard after deploy:
       # - key: OPENAI_API_KEY
       # - key: SENDGRID_API_KEY

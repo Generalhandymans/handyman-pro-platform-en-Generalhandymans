@@ -1,4 +1,4 @@
-// Handyman Pro — shared frontend helpers.
+// General Handyman Solutions — shared frontend helpers.
 // One file loaded by every page: auth/session, API client, formatting,
 // toasts, form errors, page guard, and the shared site header.
 

@@ -286,11 +286,45 @@ if (!columnExists('users', 'email_verified')) {
 if (!columnExists('users', 'verify_token')) {
   db.exec(`ALTER TABLE users ADD COLUMN verify_token TEXT`);
 }
+if (!columnExists('users', 'verify_expires')) {
+  db.exec(`ALTER TABLE users ADD COLUMN verify_expires TEXT`);
+}
 if (!columnExists('users', 'reset_token')) {
   db.exec(`ALTER TABLE users ADD COLUMN reset_token TEXT`);
 }
 if (!columnExists('users', 'reset_expires')) {
   db.exec(`ALTER TABLE users ADD COLUMN reset_expires TEXT`);
+}
+
+// ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----
+// Also adds 'paid' to the status CHECK for Stripe-confirmed payments.
+try {
+  const sql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='payments'`).get();
+  if (sql && sql.sql && !sql.sql.includes("'stripe'")) {
+    db.exec(`
+      CREATE TABLE payments_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('deposit','milestone','final','refund')),
+        amount_cents INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded','pending','paid','failed')),
+        provider TEXT NOT NULL DEFAULT 'manual' CHECK (provider IN ('manual','stripe')),
+        provider_ref TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO payments_new (id, project_id, kind, amount_cents, status, provider, provider_ref, notes, created_at)
+        SELECT id, project_id, kind, amount_cents, status,
+               CASE WHEN provider = 'stripe_stub' THEN 'manual' ELSE provider END,
+               provider_ref, notes, created_at
+        FROM payments;
+      DROP TABLE payments;
+      ALTER TABLE payments_new RENAME TO payments;
+    `);
+    console.log('[migrate] payments table: provider CHECK now includes stripe, status includes paid');
+  }
+} catch (e) {
+  console.error('[migrate] payments table migration failed:', e.message);
 }
 
 module.exports = db;

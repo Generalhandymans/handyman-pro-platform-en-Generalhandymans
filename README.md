@@ -1,11 +1,11 @@
-# Handyman Pro — Managed Marketplace Platform
+# General Handyman Solutions — Managed Marketplace Platform
 
 B2C home-services business platform: the platform quotes the customer, collects a
 deposit, assigns a vetted contractor, and keeps the margin. Full-stack rebuild
 with a real estimation engine, two-sided CRM (clients + contractors), mass email
 campaigns, and reports computed live from the database.
 
-**Brand:** Handyman Pro. All platform email goes out from the business account —
+**Brand:** General Handyman Solutions. All platform email goes out from the business account —
 never a personal one (see "Business email setup").
 
 ## Run it
@@ -19,18 +19,23 @@ npm start
 
 Open http://localhost:3000
 
-On first boot with an empty database, the server automatically loads demo seed
-data (`src/seed.js` refuses to run twice, so this is safe). To re-seed from
-scratch: delete `data/handyman.db*` and restart.
+On first boot with an empty database:
+- **Production:** set `ADMIN_EMAIL` + `ADMIN_PASSWORD` (and optional `ADMIN_NAME`)
+  in your environment — the server creates that admin and nothing else.
+- **Demo/dev:** set `SEED_DEMO=true` to load the demo dataset explicitly.
+- **Neither:** the server boots with an empty database and warns. Demo accounts
+  are NEVER created silently.
+
+To re-seed from scratch: delete `data/handyman.db*` and restart with `SEED_DEMO=true`.
 
 No build tools, no bundlers, no frontend frameworks — vanilla HTML/CSS/JS served
 by Express, one SQLite file.
 
-## Demo logins (seed data)
+## Demo logins (seed data — only when `SEED_DEMO=true`)
 
 | Role       | Email                      | Password       |
 |------------|----------------------------|----------------|
-| Admin      | admin@handymanpro.test     | Admin123!      |
+| Admin      | admin@generalhandymansolutions.test     | Admin123!      |
 | Customer   | maya.t@example.com         | Customer123!   |
 | Contractor | carlos.m@example.com       | Contractor123! |
 
@@ -44,7 +49,7 @@ Copy `.env.example` to `.env` and adjust:
 | `JWT_SECRET`          | (dev fallback)             | **Set a long random value in production.** Tokens are invalid without it. |
 | `DB_PATH`             | `./data/handyman.db`       | SQLite file location |
 | `HANDYMAN_FROM_EMAIL` | `generalhandymans@gmail.com` | **Business sender address** — every platform email is sent from here |
-| `HANDYMAN_FROM_NAME`  | `Handyman Pro`             | Business sender display name |
+| `HANDYMAN_FROM_NAME`  | `General Handyman Solutions`             | Business sender display name |
 | `EMAIL_PROVIDER`      | `console`                  | `console` (log mode) or `sendgrid` |
 | `SENDGRID_API_KEY`    | —                          | Required for real delivery via SendGrid |
 | `OPENAI_API_KEY`      | —                          | Optional: enables AI photo analysis |
@@ -54,7 +59,7 @@ Copy `.env.example` to `.env` and adjust:
 
 All CRM campaigns and notifications are sent **from the business account**
 (`HANDYMAN_FROM_EMAIL`, default `generalhandymans@gmail.com`, name
-"Handyman Pro") — never from a personal address.
+"General Handyman Solutions") — never from a personal address.
 
 Out of the box the mailer runs in **log mode** (`EMAIL_PROVIDER=console`):
 messages are printed to the server console **and** recorded in the `email_log`
@@ -122,7 +127,7 @@ To send real email:
   contractor performance, estimate-vs-actual calibration.
 
 **Stubs / not implemented:**
-- **Payments (Stripe): NOT integrated.** `GET /api/payments/stripe-status`
+- **Payments (Stripe): READY.** `GET /api/payments/stripe-status` — set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` to charge cards; without them, deposits stay manual.
   returns `{implemented:false}`. All payment rows are manual bookkeeping
   (`provider="manual"`) — nothing charges a card. See ROADMAP.md.
 - **Vision AI without a key:** heuristic mode only, clearly labeled.
@@ -136,12 +141,12 @@ GitHub account is **Generalhandymans**. To connect and push:
 
 ```bash
 cd handyman-platform
-git remote add origin https://github.com/Generalhandymans/handyman-pro-platform.git
+git remote add origin https://github.com/Generalhandymans/general-handyman-solutions-platform.git
 git branch -M main
 git push -u origin main
 ```
 
-(Replace `handyman-pro-platform` if you create the repo under a different name
+(Replace `general-handyman-solutions-platform` if you create the repo under a different name
 on GitHub first — create the empty repo on github.com/Generalhandymans, then
 run the commands above.)
 

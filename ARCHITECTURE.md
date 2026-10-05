@@ -1,4 +1,4 @@
-# ARCHITECTURE.md — Handyman Pro
+# ARCHITECTURE.md — General Handyman Solutions
 
 ## System diagram (text)
 

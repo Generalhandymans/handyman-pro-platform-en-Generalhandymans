@@ -1,10 +1,10 @@
-# ROADMAP.md — Handyman Pro
+# ROADMAP.md — General Handyman Solutions
 
 Ordered by business value. Stubs in v1 are marked honestly in the README;
 each item below turns one into the real thing.
 
-## 1. Real payments with Stripe (highest priority)
-**Today:** `GET /api/payments/stripe-status` returns `{implemented:false}`;
+## 1. Real payments with Stripe — DONE (2026-10-04)
+**Today:** `GET /api/payments/stripe-status` returns `{implemented:true}`;
 payments are manual bookkeeping rows.
 **Plan:**
 - Server: add `stripe` SDK, `POST /api/payments/intent` creates a

@@ -1,4 +1,4 @@
-// Handyman Pro — main server.
+// General Handyman Solutions — main server.
 // Run: npm install && npm start
 //
 // Serves the public site + portals from ./public, exposes the JSON API under
@@ -17,18 +17,39 @@ const mailer = require('./src/services/mailer');
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// ---- First boot: seed demo data when the DB is brand new ----
-// Guarded: seed.js refuses to run when users already exist, so this is safe.
+// ---- First boot: NEVER auto-seed demo data into a fresh database ----
+// Production path: create the real admin from ADMIN_EMAIL + ADMIN_PASSWORD.
+// Demo path: set SEED_DEMO=true to load the demo dataset explicitly.
 try {
   const users = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (users === 0) {
-    console.log('[boot] Empty database — loading demo seed data…');
-    execSync('node src/seed.js', { cwd: __dirname, stdio: 'inherit' });
+    if (process.env.SEED_DEMO === 'true') {
+      console.log('[boot] SEED_DEMO=true — loading demo seed data…');
+      execSync('node src/seed.js', { cwd: __dirname, stdio: 'inherit', env: { ...process.env, SEED_DEMO: 'true' } });
+    } else if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
+      const bcrypt = require('bcryptjs');
+      const hash = bcrypt.hashSync(process.env.ADMIN_PASSWORD, 10);
+      db.prepare(
+        `INSERT INTO users (name, email, phone, password_hash, role, email_verified)
+         VALUES (?,?,?,?,?,1)`
+      ).run(
+        (process.env.ADMIN_NAME || 'Admin').trim(),
+        process.env.ADMIN_EMAIL.trim().toLowerCase(), '', hash, 'admin'
+      );
+      console.log(`[boot] Admin created: ${process.env.ADMIN_EMAIL.trim().toLowerCase()}`);
+    } else {
+      console.warn('[boot] Empty database and no admin configured.');
+      console.warn('[boot] Set ADMIN_EMAIL + ADMIN_PASSWORD (and optional ADMIN_NAME) to create the admin,');
+      console.warn('[boot] or SEED_DEMO=true to load demo data. No demo accounts were created.');
+    }
   }
 } catch (e) {
-  console.error('[boot] Seed failed:', e.message);
+  console.error('[boot] First-boot setup failed:', e.message);
 }
 
+// Stripe webhooks need the RAW body for signature verification: register the
+// raw parser for that exact path BEFORE the JSON parser below.
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -63,7 +84,7 @@ app.get('/api/photos/:filename', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, service: 'handyman-pro', mail_provider: mailer.activeProvider(), from: `${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>` });
+  res.json({ ok: true, service: 'general-handyman-solutions', mail_provider: mailer.activeProvider(), from: `${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>` });
 });
 
 // ---- API routes ----
@@ -109,7 +130,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 });
 
 app.listen(PORT, () => {
-  console.log(`Handyman Pro listening on http://localhost:${PORT}`);
+  console.log(`General Handyman Solutions listening on http://localhost:${PORT}`);
   console.log(`Mail: provider=${mailer.activeProvider()} from="${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>"`);
   if (mailer.activeProvider() === 'console') {
     console.log('Mail is in LOG mode: campaigns are recorded in email_log, nothing is really sent. See README "Business email setup".');

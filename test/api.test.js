@@ -1,4 +1,4 @@
-// Handyman Pro — critical-flow tests (node:test). Run: npm test
+// General Handyman Solutions — critical-flow tests (node:test). Run: npm test
 // Uses a throwaway SQLite DB and a server on :3457. No real email is sent:
 // the mailer runs in console/log mode and every notification is recorded
 // in email_log, which is exactly what the assertions check.

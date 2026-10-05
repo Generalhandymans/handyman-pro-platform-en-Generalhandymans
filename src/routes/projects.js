@@ -94,7 +94,7 @@ router.post('/:id/assign', authRequired, requireRole('admin'), ah(async (req, re
     notify({
       to: cu.email,
       subject: `New project assigned — ${job.service_type} (#${p.id})`,
-      html: shell('You have a new project', `Hi ${cu.name.split(' ')[0]}, Handyman Pro assigned you a project:`, [
+      html: shell('You have a new project', `Hi ${cu.name.split(' ')[0]}, General Handyman Solutions assigned you a project:`, [
         ['Project', `#${p.id} — ${job.service_type}`],
         ['Address', job.address],
         ['Your budget', '$' + (p.contractor_cost_cents / 100).toFixed(2)],

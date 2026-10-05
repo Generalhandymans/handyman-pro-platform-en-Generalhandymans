@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Contractor portal — Handyman Pro</title>
+  <title>Contractor portal — General Handyman Solutions</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="css/styles.css">
 </head>
@@ -51,7 +51,7 @@
     <section class="tab-panel" id="panel-messages" role="tabpanel">
       <div class="card">
         <h2 style="margin-top:0">Messages with support</h2>
-        <p class="small muted">Chat with Handyman Pro support about your assigned jobs. You do not contact customers directly — support relays everything.</p>
+        <p class="small muted">Chat with General Handyman Solutions support about your assigned jobs. You do not contact customers directly — support relays everything.</p>
         <div id="messages-box"></div>
       </div>
     </section>
@@ -60,7 +60,7 @@
   <script src="js/api.js"></script>
   <script src="js/messages.js"></script>
   <script>
-  // Handyman Pro — contractor portal: profile + verification, assigned jobs.
+  // General Handyman Solutions — contractor portal: profile + verification, assigned jobs.
   (function () {
     'use strict';
     HP.mountHeader('portal');
@@ -104,7 +104,7 @@
         banner.innerHTML = c.status === 'pending'
           ? `<div class="banner banner-warn"><strong>Your application is under review.</strong><br>Our team is verifying your license, insurance, and background. You will be able to take jobs once approved.</div>`
           : (c.status === 'suspended'
-            ? `<div class="banner banner-warn"><strong>Your account is suspended.</strong><br>Please contact Handyman Pro support for details.</div>` : '');
+            ? `<div class="banner banner-warn"><strong>Your account is suspended.</strong><br>Please contact General Handyman Solutions support for details.</div>` : '');
         const stars = '★'.repeat(Math.round(c.rating_avg || 0)) + '☆'.repeat(5 - Math.round(c.rating_avg || 0));
         box.innerHTML = `
           <div class="section-head">
@@ -168,7 +168,7 @@
         if (!projects.length) {
           box.innerHTML = HP.emptyState(
             'No jobs assigned yet',
-            'Once Handyman Pro assigns you a job, it will appear here with its milestones and details.'
+            'Once General Handyman Solutions assigns you a job, it will appear here with its milestones and details.'
           );
           return;
         }

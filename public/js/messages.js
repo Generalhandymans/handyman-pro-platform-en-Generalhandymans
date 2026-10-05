@@ -1,4 +1,4 @@
-// Handyman Pro — shared mediated-messaging UI.
+// General Handyman Solutions — shared mediated-messaging UI.
 // Business rule: NO direct client<->contractor contact. Two thread kinds:
 //   client_support      (customer <-> support)
 //   support_contractor  (support <-> contractor)
@@ -57,9 +57,9 @@ const HPMsg = (() => {
 
     function setNotice(kind) {
       notice.textContent = kind === 'client_support'
-        ? 'You are chatting with Handyman Pro support. Your contractor never sees this conversation.'
+        ? 'You are chatting with General Handyman Solutions support. Your contractor never sees this conversation.'
         : kind === 'support_contractor'
-          ? 'You are chatting with Handyman Pro support about this project. The customer never sees this conversation.'
+          ? 'You are chatting with General Handyman Solutions support about this project. The customer never sees this conversation.'
           : '';
     }
 
@@ -115,7 +115,7 @@ const HPMsg = (() => {
           const mine = me && m.sender_role !== 'admin' && (
             (me.role === 'customer' && m.sender_role === 'customer') ||
             (me.role === 'contractor' && m.sender_role === 'contractor'));
-          const who = m.sender_role === 'admin' ? 'Handyman Pro support'
+          const who = m.sender_role === 'admin' ? 'General Handyman Solutions support'
             : m.sender_role === 'customer' ? 'Customer' : 'Contractor';
           return `<div class="msg ${mine ? 'msg-mine' : 'msg-theirs'}">
             <div class="msg-meta"><strong>${HP.esc(m.sender_name || who)}</strong> · <span>${HP.fmtDateTime(m.created_at)}</span></div>
