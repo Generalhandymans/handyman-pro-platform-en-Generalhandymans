@@ -232,9 +232,8 @@ const HP = (() => {
     if (u && u.role) links.push({ href: portalLink(u.role), label: 'My portal', id: 'portal' });
     header.innerHTML = `
       <div class="wrap header-inner">
-        <a class="brand" href="index.html" aria-label="Handyman Pro home">
-          <span class="brand-mark" aria-hidden="true">🛠</span>
-          <span class="brand-name">Handyman <em>Pro</em></span>
+        <a class="brand" href="index.html" aria-label="General Handyman Solutions home">
+          <img class="brand-logo" src="img/logo-header.jpg" alt="General Handyman Solutions">
         </a>
         <nav class="main-nav" aria-label="Main">
           ${links.map((l) => `<a href="${l.href}" class="${page === l.id ? 'active' : ''}">${esc(l.label)}</a>`).join('')}

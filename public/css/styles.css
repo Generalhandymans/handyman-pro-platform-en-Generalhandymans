@@ -1,13 +1,17 @@
 /* Handyman Pro — one stylesheet for all pages.
-   Mobile-first, deep navy + warm amber, system fonts, no external assets. */
+   Mobile-first, brand palette from the General Handyman Solutions logo:
+   deep blue + bright blue + house red, system fonts, no external assets. */
 
 :root {
-  --navy: #10243f;
-  --navy-2: #1a3357;
-  --navy-3: #27466f;
-  --amber: #f0a020;
-  --amber-dark: #c97f0b;
-  --amber-soft: #fdf3e0;
+  --navy: #143d7a;
+  --navy-2: #1f64b1;
+  --navy-3: #2f7de9;
+  --amber: #2b6fe3;
+  --amber-dark: #1f64b1;
+  --amber-soft: #e9f1fe;
+  --brand-red: #c02020;
+  --brand-red-dark: #9a1414;
+  --star: #e8a013;
   --ink: #1d2a3a;
   --muted: #5b6b7e;
   --line: #e2e8f0;
@@ -15,8 +19,8 @@
   --card: #ffffff;
   --ok: #1f8a4c;
   --ok-bg: #e6f6ec;
-  --err: #c0392b;
-  --err-bg: #fdecea;
+  --err: #c02020;
+  --err-bg: #fdecec;
   --warn: #b7791f;
   --warn-bg: #fdf3e0;
   --info: #2563a8;
@@ -44,21 +48,23 @@ a { color: var(--info); }
 
 /* ---------- header ---------- */
 .site-header {
-  background: var(--navy);
-  color: #fff;
+  background: #fff;
+  color: var(--ink);
   position: sticky;
   top: 0;
   z-index: 50;
-  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  box-shadow: 0 2px 8px rgba(20,61,122,.10);
+  border-bottom: 1px solid var(--line);
 }
 .header-inner {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: .75rem;
-  padding: .7rem 1rem;
+  padding: .55rem 1rem;
 }
-.brand { display: flex; align-items: center; gap: .55rem; text-decoration: none; color: #fff; }
+.brand { display: flex; align-items: center; text-decoration: none; }
+.brand-logo { height: 3rem; width: auto; display: block; }
 .brand-mark {
   width: 2.2rem; height: 2.2rem;
   display: inline-flex; align-items: center; justify-content: center;
@@ -68,12 +74,12 @@ a { color: var(--info); }
 .brand-name em { font-style: normal; color: var(--amber); }
 .main-nav { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
 .main-nav a {
-  color: #dbe5f1; text-decoration: none; font-size: .92rem;
+  color: var(--navy-2); text-decoration: none; font-size: .92rem;
   padding: .45rem .7rem; border-radius: .55rem;
 }
-.main-nav a:hover { background: rgba(255,255,255,.08); color: #fff; }
-.main-nav a.active { background: rgba(240,160,32,.2); color: var(--amber); font-weight: 700; }
-.nav-user { color: #b9c7da; font-size: .9rem; }
+.main-nav a:hover { background: var(--amber-soft); color: var(--navy); }
+.main-nav a.active { background: var(--amber-soft); color: var(--brand-red); font-weight: 700; }
+.nav-user { color: var(--muted); font-size: .9rem; }
 
 /* ---------- footer ---------- */
 .site-footer { background: var(--navy); color: #c7d3e4; margin-top: 3rem; }
@@ -94,15 +100,15 @@ a { color: var(--info); }
 }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: .6; cursor: wait; }
-.btn-primary { background: var(--amber); color: #2b1d02; box-shadow: 0 2px 6px rgba(201,127,11,.35); }
-.btn-primary:hover { background: #f5ae3c; }
+.btn-primary { background: var(--amber); color: #fff; box-shadow: 0 2px 6px rgba(43,111,227,.35); }
+.btn-primary:hover { background: var(--amber-dark); }
 .btn-dark { background: var(--navy); color: #fff; }
 .btn-dark:hover { background: var(--navy-2); }
 .btn-outline { background: #fff; border-color: var(--line); color: var(--navy); }
 .btn-outline:hover { border-color: var(--navy-3); }
-.btn-danger { background: var(--err); color: #fff; }
+.btn-danger { background: var(--brand-red); color: #fff; }
 .btn-ok { background: var(--ok); color: #fff; }
-.btn-ghost { background: transparent; color: #dbe5f1; border-color: rgba(255,255,255,.25); }
+.btn-ghost { background: transparent; color: var(--navy-2); border-color: var(--line); }
 .btn-sm { padding: .4rem .8rem; font-size: .85rem; border-radius: .5rem; }
 .btn-block { width: 100%; justify-content: center; }
 .btn-row { display: flex; gap: .6rem; flex-wrap: wrap; margin-top: 1rem; }
@@ -165,12 +171,12 @@ a { color: var(--info); }
   color: #fff; padding: 3rem 0 3.5rem; border-radius: 0 0 1.5rem 1.5rem;
 }
 .hero h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .75rem; max-width: 20ch; }
-.hero h1 .hl { color: var(--amber); }
+.hero h1 .hl { color: #ff8a8a; }
 .hero p.lead { color: #cfdaea; font-size: 1.05rem; max-width: 46ch; }
 .hero-cta { display: flex; gap: .75rem; flex-wrap: wrap; margin-top: 1.5rem; }
 .hero-points { display: grid; gap: .6rem; margin-top: 1.75rem; }
 .hero-points div { display: flex; gap: .6rem; align-items: flex-start; color: #cfdaea; font-size: .95rem; }
-.hero-points .dot { color: var(--amber); font-weight: 900; }
+.hero-points .dot { color: #ff8a8a; font-weight: 900; }
 @media (min-width: 860px) {
   .hero h1 { font-size: 2.7rem; }
   .hero-points { grid-template-columns: repeat(3, 1fr); }
@@ -181,7 +187,7 @@ a { color: var(--info); }
 .step-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.25rem; box-shadow: var(--shadow); }
 .step-num {
   width: 2.4rem; height: 2.4rem; border-radius: 50%;
-  background: var(--navy); color: var(--amber); font-weight: 800;
+  background: var(--navy); color: #fff; font-weight: 800;
   display: inline-flex; align-items: center; justify-content: center; margin-bottom: .5rem;
 }
 .step-card h3 { margin: .25rem 0 .5rem; color: var(--navy); font-size: 1.05rem; }
@@ -258,7 +264,7 @@ a { color: var(--info); }
   text-align: center; background: linear-gradient(135deg, var(--navy), var(--navy-3));
   color: #fff; border-radius: var(--radius); padding: 1.75rem 1rem; margin-bottom: 1.25rem;
 }
-.estimate-range { font-size: 2.2rem; font-weight: 800; color: var(--amber); margin: .4rem 0; }
+.estimate-range { font-size: 2.2rem; font-weight: 800; color: #9dbcff; margin: .4rem 0; }
 .estimate-range small { font-size: 1rem; font-weight: 400; color: #cfdaea; }
 .confidence { margin: 1rem auto 0; max-width: 420px; }
 .confidence .bar { height: .7rem; background: rgba(255,255,255,.18); border-radius: 999px; overflow: hidden; }
@@ -380,7 +386,7 @@ td.num, th.num { text-align: right; white-space: nowrap; }
 .score-wrap { display: flex; align-items: center; gap: .75rem; }
 .score-track { flex: 1; height: .8rem; background: #eef2f7; border-radius: 999px; overflow: hidden; }
 .score-fill { height: 100%; background: linear-gradient(90deg, var(--info), var(--ok)); }
-.stars { color: var(--amber-dark); letter-spacing: .1em; }
+.stars { color: var(--star); letter-spacing: .1em; }
 
 /* ---------- toasts ---------- */
 #toasts { position: fixed; bottom: 1rem; left: 1rem; right: 1rem; z-index: 200; display: grid; gap: .5rem; }
