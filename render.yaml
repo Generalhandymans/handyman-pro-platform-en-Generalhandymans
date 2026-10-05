@@ -8,11 +8,13 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: npm start
-    # SQLite needs a persistent disk or the database resets on every deploy.
-    disk:
-      name: handyman-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
+    # Free plan: no persistent disk. The SQLite database lives on the ephemeral
+    # filesystem and is wiped whenever the service restarts or redeploys.
+    # For production data, switch plan to "starter" and add a disk:
+    #   disk:
+    #     name: handyman-data
+    #     mountPath: /opt/render/project/src/data
+    #     sizeGB: 1
     envVars:
       - key: PORT
         value: 10000
