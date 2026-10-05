@@ -15,11 +15,11 @@
     <!-- Hero -->
     <section class="hero">
       <div class="wrap">
-        <h1>Home repairs, handled by <span class="hl">verified pros</span>.</h1>
-        <p class="lead">Tell us what needs fixing. Get a transparent instant estimate, pick a quote, and follow your job from first visit to final walkthrough — all in one place.</p>
+        <h1>Got a repair? <span class="hl">Get it fixed today.</span></h1>
+        <p class="lead">Sign up free, describe the job, and get an instant estimate — a verified pro handles the rest. No obligation, no surprises.</p>
         <div class="hero-cta">
           <button class="btn btn-primary" id="cta-estimate">Get a free estimate</button>
-          <a class="btn btn-ghost" href="track.html">Track a job</a>
+          <a class="btn btn-ghost" href="auth.html?tab=customer">Sign up free</a>
         </div>
         <div class="hero-points">
           <div><span class="dot">✓</span><span>Instant price ranges computed from real job data — no guesswork, no surprises.</span></div>
@@ -80,6 +80,25 @@
           </div>
         </div>
       </section>
+      <!-- For customers -->
+      <section class="section client-cta" aria-labelledby="client-title">
+        <div class="client-cta-card">
+          <div>
+            <h2 id="client-title">Have something that needs fixing?</h2>
+            <p class="lead">Create your free account and get your repair handled start to finish — one place for estimates, quotes, and tracking.</p>
+            <ul class="client-points">
+              <li><span class="dot">✓</span><span>Instant price range before you commit to anything.</span></li>
+              <li><span class="dot">✓</span><span>Fixed quotes from licensed, background-checked pros.</span></li>
+              <li><span class="dot">✓</span><span>Track milestones and approve each phase of the work.</span></li>
+            </ul>
+            <a class="btn btn-primary" href="auth.html?tab=customer">Sign up free</a>
+          </div>
+          <div class="client-cta-visual" aria-hidden="true">
+            <div class="client-badge">🏠</div>
+          </div>
+        </div>
+      </section>
+
       <!-- For pros -->
       <section class="section pro-cta" aria-labelledby="pro-title">
         <div class="pro-cta-card">
@@ -155,6 +174,14 @@
       flooring: 'Laminate, vinyl, hardwood, tile.',
       drywall: 'Repairs, patches, texture matching.',
       carpentry: 'Trim, doors, millwork, built-ins.',
+      roofing: 'Leak repairs, shingles, flashing.',
+      hvac: 'AC & heating repair and tune-ups.',
+      landscaping: 'Cleanup, mowing, planting, irrigation.',
+      fencing: 'Repairs, new installs, gates.',
+      concrete: 'Slabs, driveways, walkways, repairs.',
+      appliance: 'Washer, dryer, dishwasher & more.',
+      garage_door: 'Springs, openers, new doors.',
+      pressure_washing: 'Driveways, siding, decks, patios.',
     };
 
     // ---- services grid (real data from /api/trades) ----

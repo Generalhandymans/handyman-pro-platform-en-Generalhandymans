@@ -64,7 +64,7 @@ a { color: var(--info); }
   padding: .55rem 1rem;
 }
 .brand { display: flex; align-items: center; text-decoration: none; }
-.brand-logo { height: 4.25rem; width: auto; display: block; }
+.brand-logo { height: 5.5rem; width: auto; display: block; }
 .brand-mark {
   width: 2.2rem; height: 2.2rem;
   display: inline-flex; align-items: center; justify-content: center;
@@ -221,6 +221,29 @@ a { color: var(--info); }
 .trust-item p { margin: 0; font-size: .9rem; color: var(--muted); }
 @media (min-width: 760px) { .trust { grid-template-columns: repeat(3, 1fr); } }
 
+/* ---------- client CTA ---------- */
+.client-cta { margin: 2.5rem 0; }
+.client-cta-card {
+  background: #fff; border: 2px solid var(--line); border-radius: 1.25rem;
+  padding: 2rem 1.5rem; display: grid; gap: 1.5rem; box-shadow: var(--shadow);
+  position: relative; overflow: hidden;
+}
+.client-cta-card h2 { margin: 0 0 .5rem; font-size: 1.5rem; color: var(--navy); }
+.client-cta-card p.lead { color: var(--muted); margin: 0 0 1rem; max-width: 52ch; }
+.client-points { list-style: none; margin: 0 0 1.5rem; padding: 0; display: grid; gap: .55rem; }
+.client-points li { display: flex; gap: .6rem; align-items: flex-start; color: var(--ink); font-size: .95rem; }
+.client-points .dot { color: var(--ok); font-weight: 900; }
+.client-cta-visual { display: none; }
+.client-badge {
+  width: 9rem; height: 9rem; border-radius: 50%;
+  background: var(--amber-soft); border: 2px dashed var(--navy-3);
+  display: flex; align-items: center; justify-content: center; font-size: 3.5rem;
+}
+@media (min-width: 760px) {
+  .client-cta-card { grid-template-columns: 1.2fr .8fr; align-items: center; padding: 2.5rem 2rem; }
+  .client-cta-visual { display: flex; justify-content: center; }
+}
+
 /* ---------- pro (contractor) CTA ---------- */
 .pro-cta { margin: 2.5rem 0; }
 .pro-cta-card {
@@ -251,6 +274,21 @@ a { color: var(--info); }
   display: flex; align-items: center; justify-content: center;
   font-size: 3.5rem;
 }
+
+/* ---------- checkbox grid (specialties) ---------- */
+.check-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem;
+  border: 1px solid var(--line); border-radius: .75rem; padding: .75rem; background: #fbfcfe;
+}
+.check-grid label {
+  display: flex; align-items: center; gap: .5rem; font-size: .9rem; font-weight: 500;
+  background: #fff; border: 1px solid var(--line); border-radius: .6rem; padding: .5rem .6rem;
+  cursor: pointer; transition: border-color .12s ease, background .12s ease;
+}
+.check-grid label:hover { border-color: var(--navy-3); }
+.check-grid input[type="checkbox"] { accent-color: var(--navy-2); width: 1.05rem; height: 1.05rem; }
+.check-grid label:has(input:checked) { border-color: var(--navy-2); background: var(--amber-soft); }
+@media (min-width: 760px) { .check-grid { grid-template-columns: repeat(3, 1fr); } }
 
 /* ---------- wizard modal ---------- */
 .modal-backdrop {

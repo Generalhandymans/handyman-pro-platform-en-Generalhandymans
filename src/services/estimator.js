@@ -180,6 +180,161 @@ const TRADES = {
       { when: a => a.custom === true, flag: 'lead_time', note: 'Custom millwork adds material lead time.', contingency: 0.08 },
     ],
   },
+  roofing: {
+    label: 'Roofing',
+    base: { low_cents: 15000, high_cents: 25000, label: 'Service call and roof inspection' },
+    questions: [
+      { key: 'issue_type', label: 'Issue type', type: 'select', options: ['leak', 'missing_shingles', 'flashing', 'gutter_related'], required: true },
+      { key: 'repair_sqft', label: 'Repair area (sq ft)', type: 'number', required: false, min: 1, max: 2000 },
+      { key: 'stories', label: 'Stories', type: 'select', options: ['1', '2', '3+'], required: true },
+      { key: 'roof_age', label: 'Roof age (years)', type: 'number', required: false, min: 0, max: 60 },
+    ],
+    drivers: [
+      { key: 'repair_sqft', label: 'Shingle repair', low_cents: 800, high_cents: 1500, per: 'sqft' },
+      { key: 'flashing_job', label: 'Flashing repair', low_cents: 35000, high_cents: 75000, per: 'job', when: a => a.issue_type === 'flashing' },
+    ],
+    options: [
+      { when: a => a.stories === '2', mult: 1.15, note: 'Two-story access (+15%)' },
+      { when: a => a.stories === '3+', mult: 1.3, note: 'Three-story+ access (+30%)' },
+    ],
+    risks: [
+      { when: a => a.roof_age && a.roof_age > 20, flag: 'roof_age', note: 'Roof over 20 years old: decking may need replacement once opened.', contingency: 0.12 },
+      { when: a => a.issue_type === 'leak', flag: 'water_damage', note: 'Leaks can hide decking or insulation damage.', contingency: 0.10 },
+    ],
+  },
+  hvac: {
+    label: 'Heating & Cooling',
+    base: { low_cents: 8900, high_cents: 12900, label: 'Diagnostic visit' },
+    questions: [
+      { key: 'system_type', label: 'System type', type: 'select', options: ['ac', 'furnace', 'heat_pump', 'thermostat'], required: true },
+      { key: 'issue', label: 'Issue', type: 'select', options: ['no_cool_heat', 'noise', 'maintenance', 'install_replace'], required: true },
+      { key: 'units', label: 'Number of units', type: 'number', required: false, min: 1, max: 10 },
+      { key: 'system_age', label: 'System age (years)', type: 'number', required: false, min: 0, max: 40 },
+    ],
+    drivers: [
+      { key: 'units', label: 'Service per unit', low_cents: 15000, high_cents: 30000, per: 'each' },
+      { key: 'recharge', label: 'Refrigerant recharge', low_cents: 25000, high_cents: 60000, per: 'job', when: a => a.issue === 'no_cool_heat' && a.system_type !== 'furnace' },
+    ],
+    options: [
+      { when: a => a.issue === 'maintenance', mult: 0.8, note: 'Preventive maintenance visit (-20%)' },
+    ],
+    risks: [
+      { when: a => a.system_age && a.system_age > 15, flag: 'old_system', note: 'Systems over 15 years old often need parts that are harder to source.', contingency: 0.10 },
+      { when: a => a.issue === 'install_replace', flag: 'permit', note: 'Full replacement usually requires a permit and inspection.', contingency: 0.08 },
+    ],
+  },
+  landscaping: {
+    label: 'Landscaping',
+    base: { low_cents: 7500, high_cents: 15000, label: 'Site visit and plan' },
+    questions: [
+      { key: 'service', label: 'Service', type: 'select', options: ['cleanup', 'mowing', 'planting', 'irrigation', 'design'], required: true },
+      { key: 'yard_sqft', label: 'Yard area (sq ft)', type: 'number', required: true, min: 100, max: 100000 },
+      { key: 'frequency', label: 'Frequency', type: 'select', options: ['one_time', 'weekly', 'biweekly', 'monthly'], required: false },
+    ],
+    drivers: [
+      { key: 'yard_sqft', label: 'Labor and materials', low_cents: 12, high_cents: 28, per: 'sqft' },
+      { key: 'irrigation_job', label: 'Irrigation install/repair', low_cents: 80000, high_cents: 250000, per: 'job', when: a => a.service === 'irrigation' },
+    ],
+    options: [
+      { when: a => a.frequency === 'weekly', mult: 0.85, note: 'Recurring weekly service (-15%)' },
+      { when: a => a.frequency === 'biweekly', mult: 0.9, note: 'Recurring biweekly service (-10%)' },
+    ],
+    risks: [
+      { when: a => a.service === 'design', flag: 'design_scope', note: 'Design projects often expand in scope; final quote after site plan.', contingency: 0.10 },
+    ],
+  },
+  fencing: {
+    label: 'Fencing',
+    base: { low_cents: 10000, high_cents: 20000, label: 'Site visit and layout' },
+    questions: [
+      { key: 'service', label: 'Service', type: 'select', options: ['repair', 'new_install', 'gate'], required: true },
+      { key: 'linear_ft', label: 'Fence length (linear feet)', type: 'number', required: true, min: 4, max: 2000 },
+      { key: 'material', label: 'Material', type: 'select', options: ['wood', 'vinyl', 'chain_link', 'metal'], required: true },
+    ],
+    drivers: [
+      { key: 'linear_ft', label: 'Fence work', low_cents: 2800, high_cents: 6500, per: 'linear ft' },
+      { key: 'gate_job', label: 'Gate install', low_cents: 45000, high_cents: 120000, per: 'each', when: a => a.service === 'gate' },
+    ],
+    options: [
+      { when: a => a.material === 'vinyl', mult: 1.25, note: 'Vinyl material (+25%)' },
+      { when: a => a.material === 'metal', mult: 1.4, note: 'Metal/ornamental (+40%)' },
+      { when: a => a.service === 'repair', mult: 0.7, note: 'Repair vs new install (-30%)' },
+    ],
+    risks: [
+      { when: a => a.linear_ft > 300, flag: 'permit', note: 'Long runs may need a permit or HOA approval.', contingency: 0.05 },
+    ],
+  },
+  concrete: {
+    label: 'Concrete & Masonry',
+    base: { low_cents: 15000, high_cents: 30000, label: 'Mobilization and forming' },
+    questions: [
+      { key: 'service', label: 'Service', type: 'select', options: ['crack_repair', 'new_slab', 'driveway', 'walkway', 'patio'], required: true },
+      { key: 'area_sqft', label: 'Area (sq ft)', type: 'number', required: true, min: 4, max: 10000 },
+    ],
+    drivers: [
+      { key: 'area_sqft', label: 'Concrete work', low_cents: 900, high_cents: 1800, per: 'sqft' },
+    ],
+    options: [
+      { when: a => a.service === 'crack_repair', mult: 0.6, note: 'Crack repair vs new pour (-40%)' },
+      { when: a => ['driveway', 'patio'].includes(a.service), mult: 1.15, note: 'Driveway/patio finish (+15%)' },
+    ],
+    risks: [
+      { when: a => a.area_sqft > 500, flag: 'permit', note: 'Large pours may require a permit and inspection.', contingency: 0.06 },
+    ],
+  },
+  appliance: {
+    label: 'Appliance Install',
+    base: { low_cents: 9900, high_cents: 14900, label: 'Service call' },
+    questions: [
+      { key: 'appliance_type', label: 'Appliance', type: 'select', options: ['washer', 'dryer', 'dishwasher', 'fridge', 'stove', 'microwave', 'disposal'], required: true },
+      { key: 'units', label: 'Number of units', type: 'number', required: false, min: 1, max: 10 },
+      { key: 'haul_away', label: 'Haul away old unit?', type: 'boolean', required: false },
+      { key: 'hookups_ready', label: 'Hookups ready?', type: 'boolean', required: false },
+    ],
+    drivers: [
+      { key: 'units', label: 'Installation per unit', low_cents: 12000, high_cents: 25000, per: 'each' },
+    ],
+    options: [
+      { when: a => a.haul_away === true, mult: 1.2, note: 'Haul-away of old unit (+20%)' },
+      { when: a => a.hookups_ready === false, mult: 1.25, note: 'New hookups/wiring needed (+25%)' },
+    ],
+    risks: [],
+  },
+  garage_door: {
+    label: 'Garage Doors',
+    base: { low_cents: 8900, high_cents: 12900, label: 'Service call and inspection' },
+    questions: [
+      { key: 'issue', label: 'Issue', type: 'select', options: ['spring', 'opener', 'track', 'panel', 'new_door'], required: true },
+      { key: 'doors', label: 'Number of doors', type: 'number', required: false, min: 1, max: 6 },
+    ],
+    drivers: [
+      { key: 'spring_job', label: 'Spring replacement', low_cents: 20000, high_cents: 40000, per: 'job', when: a => a.issue === 'spring' },
+      { key: 'opener_job', label: 'Opener install', low_cents: 30000, high_cents: 60000, per: 'job', when: a => a.issue === 'opener' },
+      { key: 'door_job', label: 'New door install', low_cents: 120000, high_cents: 280000, per: 'each', when: a => a.issue === 'new_door' },
+      { key: 'doors', label: 'Track/panel service', low_cents: 15000, high_cents: 35000, per: 'each', when: a => ['track', 'panel'].includes(a.issue) },
+    ],
+    options: [],
+    risks: [
+      { when: a => a.issue === 'spring', flag: 'safety', note: 'Springs are high-tension parts; pro install only.', contingency: 0 },
+    ],
+  },
+  pressure_washing: {
+    label: 'Pressure Washing',
+    base: { low_cents: 9900, high_cents: 14900, label: 'Mobilization and setup' },
+    questions: [
+      { key: 'area_type', label: 'Area type', type: 'select', options: ['driveway', 'siding', 'deck', 'patio', 'roof_soft_wash'], required: true },
+      { key: 'area_sqft', label: 'Area (sq ft)', type: 'number', required: true, min: 50, max: 20000 },
+      { key: 'stories', label: 'Stories (for siding)', type: 'select', options: ['1', '2'], required: false },
+    ],
+    drivers: [
+      { key: 'area_sqft', label: 'Washing', low_cents: 15, high_cents: 35, per: 'sqft' },
+    ],
+    options: [
+      { when: a => a.area_type === 'roof_soft_wash', mult: 1.5, note: 'Soft-wash roof treatment (+50%)' },
+      { when: a => a.stories === '2', mult: 1.2, note: 'Two-story siding (+20%)' },
+    ],
+    risks: [],
+  },
 };
 
 function round50(cents) {

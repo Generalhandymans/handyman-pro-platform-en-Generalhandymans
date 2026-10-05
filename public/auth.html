@@ -161,8 +161,10 @@
             </div>
           </div>
           <div class="field">
-            <label for="sj-specialties">Specialties</label>
-            <input type="text" id="sj-specialties" name="specialties" placeholder="e.g. painting, drywall, carpentry">
+            <label>Specialties <span class="req">*</span> <span class="hint">— pick all that apply</span></label>
+            <div class="check-grid" id="sj-specialties-grid" aria-label="Specialties">
+              <p class="muted small">Loading specialties…</p>
+            </div>
             <span class="field-error" data-error-for="specialties"></span>
           </div>
           <div class="form-grid two">
@@ -190,6 +192,22 @@
   (function () {
     'use strict';
     HP.mountHeader('auth');
+
+    // Load specialties checkboxes from the real trades catalog.
+    (async function loadSpecialties() {
+      const grid = document.getElementById('sj-specialties-grid');
+      if (!grid) return;
+      try {
+        const trades = await HP.api('GET', '/trades');
+        grid.innerHTML = '';
+        trades.forEach((t) => {
+          const lab = HP.el(`<label><input type="checkbox" name="specialty" value="${HP.esc(t.service_type)}"><span>${HP.esc(t.label)}</span></label>`);
+          grid.appendChild(lab);
+        });
+      } catch (e) {
+        grid.innerHTML = '<p class="muted small">Could not load specialties. Please try again in a moment.</p>';
+      }
+    })();
 
     // Tabs (supports ?tab=contractor deep link).
     const tabs = document.querySelectorAll('.tab');
@@ -349,13 +367,19 @@
       const form = e.target, btn = document.getElementById('btn-contractor');
       HP.clearFieldErrors(form);
       const v = (id) => document.getElementById(id).value.trim();
+      const picked = Array.from(document.querySelectorAll('#sj-specialties-grid input[name="specialty"]:checked')).map((c) => c.value);
       const body = {
         name: v('sj-name'), legal_name: v('sj-legal'), email: v('sj-email'),
         phone: v('sj-phone'), password: document.getElementById('sj-password').value,
         city: v('sj-city'), service_base: v('sj-base'),
-        specialties: v('sj-specialties'), license_number: v('sj-license'),
+        specialties: picked.join(','), license_number: v('sj-license'),
         insurance_info: v('sj-insurance'),
       };
+      if (picked.length === 0) {
+        HP.toast('Pick at least one specialty.', 'err');
+        HP.busy(btn, false);
+        return;
+      }
       const radius = document.getElementById('sj-radius').value;
       const years = document.getElementById('sj-years').value;
       if (radius !== '') body.service_radius_miles = Number(radius);
