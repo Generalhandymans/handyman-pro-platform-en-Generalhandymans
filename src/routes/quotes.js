@@ -20,6 +20,15 @@ const MILESTONES = {
   flooring: ['Removal and prep', 'Installation', 'Transitions and cleanup'],
   drywall: ['Hang and tape', 'Mud, sand and texture', 'Prime and cleanup'],
   carpentry: ['Material prep', 'Installation', 'Finish and cleanup'],
+  roofing: ['Inspection and protection', 'Repair / replacement', 'Cleanup and final check'],
+  hvac: ['Diagnostic', 'Repair / installation', 'Testing and calibration'],
+  landscaping: ['Site prep', 'Main work', 'Cleanup and walkthrough'],
+  fencing: ['Layout and post setting', 'Panel / picket installation', 'Gates and cleanup'],
+  concrete: ['Forming and prep', 'Pour and finish', 'Cure check and cleanup'],
+  appliance: ['Delivery and prep', 'Installation and hookup', 'Testing and haul-away'],
+  garage_door: ['Inspection and parts', 'Repair / installation', 'Balance test and cleanup'],
+  pressure_washing: ['Prep and protection', 'Washing', 'Rinse and final check'],
+  general: ['Assessment and prep', 'Main work', 'Cleanup and client review'],
 };
 const GENERIC_MILESTONES = ['Preparation', 'Main work', 'Finishing and client review'];
 
@@ -107,41 +116,62 @@ router.get('/:id', authRequired, ah(async (req, res) => {
   res.json(q);
 }));
 
-// ---- Customer: accept / reject. Accepting spins up the project + deposit record. ----
+// ---- Customer: accept / reject. Accepting requires Terms acceptance and
+// spins up the project + deposit record. ----
 router.post('/:id/respond', authRequired, ah(async (req, res) => {
   const q = db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Quote not found.' });
   const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
   if (!jobVisibleTo(req, job)) return res.status(403).json({ error: 'Not allowed.' });
-  if (q.status !== 'sent') return res.status(400).json({ error: 'This quote is no longer awaiting a response.' });
   const accept = (req.body || {}).accept === true;
+  const termsAccepted = (req.body || {}).terms_accepted === true;
 
   if (!accept) {
+    if (q.status !== 'sent') return res.status(400).json({ error: 'This quote is no longer awaiting a response.' });
     db.prepare(`UPDATE quotes SET status = 'rejected', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
     db.prepare(`UPDATE job_requests SET status = 'lost', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
     touchInteraction(job.id, 'customer_reply', 'quote rejected');
     return res.json({ accepted: false });
   }
 
-  const tx = db.transaction(() => {
-    db.prepare(`UPDATE quotes SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
-    const p = db.prepare(
-      `INSERT INTO projects (job_request_id, quote_id, customer_price_cents, contractor_cost_cents, stage)
-       VALUES (?,?,?,?, 'assigned')`
-    ).run(job.id, q.id, q.customer_price_cents, q.contractor_cost_cents);
-    const names = MILESTONES[job.service_type] || GENERIC_MILESTONES;
-    const ins = db.prepare('INSERT INTO milestones (project_id, title, sort_order) VALUES (?,?,?)');
-    names.forEach((t, i) => ins.run(p.lastInsertRowid, t, i));
-    // Bookkeeping: the deposit the platform collects (Stripe NOT integrated).
-    db.prepare(
-      `INSERT INTO payments (project_id, kind, amount_cents, status, provider, notes)
-       VALUES (?,?,?,'recorded','manual',?)`
-    ).run(p.lastInsertRowid, 'deposit', q.deposit_cents,
-      `Deposit ${q.deposit_pct}% of ${fmt(q.customer_price_cents)} — recorded manually (no Stripe integration).`);
-    db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
-    return p.lastInsertRowid;
-  });
-  const projectId = tx();
+  // Legal gate: accepting the price + paying the deposit requires explicit
+  // acceptance of the Terms of Service.
+  if (!termsAccepted) {
+    return res.status(400).json({ error: 'You must accept the Terms of Service to accept this quote and pay the deposit.' });
+  }
+
+  const { CLIENT_TERMS_VERSION, recordAcceptance } = require('../services/terms');
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || null;
+
+  let projectId;
+  try {
+    const tx = db.transaction(() => {
+      // Re-check inside the transaction: prevents double-accept races.
+      const fresh = db.prepare('SELECT status FROM quotes WHERE id = ?').get(q.id);
+      if (fresh.status !== 'sent') throw Object.assign(new Error('This quote is no longer awaiting a response.'), { statusCode: 400 });
+      db.prepare(`UPDATE quotes SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
+      const p = db.prepare(
+        `INSERT INTO projects (job_request_id, quote_id, customer_price_cents, contractor_cost_cents, stage)
+         VALUES (?,?,?,?, 'assigned')`
+      ).run(job.id, q.id, q.customer_price_cents, q.contractor_cost_cents);
+      const names = MILESTONES[job.service_type] || GENERIC_MILESTONES;
+      const ins = db.prepare('INSERT INTO milestones (project_id, title, sort_order) VALUES (?,?,?)');
+      names.forEach((t, i) => ins.run(p.lastInsertRowid, t, i));
+      // Bookkeeping: the deposit the platform collects (Stripe NOT integrated).
+      db.prepare(
+        `INSERT INTO payments (project_id, kind, amount_cents, status, provider, notes)
+         VALUES (?,?,?,'recorded','manual',?)`
+      ).run(p.lastInsertRowid, 'deposit', q.deposit_cents,
+        `Deposit ${q.deposit_pct}% of ${fmt(q.customer_price_cents)} — recorded manually (no Stripe integration).`);
+      db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
+      // Legal proof: who accepted which terms version, when.
+      recordAcceptance({ userId: req.user.id, kind: 'client_quote', referenceId: q.id, version: CLIENT_TERMS_VERSION, ip });
+      return p.lastInsertRowid;
+    });
+    projectId = tx();
+  } catch (e) {
+    return res.status(e.statusCode || 500).json({ error: e.statusCode ? e.message : 'Something went wrong on our end. Please try again.' });
+  }
   touchInteraction(job.id, 'customer_reply', 'quote accepted');
 
   // Notify admins: a customer accepted — time to assign a contractor.

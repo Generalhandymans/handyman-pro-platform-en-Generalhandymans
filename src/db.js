@@ -272,6 +272,23 @@ CREATE TABLE IF NOT EXISTS admin_audit (
 
 CREATE INDEX IF NOT EXISTS idx_audit_admin ON admin_audit(admin_id);
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON admin_audit(entity, entity_id);
+
+-- Legal: append-only log of Terms acceptances (client quote acceptance,
+-- contractor job acceptance). This is the legal proof of who accepted what
+-- version and when. Rows are never updated or deleted by the app.
+CREATE TABLE IF NOT EXISTS terms_acceptances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('client_quote','contractor_job')),
+  reference_id INTEGER NOT NULL,
+  terms_version TEXT NOT NULL,
+  accepted_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ip TEXT,
+  UNIQUE (kind, reference_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_terms_user ON terms_acceptances(user_id);
+CREATE INDEX IF NOT EXISTS idx_terms_ref ON terms_acceptances(kind, reference_id);
 `;
 
 db.exec(SCHEMA);
@@ -294,6 +311,9 @@ if (!columnExists('users', 'reset_token')) {
 }
 if (!columnExists('users', 'reset_expires')) {
   db.exec(`ALTER TABLE users ADD COLUMN reset_expires TEXT`);
+}
+if (!columnExists('projects', 'contractor_status')) {
+  db.exec(`ALTER TABLE projects ADD COLUMN contractor_status TEXT CHECK (contractor_status IN ('offered','accepted','declined'))`);
 }
 
 // ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----

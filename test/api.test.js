@@ -132,7 +132,7 @@ test('job intake + photo upload (optimized) + estimate', async () => {
   assert.ok(e.data.low_cents > 0 && e.data.high_cents >= e.data.low_cents);
 });
 
-test('quote create → send (customer notified) → accept (admin notified, project born)', async () => {
+test('quote create → send (customer notified) → accept requires terms (admin notified, project born)', async () => {
   const before = emailLogCount();
   const q = await api('POST', '/api/quotes', {
     job_request_id: jobId, customer_price_cents: 120000, contractor_cost_cents: 80000, deposit_pct: 30,
@@ -148,11 +148,26 @@ test('quote create → send (customer notified) → accept (admin notified, proj
   const n1 = db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%quote%ready%' ORDER BY id DESC").get();
   assert.ok(n1, 'quote-ready notification logged');
 
-  const r = await api('POST', `/api/quotes/${quoteId}/respond`, { accept: true }, custToken);
+  // Legal gate: accepting without terms_accepted is rejected.
+  const noTerms = await api('POST', `/api/quotes/${quoteId}/respond`, { accept: true }, custToken);
+  assert.equal(noTerms.status, 400);
+  assert.match(noTerms.data.error, /Terms of Service/);
+  const stillSent = db.prepare('SELECT status FROM quotes WHERE id=?').get(quoteId);
+  assert.equal(stillSent.status, 'sent');
+
+  const r = await api('POST', `/api/quotes/${quoteId}/respond`, { accept: true, terms_accepted: true }, custToken);
   assert.equal(r.status, 200);
   assert.equal(r.data.accepted, true);
   projectId = r.data.project_id;
   assert.ok(projectId);
+
+  // Legal proof recorded: who accepted which terms version, when.
+  const acc = db.prepare(
+    "SELECT * FROM terms_acceptances WHERE kind='client_quote' AND reference_id=? AND user_id=?"
+  ).get(quoteId, custId);
+  assert.ok(acc, 'client terms acceptance recorded');
+  assert.ok(acc.terms_version, 'terms version recorded');
+  assert.ok(acc.accepted_at, 'acceptance timestamp recorded');
 
   // admins got the "quote accepted" email
   const n2 = db.prepare("SELECT * FROM email_log WHERE to_email='admin@test.local' AND subject LIKE '%accepted%' ORDER BY id DESC").get();
@@ -161,7 +176,7 @@ test('quote create → send (customer notified) → accept (admin notified, proj
   assert.ok(emailLogCount() > before, 'notifications were logged');
 });
 
-test('contractor activation + assignment notifies both sides', async () => {
+test('contractor offer → accept requires terms; decline releases the project', async () => {
   const c = db.prepare('SELECT id FROM contractors WHERE user_id=?').get(contUserId);
   contractorId = c.id;
   const v = await api('PATCH', `/api/contractors/${contractorId}/verify`, {
@@ -170,14 +185,49 @@ test('contractor activation + assignment notifies both sides', async () => {
   assert.equal(v.status, 200);
   assert.equal(v.data.status, 'active');
 
+  // Admin offers (not force-assigns) the project.
   const a = await api('POST', `/api/projects/${projectId}/assign`, { contractor_id: contractorId }, adminToken);
   assert.equal(a.status, 200);
   assert.equal(a.data.contractor_id, contractorId);
+  assert.equal(a.data.contractor_status, 'offered');
 
-  const n1 = db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%assigned%' ORDER BY id DESC").get();
-  assert.ok(n1, 'contractor assignment notification logged');
-  const n2 = db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%assigned%' ORDER BY id DESC").get();
-  assert.ok(n2, 'customer assignment notification logged');
+  const n1 = db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%offer%' ORDER BY id DESC").get();
+  assert.ok(n1, 'contractor offer notification logged');
+
+  // Contractor cannot move stages before accepting.
+  const early = await api('PATCH', `/api/projects/${projectId}/stage`, { stage: 'in_progress' }, contToken);
+  assert.equal(early.status, 403);
+
+  // Accepting without terms is rejected.
+  const noTerms = await api('POST', `/api/projects/${projectId}/contractor-respond`, { accept: true }, contToken);
+  assert.equal(noTerms.status, 400);
+  assert.match(noTerms.data.error, /Independent Contractor Terms/);
+
+  // Accept with terms: project becomes scheduled, acceptance recorded.
+  const ok = await api('POST', `/api/projects/${projectId}/contractor-respond`, { accept: true, terms_accepted: true }, contToken);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.accepted, true);
+  assert.equal(ok.data.project.contractor_status, 'accepted');
+  assert.equal(ok.data.project.stage, 'scheduled');
+  const acc = db.prepare(
+    "SELECT * FROM terms_acceptances WHERE kind='contractor_job' AND reference_id=? AND user_id=?"
+  ).get(projectId, contUserId);
+  assert.ok(acc, 'contractor terms acceptance recorded');
+
+  // Second project: decline path releases it back to the pool.
+  const q2 = await api('POST', '/api/quotes', {
+    job_request_id: jobId, customer_price_cents: 90000, contractor_cost_cents: 60000, deposit_pct: 30,
+  }, adminToken);
+  await api('POST', `/api/quotes/${q2.data.id}/send`, {}, adminToken);
+  const r2 = await api('POST', `/api/quotes/${q2.data.id}/respond`, { accept: true, terms_accepted: true }, custToken);
+  const p2 = r2.data.project_id;
+  await api('POST', `/api/projects/${p2}/assign`, { contractor_id: contractorId }, adminToken);
+  const d = await api('POST', `/api/projects/${p2}/contractor-respond`, { accept: false }, contToken);
+  assert.equal(d.status, 200);
+  assert.equal(d.data.accepted, false);
+  const released = db.prepare('SELECT contractor_id, contractor_status FROM projects WHERE id=?').get(p2);
+  assert.equal(released.contractor_id, null);
+  assert.equal(released.contractor_status, null);
 });
 
 test('MEDIATED messaging: no direct client<->contractor contact possible', async () => {
@@ -262,7 +312,7 @@ test('admin audit trail records everything', async () => {
   const rows = await api('GET', '/api/crm/audit?limit=50', undefined, adminToken);
   assert.equal(rows.status, 200);
   const actions = rows.data.map(r => r.action);
-  for (const a of ['quote.created', 'quote.sent', 'project.contractor_assigned', 'milestone.completed', 'milestone.approved', 'project.scheduled', 'contractor.verified']) {
+  for (const a of ['quote.created', 'quote.sent', 'project.contractor_offered', 'project.contractor_accepted', 'milestone.completed', 'milestone.approved', 'project.scheduled', 'contractor.verified']) {
     assert.ok(actions.includes(a), `audit has ${a}`);
   }
   // Admin-initiated actions are attributed to the admin; actor actions (contractor

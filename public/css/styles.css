@@ -290,6 +290,21 @@ a { color: var(--info); }
 .check-grid label:has(input:checked) { border-color: var(--navy-2); background: var(--amber-soft); }
 @media (min-width: 760px) { .check-grid { grid-template-columns: repeat(3, 1fr); } }
 
+/* ---------- terms checkbox ---------- */
+.terms-check {
+  display: flex; gap: .6rem; align-items: flex-start;
+  border: 1px solid var(--line); border-radius: .75rem; padding: .85rem;
+  background: #fbfcfe; font-size: .92rem; cursor: pointer; margin-top: 1rem;
+}
+.terms-check input[type="checkbox"] { accent-color: var(--navy-2); width: 1.15rem; height: 1.15rem; margin-top: .15rem; flex-shrink: 0; }
+
+/* ---------- job offer box (contractor portal) ---------- */
+.offer-box {
+  border: 2px solid var(--brand); border-radius: .85rem; padding: 1rem 1.1rem;
+  background: #fff8ec; margin-bottom: 1.1rem;
+}
+.offer-box p { margin: .4rem 0 .8rem; }
+
 /* ---------- wizard modal ---------- */
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(10, 22, 38, .62);

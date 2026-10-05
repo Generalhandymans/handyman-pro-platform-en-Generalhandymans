@@ -7,6 +7,7 @@ const db = require('../db');
 const { ah, authRequired, requireRole, isNonEmpty, failIfErrors } = require('../middleware');
 const { notify, shell } = require('../services/notify');
 const { auditLog } = require('../services/audit');
+const { touchInteraction } = require('../services/crm');
 const photoSvc = require('../services/photos');
 
 const router = express.Router();
@@ -75,26 +76,25 @@ router.get('/:id', authRequired, ah(async (req, res) => {
   res.json(withDetails(p));
 }));
 
-// ---- Admin: assign a contractor ----
+// ---- Admin: offer a project to a contractor (contractor must accept + agree to terms) ----
 router.post('/:id/assign', authRequired, requireRole('admin'), ah(async (req, res) => {
   const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found.' });
   const c = db.prepare('SELECT * FROM contractors WHERE id = ?').get((req.body || {}).contractor_id);
   if (!c) return res.status(400).json({ error: 'Contractor not found.' });
   if (c.status !== 'active') return res.status(400).json({ error: 'Contractor is not active.' });
-  db.prepare(`UPDATE projects SET contractor_id = ?, stage = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+  db.prepare(`UPDATE projects SET contractor_id = ?, contractor_status = 'offered', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(c.id, p.id);
-  db.prepare(`UPDATE job_requests SET status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.job_request_id);
-  auditLog(req.user.id, 'project.contractor_assigned', 'projects', p.id, `Contractor #${c.id} assigned`);
+  auditLog(req.user.id, 'project.contractor_offered', 'projects', p.id, `Project offered to contractor #${c.id}`);
 
-  // Notify the contractor by email.
+  // Notify the contractor: review the offer and accept it from their portal.
   const cu = db.prepare('SELECT name, email FROM users WHERE id = ?').get(c.user_id);
   const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
   if (cu && cu.email) {
     notify({
       to: cu.email,
-      subject: `New project assigned — ${job.service_type} (#${p.id})`,
-      html: shell('You have a new project', `Hi ${cu.name.split(' ')[0]}, General Handyman Solutions assigned you a project:`, [
+      subject: `New job offer — ${job.service_type} (#${p.id})`,
+      html: shell('You have a new job offer', `Hi ${cu.name.split(' ')[0]}, General Handyman Solutions is offering you a project. Review the details and accept it from your portal — accepting means you agree to the Independent Contractor Terms:`, [
         ['Project', `#${p.id} — ${job.service_type}`],
         ['Address', job.address],
         ['Your budget', '$' + (p.contractor_cost_cents / 100).toFixed(2)],
@@ -102,21 +102,77 @@ router.post('/:id/assign', authRequired, requireRole('admin'), ah(async (req, re
       ]),
     }).catch(() => {});
   }
-  // Notify the customer that a pro was assigned.
+  res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
+}));
+
+// ---- Contractor: accept or decline an offered project (accept requires terms) ----
+router.post('/:id/contractor-respond', authRequired, ah(async (req, res) => {
+  const p = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found.' });
+  if (!['contractor', 'admin'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Not allowed.' });
+  }
+  if (req.user.role === 'contractor') {
+    const c = db.prepare('SELECT id FROM contractors WHERE user_id = ?').get(req.user.id);
+    if (!c || p.contractor_id !== c.id) {
+      return res.status(403).json({ error: 'This project was not offered to you.' });
+    }
+  }
+  if (p.contractor_status !== 'offered') {
+    return res.status(400).json({ error: 'This project is not awaiting your response.' });
+  }
+  const accept = (req.body || {}).accept === true;
+  const termsAccepted = (req.body || {}).terms_accepted === true;
+
+  if (!accept) {
+    db.prepare(`UPDATE projects SET contractor_id = NULL, contractor_status = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.id);
+    auditLog(req.user.id, 'project.contractor_declined', 'projects', p.id, 'Contractor declined the offer');
+    const admins = db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
+    const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
+    for (const a of admins) {
+      notify({
+        to: a.email,
+        subject: `Contractor declined project #${p.id}`,
+        html: shell('Offer declined', 'The contractor declined the job offer. Please assign another professional:', [
+          ['Project', `#${p.id} — ${job.service_type}`],
+        ]),
+      }).catch(() => {});
+    }
+    touchInteraction(p.job_request_id, 'contractor_reply', 'offer declined');
+    return res.json({ accepted: false });
+  }
+
+  // Legal gate: accepting the job requires explicit acceptance of the
+  // Independent Contractor Terms.
+  if (!termsAccepted) {
+    return res.status(400).json({ error: 'You must accept the Independent Contractor Terms to take this job.' });
+  }
+  const { CONTRACTOR_TERMS_VERSION, recordAcceptance } = require('../services/terms');
+  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || null;
+
+  db.prepare(`UPDATE projects SET contractor_status = 'accepted', stage = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.id);
+  db.prepare(`UPDATE job_requests SET status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.job_request_id);
+  recordAcceptance({ userId: req.user.id, kind: 'contractor_job', referenceId: p.id, version: CONTRACTOR_TERMS_VERSION, ip });
+  auditLog(req.user.id, 'project.contractor_accepted', 'projects', p.id, `Contractor accepted under terms v${CONTRACTOR_TERMS_VERSION}`);
+  touchInteraction(p.job_request_id, 'contractor_reply', 'offer accepted');
+
+  // Notify the customer that a pro accepted and the job is scheduled.
+  const job = db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
   const custEmail = job.customer_id
     ? (db.prepare('SELECT email FROM users WHERE id = ?').get(job.customer_id) || {}).email
     : job.email;
+  const pro = db.prepare('SELECT u.name FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id);
   if (custEmail) {
     notify({
       to: custEmail,
-      subject: `A professional was assigned to your project (#${p.id})`,
-      html: shell('Professional assigned', 'Good news — a verified professional was assigned to your project:', [
+      subject: `A professional accepted your project (#${p.id})`,
+      html: shell('Professional confirmed', 'Good news — a verified professional accepted your project and it is now scheduled:', [
         ['Project', `#${p.id} — ${job.service_type}`],
-        ['Professional', cu ? cu.name : 'Assigned pro'],
+        ['Professional', pro ? pro.name : 'Assigned pro'],
       ]),
     }).catch(() => {});
   }
-  res.json(db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
+  res.json({ accepted: true, project: db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id) });
 }));
 
 // ---- Admin: set scheduled dates (end must be >= start) ----
@@ -151,6 +207,9 @@ router.patch('/:id/stage', authRequired, ah(async (req, res) => {
   if (!STAGES.includes(stage)) return res.status(400).json({ error: 'Invalid stage.' });
   if (req.user.role === 'contractor' && !['scheduled', 'in_progress', 'review'].includes(stage)) {
     return res.status(403).json({ error: 'Contractors can only move scheduled/in_progress/review.' });
+  }
+  if (req.user.role === 'contractor' && p.contractor_status !== 'accepted') {
+    return res.status(403).json({ error: 'Accept the job offer first.' });
   }
   if (req.user.role === 'customer') return res.status(403).json({ error: 'Customers cannot move stages.' });
 

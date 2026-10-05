@@ -57,6 +57,27 @@
     </section>
   </main>
 
+  <!-- Job offer modal: Independent Contractor Terms checkbox -->
+  <div class="modal-backdrop" id="offer-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="offer-modal-title">
+      <div class="modal-head">
+        <h2 id="offer-modal-title">Accept job offer</h2>
+        <button class="modal-close" id="offer-modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="offer-summary"></div>
+        <label class="terms-check">
+          <input type="checkbox" id="offer-terms-check">
+          <span>I have read and accept the <a href="contractor-terms.html" target="_blank" rel="noopener">Independent Contractor Terms</a> <span class="muted" id="offer-terms-ver"></span> for this job.</span>
+        </label>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-outline" id="offer-modal-cancel">Cancel</button>
+        <button class="btn btn-ok" id="offer-terms-btn" disabled>Accept job</button>
+      </div>
+    </div>
+  </div>
+
   <script src="js/api.js"></script>
   <script src="js/messages.js"></script>
   <script>
@@ -167,8 +188,8 @@
         const projects = await HP.api('GET', '/projects');
         if (!projects.length) {
           box.innerHTML = HP.emptyState(
-            'No jobs assigned yet',
-            'Once General Handyman Solutions assigns you a job, it will appear here with its milestones and details.'
+            'No jobs yet',
+            'When General Handyman Solutions offers you a job, it will appear here — review it and accept to get started.'
           );
           return;
         }
@@ -204,7 +225,18 @@
     }
 
     function renderJobBody(p, body) {
-      const stageBtns = CONTRACTOR_STAGES
+      const offered = p.contractor_status === 'offered';
+      const offerBox = offered ? `
+        <div class="offer-box">
+          <div><strong>📋 Job offer — your response needed</strong></div>
+          <p class="small">Review the details below. Accepting means you agree to the
+          <a href="contractor-terms.html" target="_blank" rel="noopener">Independent Contractor Terms</a>.</p>
+          <div class="btn-row">
+            <button class="btn btn-ok btn-sm" data-offer-accept="${p.id}">Accept job</button>
+            <button class="btn btn-outline btn-sm" data-offer-decline="${p.id}">Decline</button>
+          </div>
+        </div>` : '';
+      const stageBtns = offered ? '<span class="small muted">Accept the offer above to start working this job.</span>' : CONTRACTOR_STAGES
         .filter((s) => s !== p.stage)
         .map((s) => `<button class="btn btn-outline btn-sm" data-stage="${s}" data-pid="${p.id}">Move to “${HP.esc(HP.PROJECT_STAGE[s])}”</button>`)
         .join('');
@@ -219,6 +251,7 @@
         ? `<div class="photo-grid">${p.photos.map(photoTile).join('')}</div>`
         : '<p class="small muted">No photos uploaded yet.</p>';
       body.innerHTML = `
+        ${offerBox}
         <dl class="kv">
           <dt>Customer price</dt><dd>${HP.fmtMoney(p.customer_price_cents)}</dd>
           <dt>Your payout</dt><dd><strong>${HP.fmtMoney(p.contractor_cost_cents)}</strong></dd>
@@ -257,6 +290,15 @@
           refreshJob(b.dataset.pid, body);
         } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
       }));
+      body.querySelectorAll('[data-offer-accept]').forEach((b) => b.addEventListener('click', () => openOfferModal(b.dataset.offerAccept)));
+      body.querySelectorAll('[data-offer-decline]').forEach((b) => b.addEventListener('click', async () => {
+        if (!confirm('Decline this job offer? We will offer it to another professional.')) return;
+        try {
+          await HP.api('POST', `/projects/${b.dataset.offerDecline}/contractor-respond`, { accept: false });
+          HP.toast('Offer declined.', 'info');
+          loadJobs();
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      }));
       body.querySelector('.photo-upload').addEventListener('submit', async (ev) => {
         ev.preventDefault();
         const f = ev.target;
@@ -287,6 +329,56 @@
         renderJobBody(p, body);
       } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
     }
+
+    // ---- Job offer acceptance modal (Independent Contractor Terms) ----
+    let offerProjectId = null;
+    async function openOfferModal(projectId) {
+      offerProjectId = projectId;
+      let p = null;
+      try { p = await HP.api('GET', `/projects/${projectId}`); } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); return; }
+      let ver = '';
+      try { const t = await HP.api('GET', '/terms-versions'); ver = t.contractor || ''; } catch (e) { /* ignore */ }
+      document.getElementById('offer-summary').innerHTML = `
+        <dl class="kv">
+          <dt>Job</dt><dd><strong>#${p.id}</strong></dd>
+          <dt>Your payout</dt><dd><strong>${HP.fmtMoney(p.contractor_cost_cents)}</strong></dd>
+          <dt>Stage</dt><dd>${HP.esc(HP.PROJECT_STAGE[p.stage] || p.stage)}</dd>
+        </dl>
+        <p class="small muted">Accepting commits you to perform this job as an independent contractor under the terms below.</p>`;
+      const chk = document.getElementById('offer-terms-check');
+      chk.checked = false;
+      document.getElementById('offer-terms-btn').disabled = true;
+      document.getElementById('offer-terms-ver').textContent = ver ? `(v${ver})` : '';
+      document.getElementById('offer-modal').hidden = false;
+      document.body.style.overflow = 'hidden';
+    }
+    function closeOfferModal() {
+      document.getElementById('offer-modal').hidden = true;
+      document.body.style.overflow = '';
+      offerProjectId = null;
+    }
+    document.getElementById('offer-terms-check').addEventListener('change', (e) => {
+      document.getElementById('offer-terms-btn').disabled = !e.target.checked;
+    });
+    document.getElementById('offer-modal-close').addEventListener('click', closeOfferModal);
+    document.getElementById('offer-modal-cancel').addEventListener('click', closeOfferModal);
+    document.getElementById('offer-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'offer-modal') closeOfferModal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.getElementById('offer-modal').hidden) closeOfferModal();
+    });
+    document.getElementById('offer-terms-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('offer-terms-btn');
+      HP.busy(btn, true, 'Accepting…');
+      try {
+        await HP.api('POST', `/projects/${offerProjectId}/contractor-respond`, { accept: true, terms_accepted: true });
+        closeOfferModal();
+        HP.toast('Job accepted — good luck!', 'ok');
+        loadJobs();
+      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      finally { HP.busy(btn, false); }
+    });
 
     init();
   })();

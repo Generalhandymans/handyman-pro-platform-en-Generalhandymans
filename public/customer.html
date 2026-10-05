@@ -46,6 +46,27 @@
     </section>
   </main>
 
+  <!-- Quote acceptance modal: deposit summary + Terms of Service checkbox -->
+  <div class="modal-backdrop" id="accept-modal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="accept-modal-title">
+      <div class="modal-head">
+        <h2 id="accept-modal-title">Accept quote &amp; pay deposit</h2>
+        <button class="modal-close" id="accept-modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="accept-quote-summary"></div>
+        <label class="terms-check">
+          <input type="checkbox" id="accept-terms-check">
+          <span>I have read and accept the <a href="terms.html" target="_blank" rel="noopener">Terms of Service</a> <span class="muted" id="accept-terms-ver"></span>, including the deposit, cancellation, and refund terms.</span>
+        </label>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-outline" id="accept-modal-close2" onclick="document.getElementById('accept-modal-close').click()">Cancel</button>
+        <button class="btn btn-ok" id="accept-terms-btn" disabled>Accept &amp; pay deposit</button>
+      </div>
+    </div>
+  </div>
+
   <script src="js/api.js"></script>
   <script src="js/messages.js"></script>
   <script>
@@ -187,22 +208,70 @@
     }
 
     async function respondQuote(quoteId, accept) {
-      const ok = confirm(accept
-        ? 'Accept this quote? A deposit will be recorded and your project will be created.'
-        : 'Decline this quote? We will mark this request as closed.');
-      if (!ok) return;
+      if (!accept) {
+        const ok = confirm('Decline this quote? We will mark this request as closed.');
+        if (!ok) return;
+        try {
+          const r = await HP.api('POST', `/quotes/${quoteId}/respond`, { accept: false });
+          HP.toast('Quote declined.', 'info');
+          loadRequests(); loadProjects();
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        return;
+      }
+      // Accept: show the legal confirmation modal (terms + deposit).
+      openAcceptModal(quoteId);
+    }
+
+    let acceptQuoteId = null;
+    async function openAcceptModal(quoteId) {
+      acceptQuoteId = quoteId;
+      let q = null;
+      try { q = await HP.api('GET', `/quotes/${quoteId}`); } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); return; }
+      let ver = '';
+      try { const t = await HP.api('GET', '/terms-versions'); ver = t.client || ''; } catch (e) { /* ignore */ }
+      document.getElementById('accept-quote-summary').innerHTML = `
+        <dl class="kv">
+          <dt>Quoted price</dt><dd><strong>${HP.fmtMoney(q.customer_price_cents)}</strong></dd>
+          <dt>Deposit due now</dt><dd><strong>${HP.fmtMoney(q.deposit_cents)}</strong> (${q.deposit_pct}%)</dd>
+          ${q.valid_until ? `<dt>Valid until</dt><dd>${HP.fmtDate(q.valid_until)}</dd>` : ''}
+        </dl>
+        <p class="small muted">Accepting creates your project and records the deposit. A professional will be assigned next.</p>`;
+      const chk = document.getElementById('accept-terms-check');
+      chk.checked = false;
+      document.getElementById('accept-terms-btn').disabled = true;
+      document.getElementById('accept-terms-ver').textContent = ver ? `(v${ver})` : '';
+      document.getElementById('accept-modal').hidden = false;
+      document.body.style.overflow = 'hidden';
+    }
+    function closeAcceptModal() {
+      document.getElementById('accept-modal').hidden = true;
+      document.body.style.overflow = '';
+      acceptQuoteId = null;
+    }
+    document.getElementById('accept-terms-check').addEventListener('change', (e) => {
+      document.getElementById('accept-terms-btn').disabled = !e.target.checked;
+    });
+    document.getElementById('accept-modal-close').addEventListener('click', closeAcceptModal);
+    document.getElementById('accept-modal').addEventListener('click', (e) => {
+      if (e.target.id === 'accept-modal') closeAcceptModal();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !document.getElementById('accept-modal').hidden) closeAcceptModal();
+    });
+    document.getElementById('accept-terms-btn').addEventListener('click', async () => {
+      const btn = document.getElementById('accept-terms-btn');
+      HP.busy(btn, true, 'Accepting…');
       try {
-        const r = await HP.api('POST', `/quotes/${quoteId}/respond`, { accept });
-        HP.toast(accept ? 'Quote accepted — your project is on its way.' : 'Quote declined.', accept ? 'ok' : 'info');
+        const r = await HP.api('POST', `/quotes/${acceptQuoteId}/respond`, { accept: true, terms_accepted: true });
+        closeAcceptModal();
+        HP.toast('Quote accepted — your project is on its way.', 'ok');
         if (r.accepted && r.project_id) {
           document.querySelector('#portal-tabs .tab[data-tab="projects"]').click();
         }
-        loadRequests();
-        loadProjects();
-      } catch (e) {
-        HP.toast(HP.friendlyMessage(e), 'error');
-      }
-    }
+        loadRequests(); loadProjects();
+      } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      finally { HP.busy(btn, false); }
+    });
 
     // ---------------- projects ----------------
     async function loadProjects() {

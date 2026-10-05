@@ -87,6 +87,12 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'general-handyman-solutions', mail_provider: mailer.activeProvider(), from: `${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>` });
 });
 
+// Public: current legal terms versions (shown/accepted at checkout & job acceptance).
+app.get('/api/terms-versions', (req, res) => {
+  const { CLIENT_TERMS_VERSION, CONTRACTOR_TERMS_VERSION } = require('./src/services/terms');
+  res.json({ client: CLIENT_TERMS_VERSION, contractor: CONTRACTOR_TERMS_VERSION });
+});
+
 // ---- API routes ----
 app.use('/api/auth', require('./src/routes/auth'));
 app.use('/api/trades', require('./src/routes/trades'));
