@@ -234,11 +234,11 @@ db.prepare(`INSERT INTO referrals (code, referrer_user_id, referred_email, statu
 // Email templates + campaigns.
 const t1 = db.prepare(`INSERT INTO email_templates (name, subject, body_html) VALUES (?,?,?)`).run(
   'Inactive win-back', 'We miss you, {{name}} — 10% off your next project',
-  '<p>Hi {{name}},</p><p>It has been a while since your last project with General Handyman Solutions. Here is 10% off your next booking — reply to this email and we will schedule it.</p><p>— The General Handyman Solutions team</p>'
+  '<p>Hi {{name}},</p><p>It has been a while since your last project with Helpman. Here is 10% off your next booking — reply to this email and we will schedule it.</p><p>— The Helpman team</p>'
 ).lastInsertRowid;
 const t2 = db.prepare(`INSERT INTO email_templates (name, subject, body_html) VALUES (?,?,?)`).run(
   'Top contractor kudos', 'You are a top-rated pro, {{name}}!',
-  '<p>Hi {{name}},</p><p>Your rating keeps you among our top contractors. New high-value jobs are coming your way first this month.</p><p>— The General Handyman Solutions team</p>'
+  '<p>Hi {{name}},</p><p>Your rating keeps you among our top contractors. New high-value jobs are coming your way first this month.</p><p>— The Helpman team</p>'
 ).lastInsertRowid;
 const camp1 = db.prepare(`INSERT INTO campaigns (name, segment, template_id, status) VALUES (?,?,?,'queued')`)
   .run('Q4 win-back: inactive 90d', 'inactive_clients_90d', t1).lastInsertRowid;

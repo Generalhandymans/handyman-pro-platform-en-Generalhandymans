@@ -1,4 +1,4 @@
-// General Handyman Solutions — main server.
+// Helpman — main server.
 // Run: npm install && npm start
 //
 // Serves the public site + portals from ./public, exposes the JSON API under
@@ -16,6 +16,7 @@ const mailer = require('./src/services/mailer');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 
 // ---- Phase 1 hardening: security headers + structured logging ----
 // NOTE: CSP is intentionally OFF for now — the portals use inline <script>
@@ -30,7 +31,8 @@ const logger = pino({
     censor: '[REDACTED]',
   },
 });
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } }));
+app.disable('x-powered-by');
 app.use((req, res, next) => {
   const started = process.hrtime.bigint();
   res.on('finish', () => {
@@ -125,7 +127,7 @@ app.get('/api/photos/:filename', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, service: 'general-handyman-solutions', mail_provider: mailer.activeProvider(), from: `${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>` });
+  res.json({ ok: true, service: 'helpman', mail_provider: mailer.activeProvider(), from: `${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>` });
 });
 
 // Public: current legal terms versions (shown/accepted at checkout & job acceptance).
@@ -177,7 +179,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 });
 
 app.listen(PORT, () => {
-  console.log(`General Handyman Solutions listening on http://localhost:${PORT}`);
+  console.log(`Helpman listening on http://localhost:${PORT}`);
   console.log(`Mail: provider=${mailer.activeProvider()} from="${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>"`);
   if (mailer.activeProvider() === 'console') {
     console.log('Mail is in LOG mode: campaigns are recorded in email_log, nothing is really sent. See README "Business email setup".');

@@ -131,7 +131,7 @@ router.post('/threads/:tid/messages', ah(async (req, res) => {
   for (const r of recipients) {
     await notify({
       to: r.email,
-      subject: `New message — General Handyman Solutions ${jobLabel}`,
+      subject: `New message — Helpman ${jobLabel}`,
       html: shell('New message', `${req.user.name} wrote in the ${thread.kind === 'client_support' ? 'customer support' : 'contractor support'} thread:`, [
         ['Project', jobLabel],
         ['From', `${req.user.name} (${senderRole})`],

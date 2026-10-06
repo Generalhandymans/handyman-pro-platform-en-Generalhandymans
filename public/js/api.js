@@ -1,4 +1,4 @@
-// General Handyman Solutions — shared frontend helpers.
+// Helpman — shared frontend helpers.
 // One file loaded by every page: auth/session, API client, formatting,
 // toasts, form errors, page guard, and the shared site header.
 
@@ -237,8 +237,8 @@ const HP = (() => {
     if (u && u.role) links.push({ href: portalLink(u.role), label: 'My portal', id: 'portal' });
     header.innerHTML = `
       <div class="wrap header-inner">
-        <a class="brand" href="index.html" aria-label="General Handyman Solutions home">
-          <img class="brand-logo" src="img/logo-header.jpg" alt="General Handyman Solutions">
+        <a class="brand" href="index.html" aria-label="Helpman home">
+          <img class="helpman-logo" src="img/helpman-logo.svg" alt="Helpman — Home projects, handled.">
         </a>
         <nav class="main-nav" aria-label="Main">
           ${links.map((l) => `<a href="${l.href}" class="${page === l.id ? 'active' : ''}${l.cta ? ' nav-cta' : ''}">${esc(l.label)}</a>`).join('')}

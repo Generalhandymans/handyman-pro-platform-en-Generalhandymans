@@ -37,7 +37,7 @@ async function createDepositIntent({ projectId, amountCents, customerEmail, desc
     amount: amountCents,
     currency: 'usd',
     receipt_email: customerEmail || undefined,
-    description: description || `General Handyman Solutions — deposit for project #${projectId}`,
+    description: description || `Helpman — deposit for project #${projectId}`,
     metadata: { project_id: String(projectId), kind: 'deposit' },
     automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
   });

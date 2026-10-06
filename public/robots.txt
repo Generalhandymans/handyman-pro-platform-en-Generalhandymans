@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://helpman.app/sitemap.xml

@@ -20,7 +20,7 @@ async function sendVerificationEmail(user, token) {
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/api/auth/verify?token=${token}`;
   return await notify({
     to: user.email,
-    subject: 'Verify your General Handyman Solutions email',
+    subject: 'Verify your Helpman email',
     html: shell('Verify your email', `Hi ${user.name.split(' ')[0]}, please confirm this is your email address:`, [
       ['Account', user.email],
       ['Verify link', link],
@@ -153,7 +153,7 @@ router.post('/forgot', ah(async (req, res) => {
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/auth.html?reset=${token}`;
   await notify({
     to: user.email,
-    subject: 'Reset your General Handyman Solutions password',
+    subject: 'Reset your Helpman password',
     html: shell('Reset your password', `Hi ${user.name.split(' ')[0]}, use the link below within 1 hour:`, [
       ['Reset link', link],
     ]) + `<p style="text-align:center;margin:20px 0;"><a href="${link}" style="background:#111827;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Reset password</a></p>`,
