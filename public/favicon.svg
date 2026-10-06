@@ -1,10 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 175" role="img" aria-label="Helpman">
-  <rect width="220" height="175" rx="36" fill="#0B2D5B"/>
-  <g transform="translate(22,14) scale(0.8)">
-    <polygon points="28,80 110,14 192,80 192,98 110,32 28,98" fill="#4D8DFF"/>
-    <rect x="148" y="24" width="17" height="32" fill="#4D8DFF"/>
-    <rect x="58" y="70" width="24" height="76" fill="#FFFFFF"/>
-    <rect x="138" y="70" width="24" height="76" fill="#FFFFFF"/>
-    <polygon points="84,74 110,116 136,74 136,92 110,134 84,92" fill="#4D8DFF"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="Helpman">
+  <rect width="240" height="240" rx="52" fill="#0B2D5B"/>
+  <g transform="translate(28,30) scale(0.77)">
+    <polygon points="16,136 120,32 224,136 224,168 120,64 16,168" fill="#6EA8FF"/>
+    <rect x="58" y="136" width="34" height="88" fill="#FFFFFF"/>
+    <rect x="148" y="136" width="34" height="88" fill="#FFFFFF"/>
+    <rect x="58" y="166" width="124" height="28" fill="#FFFFFF"/>
   </g>
 </svg>

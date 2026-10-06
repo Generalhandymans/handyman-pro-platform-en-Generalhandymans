@@ -1,16 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 175" role="img" aria-label="Helpman — Home projects, handled.">
-  <g>
-    <polygon points="28,80 110,14 192,80 192,98 110,32 28,98" fill="#2563EB"/>
-    <rect x="152" y="32" width="14" height="22" fill="#2563EB"/>
-    <rect x="58" y="70" width="24" height="76" fill="#0B2D5B"/>
-    <rect x="138" y="70" width="24" height="76" fill="#0B2D5B"/>
-    <polygon points="84,74 110,116 136,74 136,92 110,134 84,92" fill="#2563EB"/>
-    <g fill="#0B2D5B">
-      <rect x="99" y="46" width="11" height="11"/>
-      <rect x="113" y="46" width="11" height="11"/>
-      <rect x="99" y="60" width="11" height="11"/>
-      <rect x="113" y="60" width="11" height="11"/>
-    </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 740 190" role="img" aria-label="Helpman — Home projects, handled.">
+  <g transform="translate(10,13) scale(0.68)">
+    <polygon points="16,136 120,32 224,136 224,168 120,64 16,168" fill="#2563EB"/>
+    <rect x="58" y="136" width="34" height="88" fill="#0B2D5B"/>
+    <rect x="148" y="136" width="34" height="88" fill="#0B2D5B"/>
+    <rect x="58" y="166" width="124" height="28" fill="#0B2D5B"/>
   </g>
-  <text x="238" y="118" font-family="'Arial Black', Arial, Helvetica, sans-serif" font-size="88" font-weight="900" letter-spacing="1" fill="#0B2D5B">HELPMAN</text>
+  <text x="198" y="126" font-family="'Arial Black', Arial, Helvetica, sans-serif" font-size="84" font-weight="900" letter-spacing="2" fill="#0B2D5B">HELPMAN</text>
 </svg>
