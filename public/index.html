@@ -3,29 +3,49 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>General Handyman Solutions — Trusted home repairs, one request away</title>
-  <meta name="description" content="General Handyman Solutions is a managed handyman marketplace: instant estimates, vetted pros, upfront pricing, and tracking from request to done.">
+  <title>Helpman — Home projects, handled</title>
+  <meta name="description" content="Tell Helpman what your home needs. Get a planning estimate, review a clear quote, and manage your project from request through completion in one place.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/helpman-v2.css">
+  <meta name="theme-color" content="#102033">
+  <meta property="og:title" content="Helpman — Home projects, handled">
+  <meta property="og:description" content="Describe the job, review a clear quote, and track the work from start to finish.">
+  <meta property="og:type" content="website">
 </head>
 <body>
   <header class="site-header" id="site-header"></header>
 
   <main>
     <!-- Hero -->
-    <section class="hero">
-      <div class="wrap">
-        <h1>Got a repair? <span class="hl">Get it fixed today.</span></h1>
-        <p class="lead">Sign up free, describe the job, and get an instant estimate — a verified pro handles the rest. No obligation, no surprises.</p>
-        <div class="hero-cta">
-          <button class="btn btn-primary" id="cta-estimate">Get a free estimate</button>
-          <a class="btn btn-ghost" href="auth.html?tab=customer">Sign up free</a>
+    <section class="hero hm-hero">
+      <div class="wrap hm-hero-grid">
+        <div>
+          <span class="hm-kicker">One request. One project. One place to manage it.</span>
+          <h1>Tell us what your home needs. <span class="hl">Helpman handles the rest.</span></h1>
+          <p class="lead">Describe the work, add photos, get a planning estimate, and move forward with a clear quote and project tracking — without chasing multiple providers.</p>
+          <div class="hm-hero-actions">
+            <button class="btn btn-primary" id="cta-estimate">Start my request</button>
+            <a class="btn btn-ghost" href="track.html">Track a project</a>
+          </div>
+          <div class="hm-trustline" aria-label="Platform benefits">
+            <span><b>✓</b> No payment to request an estimate</span>
+            <span><b>✓</b> Project updates in one place</span>
+            <span><b>✓</b> Approval checkpoints before key steps</span>
+          </div>
         </div>
-        <div class="hero-points">
-          <div><span class="dot">✓</span><span>Instant price ranges computed from real job data — no guesswork, no surprises.</span></div>
-          <div><span class="dot">✓</span><span>Licensed, insured, background-checked contractors assigned to every job.</span></div>
-          <div><span class="dot">✓</span><span>You approve every milestone before the work moves on.</span></div>
-        </div>
+        <aside class="hm-request-card" aria-label="Request preview">
+          <h2>What needs to be done?</h2>
+          <div class="hm-request-box">Example: “I need two bathroom faucets replaced and a small drywall patch repaired.”</div>
+          <div class="hm-request-meta">
+            <div class="hm-mini"><strong>Add photos</strong><span>Help us understand the scope</span></div>
+            <div class="hm-mini"><strong>Add ZIP code</strong><span>Confirm service availability</span></div>
+          </div>
+          <button class="btn btn-dark" type="button" id="cta-estimate-card" style="width:100%;margin-top:.85rem">Get started</button>
+          <p class="hm-disclaimer" style="margin:.7rem 0 0">Planning estimates are informational and may change after scope review. A final quote must be accepted before paid work begins.</p>
+        </aside>
       </div>
     </section>
 
@@ -64,22 +84,23 @@
         </div>
       </section>
 
-      <!-- Trust -->
-      <section class="section" aria-labelledby="trust-title">
-        <span class="eyebrow">Why us</span>
-        <h2 class="page-title" id="trust-title">Why homeowners choose General Handyman Solutions</h2>
-        <div class="trust">
-          <div class="trust-item">
-            <span class="ico" aria-hidden="true">🔒</span>
-            <div><h3>Vetted pros only</h3><p>Every contractor passes license, insurance, and background checks before touching a job.</p></div>
-          </div>
-          <div class="trust-item">
-            <span class="ico" aria-hidden="true">💲</span>
-            <div><h3>Upfront pricing</h3><p>Fixed quotes with a clear breakdown. You always know what you pay and why.</p></div>
-          </div>
-          <div class="trust-item">
-            <span class="ico" aria-hidden="true">✅</span>
-            <div><h3>Milestone approvals</h3><p>Each phase needs your sign-off. No surprise charges, no unfinished work.</p></div>
+      <!-- Helpman value -->
+      <section class="hm-section" aria-labelledby="trust-title">
+        <div class="hm-section-head"><span class="eyebrow">Why Helpman</span><h2 id="trust-title">A project workflow, not just another lead list.</h2><p>Helpman is designed to organize the job from the first request through completion, with clearer scope, documented progress and fewer handoff gaps.</p></div>
+        <div class="hm-value-grid">
+          <article class="hm-value"><div class="hm-value-icon">01</div><h3>Clearer scope</h3><p>Structured questions and photos help define the job before a final quote is accepted.</p></article>
+          <article class="hm-value"><div class="hm-value-icon">02</div><h3>Visible progress</h3><p>Keep project stages, photos, messages and approvals connected to the same job record.</p></article>
+          <article class="hm-value"><div class="hm-value-icon">03</div><h3>Managed workflow</h3><p>Helpman coordinates the process so customers and professionals know what happens next.</p></article>
+        </div>
+      </section>
+      <section class="hm-section" aria-labelledby="protection-title">
+        <div class="hm-protection">
+          <div><span class="eyebrow" style="color:#9fc2ff">Helpman Project Controls</span><h2 id="protection-title" style="font-size:clamp(2rem,4vw,3.25rem);letter-spacing:-.045em;margin:.5rem 0">More visibility before the project moves forward.</h2><p>Key project actions should be documented in the platform, including scope, quote acceptance, milestone progress and customer approvals when applicable.</p></div>
+          <div class="hm-protection-list">
+            <div class="hm-protection-item"><strong>✓</strong><span>Review the quoted scope before booking.</span></div>
+            <div class="hm-protection-item"><strong>✓</strong><span>Follow progress and project photos in one record.</span></div>
+            <div class="hm-protection-item"><strong>✓</strong><span>Document changes instead of relying on verbal agreements.</span></div>
+            <div class="hm-protection-item"><strong>✓</strong><span>Keep a history of approvals and project communication.</span></div>
           </div>
         </div>
       </section>
@@ -90,8 +111,8 @@
             <h2 id="client-title">Have something that needs fixing?</h2>
             <p class="lead">Create your free account and get your repair handled start to finish — one place for estimates, quotes, and tracking.</p>
             <ul class="client-points">
-              <li><span class="dot">✓</span><span>Instant price range before you commit to anything.</span></li>
-              <li><span class="dot">✓</span><span>Fixed quotes from licensed, background-checked pros.</span></li>
+              <li><span class="dot">✓</span><span>A planning price range before you decide whether to proceed.</span></li>
+              <li><span class="dot">✓</span><span>Review a clear quote and the professional assigned to your project.</span></li>
               <li><span class="dot">✓</span><span>Track milestones and approve each phase of the work.</span></li>
             </ul>
             <a class="btn btn-primary" href="auth.html?tab=customer">Sign up free</a>
@@ -107,11 +128,11 @@
         <div class="pro-cta-card">
           <div>
             <h2 id="pro-title">Are you a home repair pro?</h2>
-            <p class="lead">Join the General Handyman Solutions contractor network. We bring you steady, pre-qualified jobs — you bring the craft.</p>
+            <p class="lead">Join the Helpman professional network. Receive structured job opportunities with scope details and project history in one place.</p>
             <ul class="pro-points">
-              <li><span class="dot">✓</span><span>Qualified job leads with upfront details and photos — no cold calling.</span></li>
-              <li><span class="dot">✓</span><span>Clear milestones and fast payouts as each phase is approved.</span></li>
-              <li><span class="dot">✓</span><span>We handle marketing, estimates, and customer support for you.</span></li>
+              <li><span class="dot">✓</span><span>Job opportunities with structured details and customer-provided photos when available.</span></li>
+              <li><span class="dot">✓</span><span>Clear milestones and payout tracking tied to project progress.</span></li>
+              <li><span class="dot">✓</span><span>The platform helps organize intake, estimates, communication and project administration.</span></li>
             </ul>
             <a class="btn btn-primary" href="auth.html?tab=contractor">Apply as a contractor</a>
           </div>
@@ -125,19 +146,11 @@
 
   <footer class="site-footer">
     <div class="wrap">
-      <div>
-        <h4>General Handyman Solutions</h4>
-        <p>The managed handyman marketplace: real estimates, vetted contractors, and tracking from request to done.</p>
-      </div>
-      <div>
-        <h4>Customers</h4>
-        <p><a href="#" id="foot-estimate">Get a free estimate</a><br><a href="track.html">Track a job</a><br><a href="auth.html">Log in / Sign up</a></p>
-      </div>
-      <div>
-        <h4>Pros</h4>
-        <p><a href="auth.html?tab=contractor">Join as a contractor</a><br><a href="contractor-terms.html">Contractor terms</a></p>
-      </div>
-      <div class="fine" style="grid-column:1/-1">© 2026 General Handyman Solutions. All rights reserved. · <a href="terms.html">Terms of Service</a> · <a href="privacy.html">Privacy Policy</a></div>
+      <div><div class="hm-footer-brand">HELPMAN</div><p>Home projects, handled — from request and planning estimate through project tracking.</p><p class="hm-legal-operator">Helpman is operated by General Handyman Solutions.</p></div>
+      <div><h4>Customers</h4><p><a href="#" id="foot-estimate">Start a request</a><br><a href="track.html">Track a project</a><br><a href="auth.html">Log in / Sign up</a></p></div>
+      <div><h4>Professionals</h4><p><a href="auth.html?tab=contractor">Join the network</a><br><a href="contractor-terms.html">Professional terms</a></p></div>
+      <div><h4>Company</h4><p><a href="about.html">About Helpman</a><br><a href="project-controls.html">Project controls</a><br><a href="privacy.html">Privacy</a></p></div>
+      <div class="fine" style="grid-column:1/-1">© 2026 Helpman / General Handyman Solutions. All rights reserved. · <a href="terms.html">Terms of Service</a> · <a href="privacy.html">Privacy Policy</a></div>
     </div>
   </footer>
 
@@ -163,7 +176,7 @@
 
   <script src="js/api.js"></script>
   <script>
-  // General Handyman Solutions — public home: services grid + multi-step request wizard.
+  // Helpman — public home: services grid + multi-step request wizard.
   (function () {
     'use strict';
     HP.mountHeader('home');
@@ -236,6 +249,8 @@
     backdrop.addEventListener('click', (e) => { if (e.target === backdrop) closeWizard(); });
     document.getElementById('cta-estimate').addEventListener('click', () => openWizard(''));
     document.getElementById('cta-estimate-2').addEventListener('click', () => openWizard(''));
+    const heroCardCta = document.getElementById('cta-estimate-card');
+    if (heroCardCta) heroCardCta.addEventListener('click', () => openWizard(''));
     document.getElementById('foot-estimate').addEventListener('click', (e) => { e.preventDefault(); openWizard(''); });
 
     function paintSteps() {
@@ -468,7 +483,7 @@
           ${scopeRows ? `<hr class="divider">${scopeRows}` : ''}
           ${W.photos.length ? `<div class="job-meta"><strong>${W.photos.length} photo(s)</strong> attached.</div>` : ''}
         </div>
-        <p class="small muted">Submitting creates your request and runs our instant estimate. No payment is taken now.</p>
+        <p class="small muted">Submitting creates your request and runs our planning estimate. No payment is taken now.</p>
         <div id="wz-submit-error"></div>`;
     }
     function scopeVal(q, v) {
@@ -523,7 +538,7 @@
     }
 
     function renderResult(job, estimate) {
-      document.getElementById('wizard-title').textContent = 'Your estimate';
+      document.getElementById('wizard-title').textContent = 'Your planning estimate';
       document.querySelector('.modal-foot').style.display = 'none';
       const trackUrl = `track.html?claim=${encodeURIComponent(job.claim_token)}&id=${job.id}`;
       if (estimate) {
@@ -561,7 +576,7 @@
               <a class="btn btn-dark btn-sm" href="${trackUrl}">Track my job</a>
             </div>
           </div>
-          <p class="small muted" style="margin-top:1rem">This is a planning estimate. A fixed quote follows after our review — nothing is charged now.</p>`;
+          <p class="small muted" style="margin-top:1rem">This is a planning estimate, not a final price. A final quote follows after scope review and must be accepted before paid work begins.</p>`;
         const copy = document.getElementById('copy-track');
         if (copy) copy.addEventListener('click', async () => {
           try { await navigator.clipboard.writeText(location.origin + location.pathname.replace(/index\.html?$/, '') + trackUrl); HP.toast('Tracking link copied.', 'ok'); }

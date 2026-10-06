@@ -3,9 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>My portal — General Handyman Solutions</title>
+  <title>My portal — Helpman</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/helpman-v2.css">
 </head>
 <body>
   <header class="site-header" id="site-header"></header>
@@ -31,7 +34,7 @@
     <section class="tab-panel" id="panel-messages" role="tabpanel">
       <div class="card">
         <h2 style="margin-top:0">Messages with support</h2>
-        <p class="small muted">Chat with General Handyman Solutions support about your projects. Support relays everything to your contractor — you never need to contact them directly.</p>
+        <p class="small muted">Chat with Helpman support about your projects. Support relays everything to your contractor — you never need to contact them directly.</p>
         <div id="messages-box"></div>
       </div>
     </section>
@@ -92,7 +95,7 @@
   <script src="js/api.js"></script>
   <script src="js/messages.js"></script>
   <script>
-  // General Handyman Solutions — customer portal: requests, projects, referrals.
+  // Helpman — customer portal: requests, projects, referrals.
   (function () {
     'use strict';
     HP.mountHeader('portal');

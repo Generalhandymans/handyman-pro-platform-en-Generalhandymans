@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// General Handyman Solutions — SQLite → PostgreSQL data migration.
+// Helpman — SQLite → PostgreSQL data migration.
 // Usage: DATABASE_URL=postgresql://... node src/db/migrate-to-postgres.js /path/to/handyman.db
 //
 // - Target DB must already have the schema (src/db/migrations/001_initial.sql).

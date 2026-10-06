@@ -3,9 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Contractor portal — General Handyman Solutions</title>
+  <title>Contractor portal — Helpman</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/helpman-v2.css">
 </head>
 <body>
   <header class="site-header" id="site-header"></header>
@@ -51,7 +54,7 @@
     <section class="tab-panel" id="panel-messages" role="tabpanel">
       <div class="card">
         <h2 style="margin-top:0">Messages with support</h2>
-        <p class="small muted">Chat with General Handyman Solutions support about your assigned jobs. You do not contact customers directly — support relays everything.</p>
+        <p class="small muted">Chat with Helpman support about your assigned jobs. You do not contact customers directly — support relays everything.</p>
         <div id="messages-box"></div>
       </div>
     </section>
@@ -81,7 +84,7 @@
   <script src="js/api.js"></script>
   <script src="js/messages.js"></script>
   <script>
-  // General Handyman Solutions — contractor portal: profile + verification, assigned jobs.
+  // Helpman — contractor portal: profile + verification, assigned jobs.
   (function () {
     'use strict';
     HP.mountHeader('portal');
@@ -125,7 +128,7 @@
         banner.innerHTML = c.status === 'pending'
           ? `<div class="banner banner-warn"><strong>Your application is under review.</strong><br>Our team is verifying your license, insurance, and background. You will be able to take jobs once approved.</div>`
           : (c.status === 'suspended'
-            ? `<div class="banner banner-warn"><strong>Your account is suspended.</strong><br>Please contact General Handyman Solutions support for details.</div>` : '');
+            ? `<div class="banner banner-warn"><strong>Your account is suspended.</strong><br>Please contact Helpman support for details.</div>` : '');
         const stars = '★'.repeat(Math.round(c.rating_avg || 0)) + '☆'.repeat(5 - Math.round(c.rating_avg || 0));
         box.innerHTML = `
           <div class="section-head">
@@ -189,7 +192,7 @@
         if (!projects.length) {
           box.innerHTML = HP.emptyState(
             'No jobs yet',
-            'When General Handyman Solutions offers you a job, it will appear here — review it and accept to get started.'
+            'When Helpman offers you a job, it will appear here — review it and accept to get started.'
           );
           return;
         }

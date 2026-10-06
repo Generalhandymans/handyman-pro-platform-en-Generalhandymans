@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 175" role="img" aria-label="Helpman — Home projects, handled.">
+  <g>
+    <polygon points="28,80 110,14 192,80 192,98 110,32 28,98" fill="#2563EB"/>
+    <rect x="152" y="32" width="14" height="22" fill="#2563EB"/>
+    <rect x="58" y="70" width="24" height="76" fill="#0B2D5B"/>
+    <rect x="138" y="70" width="24" height="76" fill="#0B2D5B"/>
+    <polygon points="84,74 110,116 136,74 136,92 110,134 84,92" fill="#2563EB"/>
+    <g fill="#0B2D5B">
+      <rect x="99" y="46" width="11" height="11"/>
+      <rect x="113" y="46" width="11" height="11"/>
+      <rect x="99" y="60" width="11" height="11"/>
+      <rect x="113" y="60" width="11" height="11"/>
+    </g>
+  </g>
+  <text x="238" y="118" font-family="'Arial Black', Arial, Helvetica, sans-serif" font-size="88" font-weight="900" letter-spacing="1" fill="#0B2D5B">HELPMAN</text>
+</svg>

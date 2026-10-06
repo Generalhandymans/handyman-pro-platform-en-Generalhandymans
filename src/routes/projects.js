@@ -141,7 +141,7 @@ router.post('/:id/assign', authRequired, requireRole('admin'), ah(async (req, re
     await notify({
       to: cu.email,
       subject: `New job offer — ${job.service_type} (#${p.id})`,
-      html: shell('You have a new job offer', `Hi ${cu.name.split(' ')[0]}, General Handyman Solutions is offering you a project. Review the details and accept it from your portal — accepting means you agree to the Independent Contractor Terms:`, [
+      html: shell('You have a new job offer', `Hi ${cu.name.split(' ')[0]}, Helpman is offering you a project. Review the details and accept it from your portal — accepting means you agree to the Independent Contractor Terms:`, [
         ['Project', `#${p.id} — ${job.service_type}`],
         ['Address', job.address],
         ['Your budget', '$' + (p.contractor_cost_cents / 100).toFixed(2)],

@@ -1,11 +1,11 @@
-# General Handyman Solutions — Managed Marketplace Platform
+# Helpman — Managed Marketplace Platform
 
 B2C home-services business platform: the platform quotes the customer, collects a
 deposit, assigns a vetted contractor, and keeps the margin. Full-stack rebuild
 with a real estimation engine, two-sided CRM (clients + contractors), mass email
 campaigns, and reports computed live from the database.
 
-**Brand:** General Handyman Solutions. All platform email goes out from the business account —
+**Brand:** Helpman. All platform email goes out from the business account —
 never a personal one (see "Business email setup").
 
 ## Run it
@@ -49,7 +49,7 @@ Copy `.env.example` to `.env` and adjust:
 | `JWT_SECRET`          | (dev fallback)             | **Set a long random value in production.** Tokens are invalid without it. |
 | `DB_PATH`             | `./data/handyman.db`       | SQLite file location |
 | `HANDYMAN_FROM_EMAIL` | `generalhandymans@gmail.com` | **Business sender address** — every platform email is sent from here |
-| `HANDYMAN_FROM_NAME`  | `General Handyman Solutions`             | Business sender display name |
+| `HANDYMAN_FROM_NAME`  | `Helpman`             | Business sender display name |
 | `EMAIL_PROVIDER`      | `console`                  | `console` (log mode) or `sendgrid` |
 | `SENDGRID_API_KEY`    | —                          | Required for real delivery via SendGrid |
 | `OPENAI_API_KEY`      | —                          | Optional: enables AI photo analysis |
@@ -59,7 +59,7 @@ Copy `.env.example` to `.env` and adjust:
 
 All CRM campaigns and notifications are sent **from the business account**
 (`HANDYMAN_FROM_EMAIL`, default `generalhandymans@gmail.com`, name
-"General Handyman Solutions") — never from a personal address.
+"Helpman") — never from a personal address.
 
 Out of the box the mailer runs in **log mode** (`EMAIL_PROVIDER=console`):
 messages are printed to the server console **and** recorded in the `email_log`
@@ -141,12 +141,12 @@ GitHub account is **Generalhandymans**. To connect and push:
 
 ```bash
 cd handyman-platform
-git remote add origin https://github.com/Generalhandymans/general-handyman-solutions-platform.git
+git remote add origin https://github.com/Generalhandymans/helpman-platform.git
 git branch -M main
 git push -u origin main
 ```
 
-(Replace `general-handyman-solutions-platform` if you create the repo under a different name
+(Replace `helpman-platform` if you create the repo under a different name
 on GitHub first — create the empty repo on github.com/Generalhandymans, then
 run the commands above.)
 

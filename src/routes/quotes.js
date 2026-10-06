@@ -88,7 +88,7 @@ router.post('/:id/send', authRequired, requireRole('admin'), ah(async (req, res)
   if (to) {
     await notify({
       to,
-      subject: `Your General Handyman Solutions quote is ready — ${fmt(q.customer_price_cents)}`,
+      subject: `Your Helpman quote is ready — ${fmt(q.customer_price_cents)}`,
       html: shell('Your quote is ready', 'We prepared a fixed quote for your project. Review and accept it from your portal:', [
         ['Project', `#${job.id} — ${job.service_type}`],
         ['Quoted price', fmt(q.customer_price_cents)],
