@@ -142,6 +142,7 @@ app.use('/api/trades', require('./src/routes/trades'));
 app.use('/api/jobs', require('./src/routes/jobs'));
 app.use('/api/quotes', require('./src/routes/quotes'));
 app.use('/api/projects', require('./src/routes/projects'));
+app.use('/api/customer-experience', require('./src/routes/customer-experience'));
 app.use('/api/contractors', require('./src/routes/contractors'));
 app.use('/api/crm', require('./src/routes/crm'));
 app.use('/api/campaigns', require('./src/routes/campaigns'));
