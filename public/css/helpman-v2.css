@@ -33,5 +33,5 @@ body{color:var(--hm-ink);background:#fff}
 .site-footer .wrap{grid-template-columns:1.4fr repeat(3,1fr)}.hm-footer-brand{font-weight:900;font-size:1.25rem;letter-spacing:-.035em}.hm-legal-operator{color:inherit;opacity:.72;font-size:.78rem}
 @media(max-width:900px){.hm-hero-grid,.hm-protection{grid-template-columns:1fr}.hm-value-grid{grid-template-columns:1fr}.hm-request-card{max-width:620px}.site-footer .wrap{grid-template-columns:1fr 1fr}}
 @media(max-width:620px){.hm-hero{padding-top:3.4rem}.hm-request-meta{grid-template-columns:1fr}.hm-hero-actions .btn{width:100%;justify-content:center}.site-footer .wrap{grid-template-columns:1fr}.hm-operator{display:none}}
-.helpman-logo{display:block;height:42px;width:auto}
-@media(max-width:620px){.helpman-logo{height:34px}}
+.helpman-logo{display:block;height:50px;width:auto}
+@media(max-width:620px){.helpman-logo{height:42px}}
