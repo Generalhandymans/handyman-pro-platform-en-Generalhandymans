@@ -146,6 +146,9 @@ app.get('/api/terms-versions', (req, res) => {
   res.json({ client: CLIENT_TERMS_VERSION, contractor: CONTRACTOR_TERMS_VERSION });
 });
 
+app.use('/api/health', require('./src/routes/health-v6'));
+app.use('/api/growth', require('./src/routes/growth'));
+
 // ---- API routes ----
 app.use('/api/auth', require('./src/routes/auth'));
 app.use('/api/trades', require('./src/routes/trades'));
