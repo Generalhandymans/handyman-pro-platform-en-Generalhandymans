@@ -14,6 +14,9 @@ const { execSync } = require('child_process');
 const db = require('./src/db');
 const mailer = require('./src/services/mailer');
 
+const { requestId, requireProductionSecrets } = require('./src/services/security');
+requireProductionSecrets();
+
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
@@ -32,6 +35,7 @@ const logger = pino({
   },
 });
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } }));
+app.use(requestId);
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   const started = process.hrtime.bigint();
@@ -95,8 +99,14 @@ const intakeLimiter = rateLimit({
   standardHeaders: 'draft-7', legacyHeaders: false,
   message: { error: 'Too many requests. Please wait a bit and try again.' },
 });
+const intelligenceLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 60,
+  standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { error: 'Too many AI requests. Please wait a few minutes and try again.' },
+});
 app.use('/api/auth', authLimiter);
 app.post('/api/jobs', intakeLimiter);
+app.use('/api/intelligence', intelligenceLimiter);
 
 // ---- Photo delivery ----
 // Multer stores files under random names with no extension, so we resolve the
@@ -149,6 +159,7 @@ app.use('/api/crm', require('./src/routes/crm'));
 app.use('/api/operations', require('./src/routes/operations'));
 app.use('/api/campaigns', require('./src/routes/campaigns'));
 app.use('/api/reports', require('./src/routes/reports'));
+app.use('/api/intelligence', require('./src/routes/intelligence'));
 app.use('/api/reviews', require('./src/routes/reviews'));
 app.use('/api/referrals', require('./src/routes/referrals'));
 app.use('/api/payments', require('./src/routes/payments'));
