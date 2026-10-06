@@ -1,0 +1,11 @@
+.hm4-title-row{display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;margin:1rem 0}
+.hm4-title-row h2{margin:.25rem 0}.hm4-title-row p{margin:.25rem 0;color:#69788a;max-width:780px}
+.hm4-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.7rem;margin:1rem 0}
+.hm4-kpis>div,.hm4-economics>div{border:1px solid #e4e9ef;background:#fff;border-radius:15px;padding:.9rem}
+.hm4-kpis span,.hm4-economics span{display:block;color:#6b7889;font-size:.76rem}.hm4-kpis strong,.hm4-economics strong{font-size:1.45rem;display:block;margin-top:.15rem}
+.hm4-grid{display:grid;grid-template-columns:1.35fr .85fr;gap:1rem}.hm4-task{display:flex;justify-content:space-between;gap:1rem;align-items:center;padding:.75rem 0;border-bottom:1px solid #edf1f5}.hm4-task small{display:block;color:#69788a;margin-top:.25rem}.hm4-actions{display:flex;gap:.4rem;flex-shrink:0}
+.hm4-economics{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}.hm4-bar-row{display:grid;grid-template-columns:100px 1fr 45px 55px;gap:.5rem;align-items:center;margin:.65rem 0}.hm4-bar-row>div{height:8px;background:#ebeff4;border-radius:99px;overflow:hidden}.hm4-bar-row i{display:block;height:100%;background:#2563eb}
+.hm4-dispatch-list{display:grid;gap:.8rem}.hm4-dispatch-meta{display:flex;gap:1rem;flex-wrap:wrap;margin:.7rem 0;color:#687587;font-size:.82rem}.hm4-rec{margin-top:.7rem}.hm4-rec-row{display:flex;align-items:center;justify-content:space-between;gap:1rem;border-top:1px solid #edf1f5;padding:.65rem 0}.hm4-rec-row small{display:block;color:#687587;margin-top:.2rem}
+.hm4-risk-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}.hm4-risk{border-left:5px solid #c5ced9}.hm4-risk.warning{border-left-color:#f59e0b}.hm4-risk.critical{border-left-color:#dc2626}.hm4-risk h3{margin:.35rem 0}
+@media(max-width:980px){.hm4-kpis{grid-template-columns:1fr 1fr}.hm4-grid{grid-template-columns:1fr}.hm4-risk-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:620px){.hm4-kpis,.hm4-risk-grid,.hm4-economics{grid-template-columns:1fr}.hm4-task{align-items:flex-start;flex-direction:column}.hm4-bar-row{grid-template-columns:80px 1fr 40px}.hm4-bar-row small{display:none}}
