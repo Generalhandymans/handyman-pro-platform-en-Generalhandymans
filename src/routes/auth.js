@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const { ah, authRequired, isEmail, isPhone, isNonEmpty, failIfErrors, signToken } = require('../middleware');
 const { notify, shell } = require('../services/notify');
+const { securityEvent } = require('../services/security');
 
 const router = express.Router();
 
@@ -102,6 +103,7 @@ router.post('/login', ah(async (req, res) => {
   }
   const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    await securityEvent(req, 'login_failed', 'warning', `email=${email.trim().toLowerCase().slice(0,80)}`, user ? user.id : null);
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
   res.json({ token: signToken(user), user: publicUser(user) });

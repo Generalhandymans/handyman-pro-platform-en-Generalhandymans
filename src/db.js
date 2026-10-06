@@ -302,6 +302,47 @@ CREATE TABLE IF NOT EXISTS terms_acceptances (
 CREATE INDEX IF NOT EXISTS idx_terms_user ON terms_acceptances(user_id);
 CREATE INDEX IF NOT EXISTS idx_terms_ref ON terms_acceptances(kind, reference_id);
 
+CREATE TABLE IF NOT EXISTS ai_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,provider TEXT NOT NULL,model TEXT,
+  job_request_id INTEGER REFERENCES job_requests(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+  input_summary TEXT,output_json TEXT NOT NULL DEFAULT '{}',confidence INTEGER,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('completed','fallback','failed')),
+  error_code TEXT,duration_ms INTEGER,created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_runs_job ON ai_runs(job_request_id);
+CREATE INDEX IF NOT EXISTS idx_ai_runs_project ON ai_runs(project_id);
+
+CREATE TABLE IF NOT EXISTS job_scope_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_request_id INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
+  version_no INTEGER NOT NULL,source TEXT NOT NULL CHECK(source IN ('customer','ai','admin','contractor')),
+  scope_json TEXT NOT NULL,confidence INTEGER,created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),UNIQUE(job_request_id,version_no)
+);
+CREATE TABLE IF NOT EXISTS risk_assessments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_request_id INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
+  severity TEXT NOT NULL DEFAULT 'low' CHECK(severity IN ('low','medium','high','critical')),
+  flags_json TEXT NOT NULL DEFAULT '[]',requires_human_review INTEGER NOT NULL DEFAULT 0,
+  requires_license_review INTEGER NOT NULL DEFAULT 0,requires_permit_review INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL UNIQUE,token_hash TEXT NOT NULL,user_agent TEXT,ip_prefix TEXT,
+  expires_at TEXT NOT NULL,revoked_at TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now')),last_seen_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS security_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  event_type TEXT NOT NULL,severity TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info','warning','critical')),
+  ip_prefix TEXT,user_agent TEXT,detail TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type);
+
+
 CREATE TABLE IF NOT EXISTS operations_tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,detail TEXT,entity_type TEXT,entity_id INTEGER,
