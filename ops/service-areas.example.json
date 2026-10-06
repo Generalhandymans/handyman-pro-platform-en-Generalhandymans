@@ -1,0 +1,15 @@
+{
+  "brand": "HELPMAN",
+  "base_url": "https://helpman.app",
+  "areas": [
+    {
+      "city": "SAMPLE CITY",
+      "state": "CA",
+      "active": false,
+      "services": [
+        {"code": "painting", "label": "Painting"},
+        {"code": "drywall", "label": "Drywall Repair"}
+      ]
+    }
+  ]
+}

@@ -14,6 +14,9 @@ const { execSync } = require('child_process');
 const db = require('./src/db');
 const mailer = require('./src/services/mailer');
 
+const { requestId, requireProductionSecrets } = require('./src/services/security');
+requireProductionSecrets();
+
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
@@ -32,6 +35,7 @@ const logger = pino({
   },
 });
 app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } }));
+app.use(requestId);
 app.disable('x-powered-by');
 app.use((req, res, next) => {
   const started = process.hrtime.bigint();
@@ -95,8 +99,14 @@ const intakeLimiter = rateLimit({
   standardHeaders: 'draft-7', legacyHeaders: false,
   message: { error: 'Too many requests. Please wait a bit and try again.' },
 });
+const intelligenceLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 60,
+  standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { error: 'Too many AI requests. Please wait a few minutes and try again.' },
+});
 app.use('/api/auth', authLimiter);
 app.post('/api/jobs', intakeLimiter);
+app.use('/api/intelligence', intelligenceLimiter);
 
 // ---- Photo delivery ----
 // Multer stores files under random names with no extension, so we resolve the
@@ -136,16 +146,23 @@ app.get('/api/terms-versions', (req, res) => {
   res.json({ client: CLIENT_TERMS_VERSION, contractor: CONTRACTOR_TERMS_VERSION });
 });
 
+app.use('/api/health', require('./src/routes/health-v6'));
+app.use('/api/growth', require('./src/routes/growth'));
+
 // ---- API routes ----
 app.use('/api/auth', require('./src/routes/auth'));
 app.use('/api/trades', require('./src/routes/trades'));
 app.use('/api/jobs', require('./src/routes/jobs'));
 app.use('/api/quotes', require('./src/routes/quotes'));
 app.use('/api/projects', require('./src/routes/projects'));
+app.use('/api/customer-experience', require('./src/routes/customer-experience'));
 app.use('/api/contractors', require('./src/routes/contractors'));
+app.use('/api/contractor-ops', require('./src/routes/contractor-ops'));
 app.use('/api/crm', require('./src/routes/crm'));
+app.use('/api/operations', require('./src/routes/operations'));
 app.use('/api/campaigns', require('./src/routes/campaigns'));
 app.use('/api/reports', require('./src/routes/reports'));
+app.use('/api/intelligence', require('./src/routes/intelligence'));
 app.use('/api/reviews', require('./src/routes/reviews'));
 app.use('/api/referrals', require('./src/routes/referrals'));
 app.use('/api/payments', require('./src/routes/payments'));
