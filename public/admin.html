@@ -457,7 +457,7 @@
         tasks.forEach((t) => {
           const n = HP.el(`<div class="task ${t.status === 'done' ? 'done' : ''}">
             <div class="grow"><div class="ttl">${HP.esc(t.title)}</div>
-              <div class="dt">${HP.esc(t.kind)} · due ${HP.fmtDate(t.due_at)} · job #${t.job_request_id || '—'}${t.status === 'done' ? ' · done' : ''}</div></div>
+              <div class="dt">${HP.esc(t.kind)} · due ${HP.fmtDate(t.due_at)} · job #${t.job_request_id || '—'}${t.status === 'done' ? ' · done' : ''}${t.auto_emailed ? ' · ✉️ reminder sent' : ''}</div></div>
             ${t.status !== 'done' ? `<button class="btn btn-ok btn-sm" data-done="${t.id}">Done</button>` : ''}
           </div>`);
           const b = n.querySelector('[data-done]');

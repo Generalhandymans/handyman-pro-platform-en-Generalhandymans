@@ -177,6 +177,14 @@ setInterval(() => {
   processOutbox(50).catch(e => console.error('[outbox]', e.message));
 }, 30 * 1000);
 
+// ---- Background: follow-up automation every hour (tasks + auto quote reminders) ----
+const { runFollowupAutomation } = require('./src/services/crm');
+setInterval(() => {
+  runFollowupAutomation()
+    .then(r => { if (r.created || r.emailed) console.log('[followup]', JSON.stringify(r)); })
+    .catch(e => console.error('[followup]', e.message));
+}, 60 * 60 * 1000);
+
 // ---- 404 for unknown API routes ----
 app.use('/api', (req, res) => res.status(404).json({ error: 'Unknown API endpoint.' }));
 

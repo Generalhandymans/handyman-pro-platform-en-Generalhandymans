@@ -594,6 +594,10 @@ try {
 if (!columnExists('photos', 'storage_key')) {
   db.exec(`ALTER TABLE photos ADD COLUMN storage_key TEXT`);
 }
+// ---- 2026-10-07: follow-up automation (auto-emailed flag) ----
+if (!columnExists('followup_tasks', 'auto_emailed')) {
+  db.exec(`ALTER TABLE followup_tasks ADD COLUMN auto_emailed INTEGER NOT NULL DEFAULT 0`);
+}
 if (!columnExists('photos', 'storage_provider')) {
   db.exec(`ALTER TABLE photos ADD COLUMN storage_provider TEXT NOT NULL DEFAULT 'local'`);
 }

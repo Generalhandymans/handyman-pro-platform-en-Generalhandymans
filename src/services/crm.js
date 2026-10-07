@@ -76,9 +76,10 @@ async function generateFollowupTasks() {
   };
 
   // Rule 1: quote sent, no response for 48h+ -> follow up.
+  // NOTE: sent_at is stored ISO; normalize with datetime() before comparing.
   const stale = await db.prepare(
     `SELECT q.id AS qid, q.job_request_id AS jid FROM quotes q
-     WHERE q.status = 'sent' AND q.sent_at < ${dt('-48 hours')}`
+     WHERE q.status = 'sent' AND datetime(q.sent_at) < ${dt('-48 hours')}`
   ).all();
   for (const r of stale) {
     await addTask(r.jid, r.qid, 'quote_followup_48h',
@@ -230,8 +231,47 @@ function renderTemplate(str, vars) {
     vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : '');
 }
 
+// Follow-up automation (2026-10-07): runs on a schedule. Generates the tasks,
+// then ACTS on the quote reminders: one automatic email per stale quote.
+async function runFollowupAutomation() {
+  const created = await generateFollowupTasks();
+  const emailed = [];
+  const pending = await db.prepare(
+    `SELECT t.*, q.customer_price_cents, j.name, j.email AS job_email, j.customer_id,
+            u.email AS user_email
+     FROM followup_tasks t
+     LEFT JOIN quotes q ON q.id = t.quote_id
+     LEFT JOIN job_requests j ON j.id = t.job_request_id
+     LEFT JOIN users u ON u.id = j.customer_id
+     WHERE t.kind = 'quote_followup_48h' AND t.status = 'open' AND t.auto_emailed = 0`
+  ).all();
+  const { notify, shell } = require('./notify');
+  for (const t of pending) {
+    const to = t.user_email || t.job_email;
+    if (!to) continue;
+    // Only remind while the quote is still awaiting response.
+    const q = await db.prepare('SELECT status FROM quotes WHERE id = ?').get(t.quote_id);
+    if (!q || q.status !== 'sent') {
+      await db.prepare(`UPDATE followup_tasks SET status = 'done' WHERE id = ?`).run(t.id);
+      continue;
+    }
+    await notify({
+      to,
+      subject: `Still thinking about your Helpman quote? (#${t.quote_id})`,
+      html: shell('A quick reminder', `Hi ${(t.name || '').split(' ')[0]}, your quote is still waiting:`, [
+        ['Quote', `#${t.quote_id} — $${(t.customer_price_cents / 100).toFixed(2)}`],
+        ['Next step', 'Accept it from your portal and we will schedule your project right away.'],
+      ]),
+    }).catch(() => {});
+    await db.prepare(`UPDATE followup_tasks SET auto_emailed = 1 WHERE id = ?`).run(t.id);
+    emailed.push(t.id);
+  }
+  return { created: created.length, emailed: emailed.length };
+}
+
 module.exports = {
   computeLeadScore, refreshLeadScore, touchInteraction, generateFollowupTasks,
+  runFollowupAutomation,
   contractorLifecycle, contractorScore, retentionAtRisk,
   segmentMembers, recruitmentGaps, renderTemplate,
 };
