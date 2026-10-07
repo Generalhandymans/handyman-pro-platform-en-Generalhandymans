@@ -41,6 +41,7 @@ async function withDetails(p) {
     milestones: await db.prepare('SELECT * FROM milestones WHERE project_id = ? ORDER BY sort_order').all(p.id),
     photos: await db.prepare('SELECT id, filename, original_name, mime, kind, created_at FROM photos WHERE project_id = ? ORDER BY id').all(p.id),
     payments: await db.prepare('SELECT * FROM payments WHERE project_id = ? ORDER BY id').all(p.id),
+    job: await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id),
     contractor: p.contractor_id
       ? await db.prepare('SELECT c.*, u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id)
       : null,
@@ -219,7 +220,173 @@ router.post('/:id/contractor-respond', authRequired, ah(async (req, res) => {
       ]),
     }).catch(() => {});
   }
+  // Confirm to the contractor: they accepted the job under the Independent Contractor Terms.
+  const { contractorAcceptanceEmail } = require('../services/notify');
+  await contractorAcceptanceEmail(p.id);
   res.json({ accepted: true, project: await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id) });
+}));
+
+// ---- Negotiation (CaliFix-style): contractor counter-offers the offered budget ----
+// Contractor proposes a different price; admin accepts or rejects. All offers audited.
+router.post('/:id/offers', authRequired, ah(async (req, res) => {
+  const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found.' });
+  if (p.contractor_status !== 'offered' || !p.contractor_id) {
+    return res.status(400).json({ error: 'This project is not awaiting your response.' });
+  }
+  if (req.user.role === 'contractor') {
+    const c = await db.prepare('SELECT id FROM contractors WHERE user_id = ?').get(req.user.id);
+    if (!c || p.contractor_id !== c.id) return res.status(403).json({ error: 'This project was not offered to you.' });
+  }
+  const b = req.body || {};
+  const errors = {};
+  if (!Number.isInteger(b.proposed_cents) || b.proposed_cents < 100) errors.proposed_cents = 'A valid proposed price (cents) is required.';
+  if (b.note && typeof b.note !== 'string') errors.note = 'Invalid note.';
+  if (failIfErrors(res, errors)) return;
+  const contractor = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(p.contractor_id);
+  const info = await db.prepare(
+    `INSERT INTO contractor_offers (project_id, contractor_id, proposed_cents, note) VALUES (?,?,?,?)`
+  ).run(p.id, p.contractor_id, b.proposed_cents, (b.note || '').trim() || null);
+  auditLog(req.user.id, 'project.counter_offer', 'contractor_offers', info.lastInsertRowid,
+    `Project #${p.id}: contractor proposed $${(b.proposed_cents / 100).toFixed(2)}`);
+  // Notify admins: a counter-offer needs review.
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
+  const admins = await db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
+  const { notify, shell } = require('../services/notify');
+  for (const a of admins) {
+    await notify({
+      to: a.email,
+      subject: `Counter-offer on project #${p.id}`,
+      html: shell('Counter-offer received', 'The contractor proposed a different price:', [
+        ['Project', `#${p.id} — ${job.service_type}`],
+        ['Offered budget', '$' + (p.contractor_cost_cents / 100).toFixed(2)],
+        ['Contractor proposes', '$' + (b.proposed_cents / 100).toFixed(2)],
+        ['Note', (b.note || '—').slice(0, 300)],
+      ]),
+    }).catch(() => {});
+  }
+  res.status(201).json(await db.prepare('SELECT * FROM contractor_offers WHERE id = ?').get(info.lastInsertRowid));
+}));
+
+// ---- Admin: list offers on a project ----
+router.get('/:id/offers', authRequired, ah(async (req, res) => {
+  const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found.' });
+  if (req.user.role === 'contractor') {
+    const c = await db.prepare('SELECT id FROM contractors WHERE user_id = ?').get(req.user.id);
+    if (!c || p.contractor_id !== c.id) return res.status(403).json({ error: 'Not allowed.' });
+  } else if (req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Not allowed.' });
+  }
+  res.json(await db.prepare('SELECT * FROM contractor_offers WHERE project_id = ? ORDER BY id DESC').all(p.id));
+}));
+
+// ---- Admin: accept a counter-offer (updates the contractor budget, notifies the pro) ----
+router.post('/:id/offers/:oid/accept', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found.' });
+  const o = await db.prepare('SELECT * FROM contractor_offers WHERE id = ? AND project_id = ?').get(req.params.oid, p.id);
+  if (!o) return res.status(404).json({ error: 'Offer not found.' });
+  if (o.status !== 'pending') return res.status(400).json({ error: 'This offer is no longer pending.' });
+  await db.prepare(`UPDATE contractor_offers SET status = 'superseded' WHERE project_id = ? AND status = 'pending' AND id != ?`)
+    .run(p.id, o.id);
+  await db.prepare(`UPDATE contractor_offers SET status = 'accepted' WHERE id = ?`).run(o.id);
+  await db.prepare(`UPDATE projects SET contractor_cost_cents = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(o.proposed_cents, p.id);
+  auditLog(req.user.id, 'project.offer_accepted', 'contractor_offers', o.id,
+    `Project #${p.id}: accepted $${(o.proposed_cents / 100).toFixed(2)}`);
+  // Notify the contractor: their estimate was approved.
+  const cu = await db.prepare('SELECT u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?')
+    .get(o.contractor_id);
+  const { notify, shell } = require('../services/notify');
+  if (cu && cu.email) {
+    const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
+    await notify({
+      to: cu.email,
+      subject: `Your estimate was approved — project #${p.id}`,
+      html: shell('Estimate approved ✓', `Hi ${cu.name.split(' ')[0]}, Helpman approved your proposed price:`, [
+        ['Project', `#${p.id} — ${job.service_type}`],
+        ['Approved price', '$' + (o.proposed_cents / 100).toFixed(2)],
+        ['Next step', 'Accept the job from your portal to get it scheduled.'],
+      ]),
+    }).catch(() => {});
+  }
+  res.json(await db.prepare('SELECT * FROM contractor_offers WHERE id = ?').get(o.id));
+}));
+
+// ---- Admin: reject a counter-offer ----
+router.post('/:id/offers/:oid/reject', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const o = await db.prepare('SELECT * FROM contractor_offers WHERE id = ? AND project_id = ?').get(req.params.oid, req.params.id);
+  if (!o) return res.status(404).json({ error: 'Offer not found.' });
+  if (o.status !== 'pending') return res.status(400).json({ error: 'This offer is no longer pending.' });
+  await db.prepare(`UPDATE contractor_offers SET status = 'rejected' WHERE id = ?`).run(o.id);
+  auditLog(req.user.id, 'project.offer_rejected', 'contractor_offers', o.id, `Project #${req.params.id}`);
+  res.json(await db.prepare('SELECT * FROM contractor_offers WHERE id = ?').get(o.id));
+}));
+
+// ---- Admin: full project timeline — every stage with who + when (process coherence) ----
+router.get('/:id/timeline', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found.' });
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
+  const contractor = p.contractor_id
+    ? await db.prepare(`SELECT c.*, u.name, u.email, u.phone FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?`).get(p.contractor_id)
+    : null;
+  const events = [];
+  const push = (at, stage, title, detail) => { if (at) events.push({ at, stage, title, detail: detail || '' }); };
+
+  push(job.created_at, 'request', 'Request created', `${job.name} — ${job.service_type} — ${job.city || ''}`);
+  const est = await db.prepare('SELECT * FROM estimates WHERE job_request_id = ? ORDER BY id DESC LIMIT 1').get(job.id);
+  if (est) push(est.created_at || est.updated_at, 'estimate', 'Planning estimate computed', `$${(est.low_cents / 100).toFixed(0)}–$${(est.high_cents / 100).toFixed(0)} (referential)`);
+  const quotes = await db.prepare('SELECT * FROM quotes WHERE job_request_id = ? ORDER BY id').all(job.id);
+  for (const q of quotes) {
+    if (q.sent_at) push(q.sent_at, 'quote_sent', `Quote #${q.id} sent`, `$${(q.customer_price_cents / 100).toFixed(2)}`);
+  }
+  const termsAcc = await db.prepare(
+    `SELECT accepted_at AS created_at FROM terms_acceptances WHERE kind = 'client_quote' AND reference_id IN (SELECT id FROM quotes WHERE job_request_id = ?) ORDER BY id LIMIT 1`
+  ).get(job.id);
+  push(termsAcc ? termsAcc.created_at : p.created_at, 'quote_accepted', 'Client accepted the quote ⚠', `${job.name} — deposit $${((quotes.find(q => q.id === p.quote_id) || {}).deposit_cents || 0) / 100}`);
+  const dep = await db.prepare(
+    `SELECT created_at, amount_cents, provider FROM payments WHERE project_id = ? AND kind = 'deposit' AND status IN ('paid','recorded') ORDER BY id LIMIT 1`
+  ).get(p.id);
+  if (dep) push(dep.created_at, 'deposit_paid', 'Deposit paid', `$${(dep.amount_cents / 100).toFixed(2)} (${dep.provider})`);
+  const audits = await db.prepare(
+    `SELECT action, details, created_at FROM admin_audit WHERE entity = 'projects' AND entity_id = ? ORDER BY id`
+  ).all(p.id);
+  const auditTitle = {
+    'project.contractor_offered': 'Contractor offered the job',
+    'project.contractor_accepted': 'Contractor accepted the job ⚠',
+    'project.scheduled': 'Job scheduled',
+  };
+  // Counter-offers happen between the offer and the acceptance — list them before audit events.
+  const offers = await db.prepare('SELECT * FROM contractor_offers WHERE project_id = ? ORDER BY id').all(p.id);
+  for (const o of offers) {
+    push(o.created_at, 'counter_offer', `Counter-offer: $${(o.proposed_cents / 100).toFixed(2)} (${o.status})`, o.note || '');
+  }
+  for (const a of audits) {
+    if (auditTitle[a.action]) push(a.created_at, a.action.replace('project.', ''), auditTitle[a.action], a.details || '');
+  }
+  const milestones = await db.prepare('SELECT * FROM milestones WHERE project_id = ? ORDER BY sort_order').all(p.id);
+  for (const m of milestones) {
+    if (m.status === 'completed') push(m.approved_at || m.created_at, 'milestone', `Milestone done: ${m.title}`, '');
+  }
+  const compN = await db.prepare(`SELECT COUNT(*) c, MAX(created_at) mx FROM photos WHERE project_id = ? AND kind = 'completion'`).get(p.id);
+  if (compN.c > 0) push(compN.mx, 'photos', `${compN.c} work photo(s) uploaded`, '');
+  const signN = await db.prepare(`SELECT COUNT(*) c, MAX(created_at) mx FROM photos WHERE project_id = ? AND kind = 'signoff'`).get(p.id);
+  if (signN.c > 0) push(signN.mx, 'signoff', 'Signed close-out sheet uploaded', '');
+  if (p.stage === 'completed') push(p.updated_at, 'completed', 'Project completed 🎉', '');
+
+  events.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  res.json({
+    client: job ? { name: job.name, phone: job.phone, email: job.email, address: [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ') } : null,
+    contractor: contractor ? {
+      name: contractor.name, legal_name: contractor.legal_name, phone: contractor.phone, email: contractor.email,
+      kind: contractor.contractor_kind === 'inhouse' ? 'Helpman technician (in-house)' : 'Independent contractor',
+      license: contractor.license_exempt ? 'Exempt (minor work)' : (contractor.license_number || '—'),
+      status: contractor.contractor_status || null,
+    } : null,
+    events,
+  });
 }));
 
 // ---- Admin: set scheduled dates (end must be >= start) ----
@@ -243,6 +410,11 @@ router.patch('/:id/schedule', authRequired, requireRole('admin'), ah(async (req,
   await db.prepare(`UPDATE projects SET scheduled_start = ?, scheduled_end = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(start, end, p.id);
   auditLog(req.user.id, 'project.scheduled', 'projects', p.id, `Scheduled ${start || '—'} → ${end || '—'}`);
+  // Notify BOTH parties: customer (approval + date + pro name) and contractor (scheduled date + address).
+  if (start) {
+    const { scheduleNotificationEmails } = require('../services/notify');
+    await scheduleNotificationEmails(p.id);
+  }
   res.json(await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
 }));
 
@@ -269,21 +441,9 @@ router.patch('/:id/stage', authRequired, ah(async (req, res) => {
     if (p.contractor_id) {
       await db.prepare('UPDATE contractors SET jobs_completed = jobs_completed + 1 WHERE id = ?').run(p.contractor_id);
     }
-    // Notify the customer that the project is complete.
-    const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
-    const custEmail = job.customer_id
-      ? (await db.prepare('SELECT email FROM users WHERE id = ?').get(job.customer_id) || {}).email
-      : job.email;
-    if (custEmail) {
-      await notify({
-        to: custEmail,
-        subject: `Your project is complete (#${p.id}) 🎉`,
-        html: shell('Project completed', 'Your project is complete. Please leave a review from your portal:', [
-          ['Project', `#${p.id} — ${job.service_type}`],
-          ['Address', job.address],
-        ]),
-      }).catch(() => {});
-    }
+    // Notify BOTH parties that the project is complete.
+    const { completionEmails } = require('../services/notify');
+    await completionEmails(p.id);
   }
   auditLog(req.user.id, 'project.stage', 'projects', p.id, `Stage → ${stage}`);
   res.json(await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
@@ -296,6 +456,17 @@ router.post('/:id/milestones/:mid/complete', authRequired, ah(async (req, res) =
   if (!['admin', 'contractor'].includes(req.user.role)) return res.status(403).json({ error: 'Not allowed.' });
   const m = await db.prepare('SELECT * FROM milestones WHERE id = ? AND project_id = ?').get(req.params.mid, p.id);
   if (!m) return res.status(404).json({ error: 'Milestone not found.' });
+  // Close-out requirement: at least one photo of the finished work AND the signed close-out sheet.
+  const compPhotos = await db.prepare(
+    `SELECT COUNT(*) c FROM photos WHERE project_id = ? AND kind = 'completion'`).get(p.id).c;
+  const signPhotos = await db.prepare(
+    `SELECT COUNT(*) c FROM photos WHERE project_id = ? AND kind = 'signoff'`).get(p.id).c;
+  if (compPhotos < 1 || signPhotos < 1) {
+    return res.status(400).json({
+      error: 'Before closing: upload at least one photo of the finished work and a photo of the signed close-out sheet.',
+      missing: { completion_photos: compPhotos < 1, signoff_photo: signPhotos < 1 },
+    });
+  }
   await db.prepare(`UPDATE milestones SET status = 'completed' WHERE id = ?`).run(m.id);
   auditLog(req.user.id, 'milestone.completed', 'milestones', m.id, `Project #${p.id}: "${m.title}"`);
 
@@ -354,7 +525,7 @@ router.post('/:id/photos', authRequired, upload.array('photos', 6), ah(async (re
   const p = await loadProject(req, res);
   if (!p) return;
   if (!['admin', 'contractor'].includes(req.user.role)) return res.status(403).json({ error: 'Not allowed.' });
-  const kind = ['progress', 'completion'].includes((req.body || {}).kind) ? req.body.kind : 'progress';
+  const kind = ['progress', 'completion', 'signoff'].includes((req.body || {}).kind) ? req.body.kind : 'progress';
   const saved = [];
   for (const f of req.files || []) {
     const opt = await photoSvc.optimize(f.path, f.mimetype);

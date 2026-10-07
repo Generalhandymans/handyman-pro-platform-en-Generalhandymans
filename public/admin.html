@@ -84,13 +84,14 @@
               <div class="field"><label class="field-check"><input type="checkbox" id="vf-license"> License verified</label></div>
               <div class="field"><label class="field-check"><input type="checkbox" id="vf-insurance"> Insurance verified</label></div>
             </div>
+            <div class="field"><label class="field-check"><input type="checkbox" id="vf-exempt"> License-exempt (minor work not requiring a license)</label></div>
             <div class="form-grid two">
               <div class="field"><label for="vf-bg">Background check</label>
                 <select id="vf-bg"><option value="pending">Pending</option><option value="passed">Passed</option><option value="failed">Failed</option></select></div>
               <div class="field"><label for="vf-status">Status</label>
                 <select id="vf-status"><option value="pending">Pending</option><option value="active">Active</option><option value="suspended">Suspended</option></select></div>
             </div>
-            <p class="small muted">Activation guardrail: a contractor can only go <strong>active</strong> once license and insurance are verified and the background check has passed.</p>
+            <p class="small muted">Activation guardrail: a contractor can only go <strong>active</strong> once license and insurance are verified and the background check has passed — or is marked license-exempt for minor work.</p>
             <button class="btn btn-primary" type="submit" id="verify-save">Save verification</button>
           </form>
         </div>
@@ -535,15 +536,19 @@
       box.innerHTML = `
         <dl class="kv" style="margin:.5rem 0">
           <dt>Contact</dt><dd>${HP.esc(c.user_name || '')} · ${HP.esc(c.email || '')} · ${HP.esc(c.phone || '—')}</dd>
+          <dt>Kind</dt><dd>${HP.esc(c.contractor_kind === 'inhouse' ? 'Helpman technician (in-house)' : 'Independent contractor')}</dd>
+          <dt>License declared</dt><dd>${c.has_license ? HP.esc(c.license_number || 'Yes') : '<strong>No license</strong> — application under review'}</dd>
           <dt>License #</dt><dd>${HP.esc(c.license_number || '—')}</dd>
           <dt>Insurance</dt><dd>${HP.esc(c.insurance_info || '—')}</dd>
           <dt>Now</dt><dd>${HP.badge('license ' + (c.license_verified ? 'verified' : 'unverified'), c.license_verified ? 'ok' : 'warn')}
+            ${c.license_exempt ? HP.badge('license-exempt', 'ok') : ''}
             ${HP.badge('insurance ' + (c.insurance_verified ? 'verified' : 'unverified'), c.insurance_verified ? 'ok' : 'warn')}
             ${HP.badge('background ' + c.background_check, c.background_check === 'passed' ? 'ok' : 'warn')}
             ${HP.badge(c.status, c.status === 'active' ? 'ok' : 'warn')}</dd>
         </dl>`;
       document.getElementById('vf-license').checked = !!c.license_verified;
       document.getElementById('vf-insurance').checked = !!c.insurance_verified;
+      document.getElementById('vf-exempt').checked = !!c.license_exempt;
       document.getElementById('vf-bg').value = c.background_check || 'pending';
       document.getElementById('vf-status').value = c.status || 'pending';
     }
@@ -558,6 +563,7 @@
         await HP.api('PATCH', `/contractors/${id}/verify`, {
           license_verified: document.getElementById('vf-license').checked,
           insurance_verified: document.getElementById('vf-insurance').checked,
+          license_exempt: document.getElementById('vf-exempt').checked,
           background_check: document.getElementById('vf-bg').value,
           status: document.getElementById('vf-status').value,
         });
@@ -613,9 +619,20 @@
       try {
         const projects = await HP.api('GET', '/projects');
         if (!projects.length) { box.innerHTML = HP.emptyState('No projects yet', 'Projects appear here once a customer accepts a quote.'); return; }
-        box.innerHTML = '<div class="proj-list"></div>';
+        // Alerts: keep the dashboard attentive at every handoff.
+        const waiting = projects.filter((p) => p.stage === 'assigned' && !p.contractor_id);
+        const needSchedule = projects.filter((p) => p.contractor_status === 'accepted' && !p.scheduled_start);
+        const alerts = [];
+        if (waiting.length) alerts.push(`<strong>⚠ ${waiting.length} project(s) accepted by a customer and waiting for a contractor.</strong> Offer them to a pro below.`);
+        if (needSchedule.length) alerts.push(`<strong>⚠ ${needSchedule.length} project(s) accepted by the contractor and waiting for a schedule date.</strong> Set the date to notify both parties.`);
+        box.innerHTML = (alerts.length
+          ? `<div class="banner banner-warn" style="margin-bottom:1rem">${alerts.join('<br>')}</div>`
+          : '') + '<div class="proj-list"></div>';
         const list = box.querySelector('.proj-list');
-        projects.forEach((p) => list.appendChild(adminProjectCard(p)));
+        // Attention-needed projects first.
+        const priority = new Set([...waiting, ...needSchedule].map((p) => p.id));
+        [...projects.filter((p) => priority.has(p.id)), ...projects.filter((p) => !priority.has(p.id))]
+          .forEach((p) => list.appendChild(adminProjectCard(p)));
       } catch (e) {
         box.innerHTML = `<div class="banner banner-warn">Could not load projects: ${HP.esc(HP.friendlyMessage(e))}</div>`;
       }
@@ -648,6 +665,35 @@
       body.innerHTML = '<p class="muted">Loading…</p>';
       try {
         const full = await HP.api('GET', `/projects/${p.id}`);
+        let timeline = null;
+        try { timeline = await HP.api('GET', `/projects/${p.id}/timeline`); } catch (e) { /* ignore */ }
+        const whoHtml = timeline ? `
+          <div class="form-grid two" style="margin-bottom:1rem">
+            <div class="card" style="margin:0"><h4 style="margin-top:0">👤 Client</h4>
+              <dl class="kv">
+                <dt>Name</dt><dd>${HP.esc(timeline.client?.name || '—')}</dd>
+                <dt>Phone</dt><dd>${HP.esc(timeline.client?.phone || '—')}</dd>
+                <dt>Email</dt><dd>${HP.esc(timeline.client?.email || '—')}</dd>
+                <dt>Address</dt><dd>${HP.esc(timeline.client?.address || '—')}</dd>
+              </dl></div>
+            <div class="card" style="margin:0"><h4 style="margin-top:0">🔧 Contractor</h4>
+              ${timeline.contractor ? `<dl class="kv">
+                <dt>Name</dt><dd>${HP.esc(timeline.contractor.name || '—')}</dd>
+                <dt>Legal</dt><dd>${HP.esc(timeline.contractor.legal_name || '—')}</dd>
+                <dt>Kind</dt><dd>${HP.esc(timeline.contractor.kind || '—')}</dd>
+                <dt>Phone</dt><dd>${HP.esc(timeline.contractor.phone || '—')}</dd>
+                <dt>License</dt><dd>${HP.esc(timeline.contractor.license || '—')}</dd>
+                <dt>Response</dt><dd>${HP.badge(timeline.contractor.status || 'not offered', (timeline.contractor.status === 'accepted') ? 'ok' : 'warn')}</dd>
+              </dl>` : '<p class="small muted">No contractor assigned yet.</p>'}
+            </div>
+          </div>` : '';
+        const timelineHtml = timeline && timeline.events.length ? `
+          <hr class="divider"><h4>Process timeline</h4>
+          <ul class="tline">${timeline.events.map((e) => `
+            <li><span class="t-dot"></span>
+              <div><div class="t-label">${HP.esc(e.title)}</div>
+              <div class="small muted">${HP.fmtDate(e.at)}${e.detail ? ' · ' + HP.esc(e.detail) : ''}</div></div>
+            </li>`).join('')}</ul>` : '';
         const stageOpts = PROJECT_STAGES.map((s) =>
           `<option value="${s}" ${full.stage === s ? 'selected' : ''}>${HP.PROJECT_STAGE[s]}</option>`).join('');
         const assignOpts = activeContractors.map((c) =>
@@ -660,7 +706,25 @@
         const photos = (full.photos && full.photos.length)
           ? `<div class="photo-grid">${full.photos.map(photoTile).join('')}</div>`
           : '<p class="small muted">No photos yet.</p>';
+        let offersHtml = '';
+        try {
+          const offers = await HP.api('GET', `/projects/${full.id}/offers`);
+          const pending = offers.filter((o) => o.status === 'pending');
+          if (offers.length) {
+            offersHtml = `<hr class="divider"><h4>Counter-offers (negotiation)</h4>` + offers.map((o) => `
+              <div class="offer-box" style="margin-bottom:.5rem">
+                <div><strong>${HP.fmtMoney(o.proposed_cents)}</strong> ${HP.badge(o.status, o.status === 'accepted' ? 'ok' : o.status === 'pending' ? 'warn' : 'muted')}</div>
+                ${o.note ? `<p class="small muted">${HP.esc(o.note)}</p>` : ''}
+                ${o.status === 'pending' ? `<div class="btn-row">
+                  <button class="btn btn-ok btn-sm" data-offer-ok="${o.id}">Accept proposal</button>
+                  <button class="btn btn-outline btn-sm" data-offer-no="${o.id}">Reject</button>
+                </div>` : ''}
+              </div>`).join('');
+          }
+        } catch (e) { /* offers unavailable */ }
         body.innerHTML = `
+          ${whoHtml}
+          ${timelineHtml}
           <div class="form-grid two">
             <div class="field"><label for="assign-${full.id}">Assign contractor</label>
               <div class="copy-row">
@@ -690,6 +754,8 @@
             <dt>Margin</dt><dd>${HP.fmtMoney(full.customer_price_cents - full.contractor_cost_cents)}</dd>
           </dl>
           <h4>Milestones</h4><div class="ms">${ms || '<p class="small muted">No milestones.</p>'}</div>
+          <div style="margin:.5rem 0"><a class="btn btn-outline btn-sm" href="signoff.html?project=${full.id}" target="_blank" rel="noopener">🖨 Close-out sheet (print / sign / photograph)</a></div>
+          ${offersHtml}
           <hr class="divider"><h4>Photos</h4>${photos}
           <hr class="divider"><h4>Payments</h4>
           ${pays ? `<div class="table-scroll"><table><thead><tr><th>Type</th><th class="num">Amount</th><th>Status</th><th>Note</th></tr></thead><tbody>${pays}</tbody></table></div>` : '<p class="small muted">No payments recorded yet.</p>'}
@@ -755,8 +821,21 @@
             expandedRefresh(full.id, body);
           } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
         });
-        body.querySelector('.pay-form').addEventListener('submit', async (ev) => {
-          ev.preventDefault();
+        body.querySelectorAll('[data-offer-ok]').forEach((b) => b.addEventListener('click', async () => {
+          try {
+            await HP.api('POST', `/projects/${full.id}/offers/${b.dataset.offerOk}/accept`);
+            HP.toast('Counter-offer accepted — contractor notified.', 'ok');
+            expandedRefresh(full.id, body);
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        }));
+        body.querySelectorAll('[data-offer-no]').forEach((b) => b.addEventListener('click', async () => {
+          try {
+            await HP.api('POST', `/projects/${full.id}/offers/${b.dataset.offerNo}/reject`);
+            HP.toast('Counter-offer rejected.', 'ok');
+            expandedRefresh(full.id, body);
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        }));
+        body.querySelector('.pay-form').addEventListener('submit', async (ev) => {          ev.preventDefault();
           const f = ev.target;
           const amount = f.amount.value;
           if (!(Number(amount) > 0)) { HP.toast('Enter a valid amount in dollars.', 'error'); return; }

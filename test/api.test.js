@@ -297,6 +297,20 @@ test('milestone complete → customer notified; approve → contractor notified'
   const p = await api('GET', `/api/projects/${projectId}`, undefined, adminToken);
   const mid = p.data.milestones[0].id;
 
+  // Close-out requirement: upload a completion photo + the signed close-out sheet first.
+  const sharp = require('sharp');
+  const mk = async (name, kind) => {
+    const buf = await sharp({ create: { width: 800, height: 600, channels: 3, background: { r: 200, g: 200, b: 200 } } }).jpeg().toBuffer();
+    const form = new FormData();
+    form.append('photos', new Blob([buf], { type: 'image/jpeg' }), name);
+    form.append('kind', kind);
+    return form;
+  };
+  const up1 = await api('POST', `/api/projects/${projectId}/photos`, undefined, contToken, await mk('done.jpg', 'completion'));
+  assert.equal(up1.status, 201);
+  const up2 = await api('POST', `/api/projects/${projectId}/photos`, undefined, contToken, await mk('signed.jpg', 'signoff'));
+  assert.equal(up2.status, 201);
+
   const c1 = await api('POST', `/api/projects/${projectId}/milestones/${mid}/complete`, {}, contToken);
   assert.equal(c1.status, 200);
   const n1 = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%Milestone done%' ORDER BY id DESC").get();

@@ -49,6 +49,17 @@ router.post('/signup/customer', ah(async (req, res) => {
   ).run(name.trim(), email.trim().toLowerCase(), (phone || '').trim(), hashPassword(password), 'customer', token, verifyExpires);
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   await sendVerificationEmail(user, token);
+  // Welcome email (transactional, via notify -> console log until SendGrid is configured).
+  await notify({
+    to: user.email,
+    subject: 'Welcome to Helpman — home projects, handled',
+    html: shell('Welcome to Helpman', `Hi ${user.name.split(' ')[0]}, your account is ready. Here's how it works:`, [
+      ['1. Describe the job', 'Add photos (required) and get a planning estimate — a reference range, not a final price.'],
+      ['2. Get a formal quote', 'We review the scope and send you a clear quote to accept.'],
+      ['3. Pay the deposit', 'Secure online payment before work begins.'],
+      ['4. We handle the rest', 'A verified professional is assigned; you track everything and approve each milestone.'],
+    ]),
+  }).catch(() => {});
   res.status(201).json({ token: signToken(user), user: publicUser(user), verify_sent: true });
 }));
 
@@ -62,6 +73,14 @@ router.post('/signup/contractor', ah(async (req, res) => {
   if (typeof b.password !== 'string' || b.password.length < 8) errors.password = 'Password must be at least 8 characters.';
   if (!isNonEmpty(b.legal_name, 160)) errors.legal_name = 'Legal name is required.';
   if (!isNonEmpty(b.city, 120)) errors.city = 'City is required.';
+  const kind = (b.contractor_kind || 'independent');
+  if (!['independent', 'inhouse'].includes(kind)) errors.contractor_kind = 'Invalid contractor kind.';
+  // has_license: when explicitly true, the license number becomes mandatory.
+  // When absent (older clients), keep the previous lenient behavior.
+  const hasLicense = b.has_license === undefined || b.has_license === null
+    ? null
+    : !(b.has_license === false || b.has_license === 0 || b.has_license === 'false');
+  if (hasLicense === true && !isNonEmpty(b.license_number, 200)) errors.license_number = 'License number is required when you have a license.';
   if (failIfErrors(res, errors)) return;
 
   const exists = await db.prepare('SELECT id FROM users WHERE email = ?').get(b.email.trim().toLowerCase());
@@ -73,12 +92,13 @@ router.post('/signup/contractor', ah(async (req, res) => {
     ).run(b.name.trim(), b.email.trim().toLowerCase(), (b.phone || '').trim(), hashPassword(b.password), 'contractor');
     await t.prepare(
       `INSERT INTO contractors (user_id, legal_name, city, service_base, service_radius_miles,
-        years_experience, specialties, license_number, insurance_info)
-       VALUES (?,?,?,?,?,?,?,?,?)`
+        years_experience, specialties, license_number, insurance_info, has_license, contractor_kind)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       u.lastInsertRowid, b.legal_name.trim(), b.city.trim(), (b.service_base || b.city || '').trim(),
       Number(b.service_radius_miles) || 25, Number(b.years_experience) || 0,
-      (b.specialties || '').trim(), (b.license_number || '').trim(), (b.insurance_info || '').trim()
+      (b.specialties || '').trim(), (b.license_number || '').trim(), (b.insurance_info || '').trim(),
+      hasLicense === false ? 0 : 1, kind
     );
     return u.lastInsertRowid;
   });
@@ -87,11 +107,29 @@ router.post('/signup/contractor', ah(async (req, res) => {
   const vexp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
   await db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(vtoken, vexp, userId);
   await sendVerificationEmail(user, vtoken);
+  // Welcome email (transactional, via notify -> console log until SendGrid is configured).
+  const firstName = user.name.split(' ')[0];
+  const noLicense = hasLicense === false;
+  await notify({
+    to: user.email,
+    subject: 'Welcome to Helpman — your application is under review',
+    html: shell('Welcome to Helpman', `Hi ${firstName}, thanks for joining as a ${kind === 'inhouse' ? 'Helpman technician' : 'contractor'}.`, [
+      ['Status', 'Application under review'],
+      ['License declared', noLicense ? 'No' : `Yes — ${(b.license_number || '').trim() || 'pending number'}`],
+      ['Next step', noLicense
+        ? 'Your application has gone to review. We will notify you when it is active.'
+        : 'Our team will verify your license, insurance and background check, then notify you when you are active.'],
+    ]),
+  }).catch(() => {});
   res.status(201).json({
     token: signToken(user),
     user: publicUser(user),
     verify_sent: true,
-    note: 'Contractor profile created with status "pending". An admin must verify license, insurance and background check before activation.',
+    has_license: hasLicense,
+    contractor_kind: kind,
+    note: noLicense
+      ? 'Your application has gone to review. We will notify you when it is active.'
+      : 'Contractor profile created with status "pending". An admin must verify license, insurance and background check before activation.',
   });
 }));
 

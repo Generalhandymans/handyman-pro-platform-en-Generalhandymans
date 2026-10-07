@@ -174,17 +174,28 @@
             <label for="sj-specialties-other">Other specialties <span class="hint">— anything not listed above</span></label>
             <input type="text" id="sj-specialties-other" name="specialties_other" placeholder="e.g. pool equipment, smart home setup">
           </div>
+          <div class="field">
+            <label>How are you joining? <span class="req">*</span></label>
+            <div class="check-grid" style="grid-template-columns:1fr 1fr">
+              <label class="field-check"><input type="radio" name="contractor_kind" value="independent" checked> Independent contractor</label>
+              <label class="field-check"><input type="radio" name="contractor_kind" value="inhouse"> Helpman technician (in-house)</label>
+            </div>
+            <span class="field-error" data-error-for="contractor_kind"></span>
+          </div>
           <div class="form-grid two">
             <div class="field">
-              <label for="sj-license">License number</label>
+              <label class="field-check" style="margin-top:1.6rem"><input type="checkbox" id="sj-has-license" name="has_license" checked> I have a contractor license</label>
+            </div>
+            <div class="field" id="sj-license-wrap">
+              <label for="sj-license">License number <span class="req">*</span></label>
               <input type="text" id="sj-license" name="license_number">
               <span class="field-error" data-error-for="license_number"></span>
             </div>
-            <div class="field">
-              <label for="sj-insurance">Insurance info</label>
-              <input type="text" id="sj-insurance" name="insurance_info" placeholder="Carrier / policy #">
-              <span class="field-error" data-error-for="insurance_info"></span>
-            </div>
+          </div>
+          <div class="field">
+            <label for="sj-insurance">Insurance info</label>
+            <input type="text" id="sj-insurance" name="insurance_info" placeholder="Carrier / policy #">
+            <span class="field-error" data-error-for="insurance_info"></span>
           </div>
           <button class="btn btn-primary btn-block" type="submit" id="btn-contractor">Apply as a contractor</button>
         </form>
@@ -369,6 +380,12 @@
     });
 
     // ---- contractor signup ----
+    // License checkbox: license number is required only when the applicant has a license.
+    const licChk = document.getElementById('sj-has-license');
+    const licWrap = document.getElementById('sj-license-wrap');
+    const syncLicense = () => { licWrap.style.display = licChk.checked ? '' : 'none'; };
+    licChk.addEventListener('change', syncLicense);
+    syncLicense();
     document.getElementById('form-contractor').addEventListener('submit', async (e) => {
       e.preventDefault();
       const form = e.target, btn = document.getElementById('btn-contractor');
@@ -383,6 +400,8 @@
         city: v('sj-city'), service_base: v('sj-base'),
         specialties: picked.join(','), license_number: v('sj-license'),
         insurance_info: v('sj-insurance'),
+        has_license: document.getElementById('sj-has-license').checked,
+        contractor_kind: (document.querySelector('input[name="contractor_kind"]:checked') || {}).value || 'independent',
       };
       if (picked.length === 0) {
         HP.toast('Pick at least one specialty.', 'err');
@@ -399,7 +418,11 @@
         HP.setSession(r.token, r.user);
         // Show the platform's verification note before leaving.
         const noteBox = document.getElementById('contractor-note');
-        noteBox.innerHTML = `<div class="banner banner-warn"><strong>Application received.</strong><br>${HP.esc(r.note || 'Your contractor profile is pending verification.')}</div>`;
+        if (r.has_license === false) {
+          noteBox.innerHTML = `<div class="banner banner-warn"><strong>Tu aplicación ha ido a revisión.</strong><br>Te notificaremos cuando esté activa.</div>`;
+        } else {
+          noteBox.innerHTML = `<div class="banner banner-warn"><strong>Application received.</strong><br>${HP.esc(r.note || 'Your contractor profile is pending verification.')}</div>`;
+        }
         HP.toast('Application submitted.', 'ok');
         setTimeout(() => redirectByRole(r.user), 2500);
       } catch (err) {

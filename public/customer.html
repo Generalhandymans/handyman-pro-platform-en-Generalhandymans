@@ -202,6 +202,7 @@
         const estHtml = estimate ? `
           <h4>Estimate</h4>
           <div class="estimate-range" style="font-size:1.4rem">${HP.fmtMoney(estimate.low_cents)} – ${HP.fmtMoney(estimate.high_cents)}</div>
+          <p class="hm-disclaimer" style="margin:.4rem 0"><strong>Referential estimate.</strong> This range is calculated from trade pricing data for California and is not a final price. A formal proposal will be made once the work has been examined.</p>
           <div class="score-wrap"><div class="score-track"><div class="score-fill" style="width:${estimate.confidence}%"></div></div><span class="small muted">${estimate.confidence}%</span></div>`
           : `<p class="small muted">No estimate yet for this request.</p>`;
         const quotesHtml = quotes.length ? `
@@ -298,6 +299,16 @@
           // Online payment: collect the deposit with Stripe Elements.
           const q = await HP.api('GET', `/quotes/${qid}`);
           openStripePay({ projectId: r.project_id, amountCents: q.deposit_cents, onSuccess });
+        } else if (r.stripe && r.stripe.simulated) {
+          // Simulated payment mode (testing): record the deposit as paid without a real charge.
+          if (confirm('SIMULATED payment (testing only — no real charge). Record the deposit as paid?')) {
+            try {
+              const q = await HP.api('GET', `/quotes/${qid}`);
+              await HP.api('POST', '/payments/deposit-intent', { project_id: r.project_id });
+              HP.toast(`Simulated deposit of ${HP.fmtMoney(q.deposit_cents)} recorded.`, 'ok');
+            } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+          }
+          onSuccess(r);
         } else {
           onSuccess(r);
         }

@@ -15,10 +15,13 @@ router.get('/stripe-status', ah(async (req, res) => {
   res.json({
     implemented: true,
     enabled: stripeSvc.isEnabled(),
+    simulated: stripeSvc.isSimulated(),
     publishable_key: stripeSvc.isEnabled() ? (process.env.STRIPE_PUBLISHABLE_KEY || null) : null,
     message: stripeSvc.isEnabled()
       ? 'Stripe is connected. Deposits are charged through Stripe PaymentIntents.'
-      : 'Stripe is not configured. Set STRIPE_SECRET_KEY (+ webhook secret) to charge cards. Payments are recorded manually meanwhile.',
+      : stripeSvc.isSimulated()
+        ? 'SIMULATED payment mode (testing only — no real charge). Set STRIPE_SECRET_KEY for real payments.'
+        : 'Stripe is not configured. Set STRIPE_SECRET_KEY (+ webhook secret) to charge cards. Payments are recorded manually meanwhile.',
   });
 }));
 
@@ -36,8 +39,10 @@ router.post('/webhook', ah(async (req, res) => {
 // ---- Create a Stripe PaymentIntent for a project deposit (customer) ----
 // The amount is ALWAYS derived from the accepted quote — never trusted from
 // the client — so nobody can underpay by tampering with the request.
+// In SIMULATED mode (SIMULATED_PAYMENTS=true, no Stripe keys) the deposit is
+// recorded as paid immediately and clearly labeled simulated (testing only).
 router.post('/deposit-intent', authRequired, ah(async (req, res) => {
-  if (!stripeSvc.isEnabled()) {
+  if (!stripeSvc.isEnabled() && !stripeSvc.isSimulated()) {
     return res.status(503).json({ error: 'Online payments are not enabled yet. Please contact support to arrange your deposit.' });
   }
   const b = req.body || {};
@@ -62,6 +67,20 @@ router.post('/deposit-intent', authRequired, ah(async (req, res) => {
   const amountCents = project.expected_deposit;
   if (!amountCents || amountCents < 100) {
     return res.status(400).json({ error: 'This project has no deposit to collect.' });
+  }
+  // ---- SIMULATED mode: record the deposit as paid immediately (testing only) ----
+  if (stripeSvc.isSimulated()) {
+    const info = await db.prepare(
+      `INSERT INTO payments (project_id, kind, amount_cents, status, provider, provider_ref, notes)
+       VALUES (?,?,?,'paid','simulated',?,?)`
+    ).run(project.id, 'deposit', amountCents, `sim_${Date.now()}`,
+      'SIMULATED payment (testing only — no real charge). Enable Stripe for real payments.');
+    await db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(project.job_request_id);
+    // Email the customer: deposit received + Terms of Service.
+    const { depositConfirmationEmail } = require('../services/notify');
+    await depositConfirmationEmail(project.id);
+    return res.status(201).json({ simulated: true, payment_id: info.lastInsertRowid, amount_cents: amountCents });
   }
   // Supersede any earlier pending intents for this deposit (keeps the ledger clean).
   try {
@@ -120,6 +139,11 @@ router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
     `INSERT INTO payments (project_id, kind, amount_cents, status, provider, notes)
      VALUES (?,?,?,'recorded','manual',?)`
   ).run(b.project_id, b.kind, b.amount_cents, (b.notes || '').trim());
+  // A recorded deposit also confirms to the customer (payment + Terms of Service).
+  if (b.kind === 'deposit') {
+    const { depositConfirmationEmail } = require('../services/notify');
+    await depositConfirmationEmail(b.project_id).catch(() => {});
+  }
   res.status(201).json(await db.prepare('SELECT * FROM payments WHERE id = ?').get(info.lastInsertRowid));
 }));
 

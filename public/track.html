@@ -75,6 +75,7 @@
         <div class="card">
           <h3>Latest estimate</h3>
           <div class="estimate-range" style="font-size:1.6rem">${HP.fmtMoney(est.low_cents)} – ${HP.fmtMoney(est.high_cents)}</div>
+          <p class="hm-disclaimer"><strong>Referential estimate.</strong> Calculated from trade pricing data for California — not a final price. A formal proposal will be made once the work has been examined.</p>
           <div class="score-wrap"><div class="score-track"><div class="score-fill" style="width:${est.confidence}%"></div></div><span class="small muted">${est.confidence}% confidence</span></div>
           <p class="small muted">Computed ${HP.fmtDate(est.created_at)}.</p>
         </div>` : '';

@@ -18,7 +18,7 @@ async function enriched(c) {
 // Admin: everyone with lifecycle + score.
 router.get('/', authRequired, requireRole('admin'), ah(async (req, res) => {
   const rows = await db.prepare('SELECT * FROM contractors ORDER BY id DESC').all();
-  res.json(rows.map(enriched));
+  res.json(await Promise.all(rows.map(enriched)));
 }));
 
 // Contractor: own profile.
@@ -57,6 +57,7 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
   const patch = {};
   if (b.license_verified !== undefined) patch.license_verified = b.license_verified ? 1 : 0;
   if (b.insurance_verified !== undefined) patch.insurance_verified = b.insurance_verified ? 1 : 0;
+  if (b.license_exempt !== undefined) patch.license_exempt = b.license_exempt ? 1 : 0;
   if (b.background_check !== undefined) {
     if (!['pending', 'passed', 'failed'].includes(b.background_check)) errors.background_check = 'Invalid value.';
     else patch.background_check = b.background_check;
@@ -64,13 +65,15 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
   if (b.status !== undefined) {
     if (!['pending', 'active', 'suspended'].includes(b.status)) errors.status = 'Invalid status.';
     else {
-      // Guardrail: cannot activate until license + insurance verified and background passed.
+      // Guardrail: cannot activate until license (+ insurance verified and background passed),
+      // unless the admin marked the contractor license-exempt (minor work not requiring a license).
       if (b.status === 'active') {
         const lv = patch.license_verified !== undefined ? patch.license_verified : c.license_verified;
+        const le = patch.license_exempt !== undefined ? patch.license_exempt : c.license_exempt;
         const iv = patch.insurance_verified !== undefined ? patch.insurance_verified : c.insurance_verified;
         const bc = patch.background_check || c.background_check;
-        if (!lv || !iv || bc !== 'passed') {
-          errors.status = 'Cannot activate: license and insurance must be verified and background check passed.';
+        if ((!lv && !le) || !iv || bc !== 'passed') {
+          errors.status = 'Cannot activate: license and insurance must be verified and background check passed (or mark license-exempt for minor work).';
         }
       }
       if (!errors.status) patch.status = b.status;
@@ -80,7 +83,24 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
   const sets = Object.keys(patch).map(k => `${k} = ?`);
   if (sets.length) await db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE id = ?`).run(...Object.values(patch), c.id);
   auditLog(req.user.id, 'contractor.verified', 'contractors', c.id, JSON.stringify(patch));
-  res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id)));
+  const updated = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id);
+  // Notify the contractor when their application becomes active (the "we'll notify you" promise).
+  if (patch.status === 'active' && c.status !== 'active') {
+    const u = await db.prepare('SELECT name, email FROM users WHERE id = ?').get(c.user_id);
+    if (u && u.email) {
+      const { notify, shell } = require('../services/notify');
+      await notify({
+        to: u.email,
+        subject: 'Your Helpman application is active ✓',
+        html: shell('You are active', `Hi ${u.name.split(' ')[0]}, your application was approved.`, [
+          ['Status', 'Active'],
+          ['License', updated.license_exempt ? 'Exempt (minor work)' : (updated.license_verified ? 'Verified' : '—')],
+          ['Next step', 'Watch for job offers in your portal — you can accept or propose a counter-offer.'],
+        ]),
+      }).catch(() => {});
+    }
+  }
+  res.json(await enriched(updated));
 }));
 
 router.get('/:id', authRequired, requireRole('admin'), ah(async (req, res) => {

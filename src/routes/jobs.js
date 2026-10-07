@@ -128,6 +128,10 @@ router.post('/:id/estimate', ah(async (req, res) => {
       .run(JSON.stringify(scope), job.id);
   }
   const photoCount = await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id).c;
+  // A photo is required: no estimate advances without at least one photo of the work.
+  if (photoCount < 1) {
+    return res.status(400).json({ error: 'Add at least one photo of the work before requesting an estimate.' });
+  }
 
   let result;
   try {

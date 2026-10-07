@@ -199,7 +199,24 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
       ]),
     }).catch(() => {});
   }
-  res.json({ accepted: true, project_id: projectId, stripe: { enabled: stripeOn } });
+  // Confirm to the customer: acceptance received, next step is the deposit.
+  const custEmail2 = job.customer_id
+    ? (await db.prepare('SELECT email FROM users WHERE id = ?').get(job.customer_id) || {}).email
+    : job.email;
+  if (custEmail2) {
+    await notify({
+      to: custEmail2,
+      subject: `Quote accepted — project #${projectId}`,
+      html: shell('Quote accepted ✓', `Hi ${(job.name || '').split(' ')[0]}, we received your acceptance:`, [
+        ['Project', `#${projectId} — ${job.service_type}`],
+        ['Quoted price', fmt(q.customer_price_cents)],
+        ['Deposit due', fmt(q.deposit_cents)],
+        ['Next step', stripeOn ? 'Complete your deposit payment to lock in the schedule.'
+          : 'We will contact you to arrange the deposit payment.'],
+      ]),
+    }).catch(() => {});
+  }
+  res.json({ accepted: true, project_id: projectId, stripe: { enabled: stripeOn, simulated: stripeSvc.isSimulated() } });
 }));
 
 module.exports = router;

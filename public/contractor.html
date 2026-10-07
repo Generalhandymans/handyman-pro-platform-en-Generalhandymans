@@ -238,7 +238,17 @@
           <a href="contractor-terms.html" target="_blank" rel="noopener">Independent Contractor Terms</a>.</p>
           <div class="btn-row">
             <button class="btn btn-ok btn-sm" data-offer-accept="${p.id}">Accept job</button>
+            <button class="btn btn-outline btn-sm" data-offer-counter="${p.id}">Propose a different price</button>
             <button class="btn btn-outline btn-sm" data-offer-decline="${p.id}">Decline</button>
+          </div>
+          <div class="counter-form" id="counter-form-${p.id}" hidden style="margin-top:.75rem">
+            <div class="field"><label>Your proposed price (USD)</label>
+              <input type="number" id="counter-price-${p.id}" min="1" step="1" placeholder="e.g. 450">
+            </div>
+            <div class="field"><label>Note for Helpman (optional)</label>
+              <input type="text" id="counter-note-${p.id}" maxlength="300" placeholder="Why this price?">
+            </div>
+            <button class="btn btn-dark btn-sm" data-counter-send="${p.id}">Send proposal</button>
           </div>
         </div>` : '';
       const stageBtns = offered ? '<span class="small muted">Accept the offer above to start working this job.</span>' : CONTRACTOR_STAGES
@@ -267,13 +277,18 @@
         <hr class="divider">
         <h4>Milestones</h4>
         <div class="ms">${ms || '<p class="small muted">No milestones yet.</p>'}</div>
+        <div class="banner banner-info" style="margin:.75rem 0">
+          <strong>Close-out:</strong> print the <a href="signoff.html?project=${p.id}" target="_blank" rel="noopener"><strong>close-out sheet</strong></a>,
+          have the customer sign it, then upload photos of the <strong>finished work</strong> plus the <strong>signed sheet</strong> below.
+          A milestone cannot be marked done without both.
+        </div>
         <hr class="divider">
         <h4>Job photos</h4>
         ${photos}
         <form class="photo-upload" style="margin-top:.75rem" novalidate>
           <div class="form-grid two">
             <div class="field"><label for="ph-kind-${p.id}">Kind of photos</label>
-              <select id="ph-kind-${p.id}" name="kind"><option value="progress">Progress</option><option value="completion">Completion</option></select></div>
+              <select id="ph-kind-${p.id}" name="kind"><option value="progress">Progress</option><option value="completion">Completion (finished work)</option><option value="signoff">Signed close-out sheet</option></select></div>
             <div class="field"><label for="ph-file-${p.id}">Add photos</label>
               <input type="file" id="ph-file-${p.id}" name="photos" accept="image/*" multiple>
               <div class="hint">Images only, up to 6, 5 MB each.</div></div>
@@ -296,6 +311,21 @@
         } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
       }));
       body.querySelectorAll('[data-offer-accept]').forEach((b) => b.addEventListener('click', () => openOfferModal(b.dataset.offerAccept)));
+      body.querySelectorAll('[data-offer-counter]').forEach((b) => b.addEventListener('click', () => {
+        const f = document.getElementById(`counter-form-${b.dataset.offerCounter}`);
+        if (f) f.hidden = !f.hidden;
+      }));
+      body.querySelectorAll('[data-counter-send]').forEach((b) => b.addEventListener('click', async () => {
+        const pid = b.dataset.counterSend;
+        const price = Number(document.getElementById(`counter-price-${pid}`).value);
+        const note = document.getElementById(`counter-note-${pid}`).value.trim();
+        if (!price || price <= 0) { HP.toast('Enter your proposed price in USD.', 'error'); return; }
+        try {
+          await HP.api('POST', `/projects/${pid}/offers`, { proposed_cents: Math.round(price * 100), note });
+          HP.toast('Proposal sent. Helpman will review and notify you.', 'ok');
+          refreshJob(pid, body);
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      }));
       body.querySelectorAll('[data-offer-decline]').forEach((b) => b.addEventListener('click', async () => {
         if (!confirm('Decline this job offer? We will offer it to another professional.')) return;
         try {

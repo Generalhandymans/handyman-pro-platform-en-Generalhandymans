@@ -19,6 +19,14 @@ function isEnabled() {
   return !!process.env.STRIPE_SECRET_KEY;
 }
 
+// Simulated payment mode ("como si Stripe estuviera"): for end-to-end testing
+// without real Stripe keys. Enabled ONLY with SIMULATED_PAYMENTS=true and only
+// when Stripe is NOT configured. Every simulated record is clearly labeled so
+// it can never be confused with a real charge.
+function isSimulated() {
+  return !isEnabled() && process.env.SIMULATED_PAYMENTS === 'true';
+}
+
 function getClient() {
   if (!isEnabled()) throw new Error('Stripe is not configured. Set STRIPE_SECRET_KEY.');
   if (!stripeClient) {
@@ -76,6 +84,9 @@ async function handleWebhook(rawBody, signature) {
         await db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
           .run(proj.job_request_id);
       }
+      // Email the customer: deposit received + Terms of Service.
+      const { depositConfirmationEmail } = require('./notify');
+      await depositConfirmationEmail(pid).catch(() => {});
     }
     return 'payment_intent.succeeded';
   }
@@ -90,4 +101,4 @@ async function handleWebhook(rawBody, signature) {
   return event.type; // acknowledged, nothing to do
 }
 
-module.exports = { isEnabled, getClient, createDepositIntent, handleWebhook };
+module.exports = { isEnabled, isSimulated, getClient, createDepositIntent, handleWebhook };

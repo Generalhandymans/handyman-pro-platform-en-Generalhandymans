@@ -60,3 +60,107 @@ async function projectParties(projectId) {
 }
 
 module.exports = { notify, shell, esc, projectParties };
+
+// ---------------------------------------------------------------------------
+// Lifecycle emails (2026-10-07): the full notification chain of a project.
+// All transactional — they go through notify() (console log until SendGrid
+// is configured). Each is idempotent by nature (called once per event).
+// ---------------------------------------------------------------------------
+const SITE = () => (process.env.PUBLIC_URL || 'https://helpman.app').replace(/\/$/, '');
+
+async function depositConfirmationEmail(projectId) {
+  const { project, job, customer } = await projectParties(projectId);
+  if (!project || !customer || !customer.email) return;
+  const dep = await db.prepare(
+    `SELECT amount_cents, provider FROM payments WHERE project_id = ? AND kind = 'deposit' AND status IN ('paid','recorded') ORDER BY id DESC LIMIT 1`
+  ).get(projectId);
+  await notify({
+    to: customer.email,
+    subject: `Deposit received — project #${project.id} ✓`,
+    html: shell('Deposit received ✓', `Hi ${(customer.name || '').split(' ')[0]}, your deposit is confirmed:`, [
+      ['Project', `#${project.id} — ${job.service_type}`],
+      ['Amount paid', '$' + ((dep ? dep.amount_cents : project.expected_deposit) / 100).toFixed(2)],
+      ['Method', dep && dep.provider === 'stripe' ? 'Card (Stripe)' : dep && dep.provider === 'simulated' ? 'Simulated (test)' : 'Manual'],
+      ['Terms of Service', `${SITE()}/terms.html`],
+      ['Next step', 'We assign your professional and notify you with the scheduled date.'],
+    ]),
+  }).catch(() => {});
+}
+
+async function contractorAcceptanceEmail(projectId) {
+  const { project, job, contractor } = await projectParties(projectId);
+  if (!project || !contractor || !contractor.email) return;
+  await notify({
+    to: contractor.email,
+    subject: `You accepted project #${project.id} ✓`,
+    html: shell('Job accepted ✓', `Hi ${contractor.name.split(' ')[0]}, you accepted this job under the Independent Contractor Terms:`, [
+      ['Project', `#${project.id} — ${job.service_type}`],
+      ['Your payout', '$' + (project.contractor_cost_cents / 100).toFixed(2)],
+      ['Independent Contractor Terms', `${SITE()}/contractor-terms.html`],
+      ['Reminder', 'No direct contact with the customer — all communication goes through Helpman support.'],
+    ]),
+  }).catch(() => {});
+}
+
+async function scheduleNotificationEmails(projectId) {
+  const { project, job, customer, contractor } = await projectParties(projectId);
+  if (!project || !project.scheduled_start) return;
+  const dates = project.scheduled_start + (project.scheduled_end && project.scheduled_end !== project.scheduled_start ? ` → ${project.scheduled_end}` : '');
+  const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+  if (customer && customer.email) {
+    await notify({
+      to: customer.email,
+      subject: `Your job is approved for ${project.scheduled_start} — project #${project.id}`,
+      html: shell('Job approved ✓', 'Your work is approved and scheduled:', [
+        ['Project', `#${project.id} — ${job.service_type}`],
+        ['Date', dates],
+        ['Professional coming', contractor ? contractor.name : 'Assigned pro'],
+        ['Address', addr || '—'],
+      ]),
+    }).catch(() => {});
+  }
+  if (contractor && contractor.email) {
+    await notify({
+      to: contractor.email,
+      subject: `Scheduled: project #${project.id} — ${project.scheduled_start}`,
+      html: shell('You are scheduled 📅', `Hi ${contractor.name.split(' ')[0]}, this job is scheduled:`, [
+        ['Project', `#${project.id} — ${job.service_type}`],
+        ['Date', dates],
+        ['Address', addr || '—'],
+        ['Customer', customer ? customer.name : '—'],
+        ['Reminder', 'Print the close-out sheet, have the customer sign it, and upload photos of the finished work + the signed sheet.'],
+      ]),
+    }).catch(() => {});
+  }
+}
+
+async function completionEmails(projectId) {
+  const { project, job, customer, contractor } = await projectParties(projectId);
+  if (!project) return;
+  if (customer && customer.email) {
+    await notify({
+      to: customer.email,
+      subject: `Your project is complete (#${project.id}) 🎉`,
+      html: shell('Project completed', 'Your project is complete. Please leave a review from your portal:', [
+        ['Project', `#${project.id} — ${job.service_type}`],
+        ['Address', job.address],
+      ]),
+    }).catch(() => {});
+  }
+  if (contractor && contractor.email) {
+    await notify({
+      to: contractor.email,
+      subject: `Project #${project.id} closed — thanks!`,
+      html: shell('Job closed ✓', `Hi ${contractor.name.split(' ')[0]}, this job is marked complete:`, [
+        ['Project', `#${project.id} — ${job.service_type}`],
+        ['Payout', '$' + (project.contractor_cost_cents / 100).toFixed(2)],
+        ['Next step', 'Watch your portal for the next offer.'],
+      ]),
+    }).catch(() => {});
+  }
+}
+
+module.exports.depositConfirmationEmail = depositConfirmationEmail;
+module.exports.contractorAcceptanceEmail = contractorAcceptanceEmail;
+module.exports.scheduleNotificationEmails = scheduleNotificationEmails;
+module.exports.completionEmails = completionEmails;

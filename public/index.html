@@ -430,10 +430,11 @@
       content.innerHTML = `
         <form id="wz-photos" novalidate>
           <div class="field">
-            <label for="wz-file">Photos <span class="muted">(optional, up to 6 — they sharpen your estimate)</span></label>
+            <label for="wz-file">Photos <span class="req">*</span> <span class="muted">(required — at least 1, up to 6; they sharpen your estimate)</span></label>
             <label class="dropzone" for="wz-file">📷 Tap to add photos<br><span class="small">Images only, 5 MB max each.</span></label>
             <input type="file" id="wz-file" accept="image/*" multiple hidden>
             <div class="photo-previews" id="wz-previews"></div>
+            <div class="field-error" id="wz-photos-error" style="display:none">Add at least one photo of the work to continue.</div>
           </div>
         </form>`;
       const input = document.getElementById('wz-file');
@@ -552,6 +553,7 @@
               <div class="cap">Confidence: ${estimate.confidence}%</div>
             </div>
           </div>
+          <p class="hm-disclaimer"><strong>Referential estimate.</strong> This range is calculated from trade pricing data for California and is not a final price. A formal proposal will be made once the work has been examined.</p>
           <h3>What is included</h3>
           <div class="table-scroll"><table>
             <thead><tr><th>Item</th><th class="num">Low</th><th class="num">High</th></tr></thead>
@@ -594,7 +596,14 @@
     nextBtn.addEventListener('click', async () => {
       if (W.step === 1) { if (collectContact()) { W.step = 2; renderStep(); } }
       else if (W.step === 2) { if (collectTrade()) { W.step = 3; renderStep(); } }
-      else if (W.step === 3) { W.step = 4; renderStep(); }
+      else if (W.step === 3) {
+        if (!W.photos.length) {
+          document.getElementById('wz-photos-error').style.display = '';
+          HP.toast('Add at least one photo of the work to continue.', 'error');
+          return;
+        }
+        W.step = 4; renderStep();
+      }
       else if (W.step === 4) { await submitWizard(); }
     });
     backBtn.addEventListener('click', () => {

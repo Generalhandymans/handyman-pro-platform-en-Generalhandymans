@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS contractors (
   insurance_verified INTEGER NOT NULL DEFAULT 0,
   background_check TEXT NOT NULL DEFAULT 'pending' CHECK (background_check IN ('pending','passed','failed')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended')),
+  has_license INTEGER NOT NULL DEFAULT 1,
+  license_exempt INTEGER NOT NULL DEFAULT 0,
+  contractor_kind TEXT NOT NULL DEFAULT 'independent' CHECK (contractor_kind IN ('independent','inhouse')),
   rating_avg REAL DEFAULT 0,
   jobs_completed INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -86,7 +89,7 @@ CREATE TABLE IF NOT EXISTS photos (
   size_bytes INTEGER,
   width INTEGER,
   height INTEGER,
-  kind TEXT NOT NULL DEFAULT 'request' CHECK (kind IN ('request','progress','completion')),
+  kind TEXT NOT NULL DEFAULT 'request' CHECK (kind IN ('request','progress','completion','signoff')),
   vision_json TEXT DEFAULT '{}',
   uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -535,6 +538,59 @@ if (!columnExists('users', 'reset_expires')) {
 if (!columnExists('projects', 'contractor_status')) {
   db.exec(`ALTER TABLE projects ADD COLUMN contractor_status TEXT CHECK (contractor_status IN ('offered','accepted','declined'))`);
 }
+// ---- 2026-10-07: contractor licensing + kind (independent vs in-house) ----
+if (!columnExists('contractors', 'has_license')) {
+  db.exec(`ALTER TABLE contractors ADD COLUMN has_license INTEGER NOT NULL DEFAULT 1`);
+}
+if (!columnExists('contractors', 'license_exempt')) {
+  db.exec(`ALTER TABLE contractors ADD COLUMN license_exempt INTEGER NOT NULL DEFAULT 0`);
+}
+if (!columnExists('contractors', 'contractor_kind')) {
+  db.exec(`ALTER TABLE contractors ADD COLUMN contractor_kind TEXT NOT NULL DEFAULT 'independent'`);
+}
+// ---- 2026-10-07: negotiation offers (contractor counter-offers, CaliFix-style) ----
+db.exec(`CREATE TABLE IF NOT EXISTS contractor_offers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  proposed_cents INTEGER NOT NULL,
+  note TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected','superseded')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+// ---- 2026-10-07: photos.kind CHECK gains 'signoff' (signed close-out sheet) ----
+try {
+  const psql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='photos'`).get();
+  if (psql && psql.sql && !psql.sql.includes("'signoff'")) {
+    db.exec(`
+      CREATE TABLE photos_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_request_id INTEGER REFERENCES job_requests(id) ON DELETE CASCADE,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        filename TEXT NOT NULL,
+        original_name TEXT,
+        mime TEXT,
+        size_bytes INTEGER,
+        width INTEGER,
+        height INTEGER,
+        kind TEXT NOT NULL DEFAULT 'request' CHECK (kind IN ('request','progress','completion','signoff')),
+        vision_json TEXT DEFAULT '{}',
+        uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        storage_key TEXT,
+        storage_provider TEXT NOT NULL DEFAULT 'local',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO photos_new (id, job_request_id, project_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by, storage_key, storage_provider, created_at)
+        SELECT id, job_request_id, project_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by, storage_key, storage_provider, created_at
+        FROM photos;
+      DROP TABLE photos;
+      ALTER TABLE photos_new RENAME TO photos;
+    `);
+    console.log('[migrate] photos table: kind CHECK now includes signoff');
+  }
+} catch (e) {
+  console.error('[migrate] photos table migration failed:', e.message);
+}
 if (!columnExists('photos', 'storage_key')) {
   db.exec(`ALTER TABLE photos ADD COLUMN storage_key TEXT`);
 }
@@ -544,9 +600,10 @@ if (!columnExists('photos', 'storage_provider')) {
 
 // ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----
 // Also adds 'paid' to the status CHECK for Stripe-confirmed payments.
+// 2026-10-07: also adds 'simulated' provider for the test payment mode.
 try {
   const sql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='payments'`).get();
-  if (sql && sql.sql && !sql.sql.includes("'stripe'")) {
+  if (sql && sql.sql && (!sql.sql.includes("'stripe'") || !sql.sql.includes("'simulated'"))) {
     db.exec(`
       CREATE TABLE payments_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,7 +611,7 @@ try {
         kind TEXT NOT NULL CHECK (kind IN ('deposit','milestone','final','refund')),
         amount_cents INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded','pending','paid','failed')),
-        provider TEXT NOT NULL DEFAULT 'manual' CHECK (provider IN ('manual','stripe')),
+        provider TEXT NOT NULL DEFAULT 'manual' CHECK (provider IN ('manual','stripe','simulated')),
         provider_ref TEXT,
         notes TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))

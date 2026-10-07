@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Close-out Sheet — Helpman</title>
+<link rel="icon" href="img/helpman-mark.svg">
+<style>
+  :root { --navy: #1e2a5a; --ink: #15202b; --muted: #64748b; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; color: var(--ink); margin: 0; padding: 24px; background: #f1f5f9; }
+  .sheet { max-width: 800px; margin: 0 auto; background: #fff; padding: 40px 48px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .brand img { height: 44px; }
+  .brand .tag { font-size: 11px; color: var(--muted); letter-spacing: .14em; }
+  h1 { text-align: center; color: var(--navy); letter-spacing: .06em; margin: 18px 0 26px; font-size: 1.7rem; }
+  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border: 1.5px solid var(--navy); margin-bottom: 22px; }
+  .meta div { padding: 10px 14px; border-bottom: 1px solid #dbe3ef; }
+  .meta div:nth-child(odd) { border-right: 1.5px solid var(--navy); font-weight: bold; background: var(--navy); color: #fff; }
+  .meta div:nth-child(even) { font-weight: normal; }
+  .frow { margin: 14px 0; }
+  .frow .lbl { font-weight: bold; color: var(--navy); font-size: .85rem; letter-spacing: .04em; }
+  .frow .line { border-bottom: 1.5px solid var(--navy); min-height: 1.6em; margin-top: 4px; }
+  .details { border: 1.5px solid var(--navy); margin: 18px 0; }
+  .details .dhead { background: var(--navy); color: #fff; text-align: center; font-weight: bold; letter-spacing: .08em; padding: 10px; }
+  .details .dbody { min-height: 180px; padding: 14px; }
+  .sig { margin-top: 34px; }
+  .sig .line { border-bottom: 1.5px solid var(--navy); min-height: 2.2em; margin: 6px 0 20px; }
+  .foot { margin-top: 40px; font-size: 11px; color: var(--muted); text-align: center; }
+  .toolbar { max-width: 800px; margin: 0 auto 16px; display: flex; gap: 10px; }
+  .toolbar button { font: inherit; padding: .6rem 1.2rem; border-radius: .5rem; border: none; cursor: pointer; }
+  .btn-print { background: var(--navy); color: #fff; font-weight: bold; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .toolbar { display: none; }
+    .sheet { box-shadow: none; padding: 0; max-width: none; }
+  }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <button class="btn-print" onclick="window.print()">🖨 Print this sheet</button>
+  <span class="small" style="align-self:center;color:var(--muted)">Have the customer sign the printed sheet, then photograph it and upload it as the signed close-out sheet.</span>
+</div>
+<div class="sheet" id="sheet"><p style="text-align:center;color:var(--muted)">Loading work order…</p></div>
+<script src="js/api.js"></script>
+<script>
+(function () {
+  'use strict';
+  const params = new URLSearchParams(location.search);
+  const projectId = params.get('project');
+  const sheet = document.getElementById('sheet');
+  const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const money = (c) => '$' + (Number(c || 0) / 100).toFixed(2);
+  const today = new Date().toISOString().slice(0, 10);
+
+  async function init() {
+    if (!projectId) { sheet.innerHTML = '<p>Missing ?project=ID in the URL.</p>'; return; }
+    let p;
+    try { p = await HP.api('GET', '/projects/' + encodeURIComponent(projectId)); }
+    catch (e) { sheet.innerHTML = '<p>Could not load the project. Please log in first.</p>'; return; }
+    const job = p.job || {};
+    sheet.innerHTML = `
+      <div class="brand">
+        <img src="img/helpman-logo.svg" alt="Helpman">
+        <div><div style="font-weight:900;letter-spacing:.06em">HELPMAN</div><div class="tag">HOME PROJECTS, HANDLED.</div></div>
+      </div>
+      <h1>CLOSE-OUT SHEET</h1>
+      <div class="meta">
+        <div>WORK ORDER #</div><div>${esc(p.id)}</div>
+        <div>DATE</div><div>${esc(p.scheduled_start || today)}</div>
+      </div>
+      <div class="frow"><div class="lbl">SITE / CUSTOMER</div><div class="line">${esc(job.name || '')}</div></div>
+      <div class="frow"><div class="lbl">ADDRESS</div><div class="line">${esc([job.address, job.city, job.state, job.zip].filter(Boolean).join(', '))}</div></div>
+      <div class="frow"><div class="lbl">TRADE / SERVICE</div><div class="line">${esc(job.service_type || '')}</div></div>
+      <div class="details"><div class="dhead">SERVICE DETAILS</div>
+        <div class="dbody">${esc(job.description || '')}
+          <div style="margin-top:12px;color:var(--muted);font-size:.85rem">Agreed price: ${money(p.customer_price_cents)}</div>
+        </div>
+      </div>
+      <div class="frow"><div class="lbl">PROFESSIONAL</div><div class="line">${esc((p.contractor && p.contractor.name) || '')}</div></div>
+      <div class="sig">
+        <div class="lbl" style="font-weight:bold;color:var(--navy);font-size:.85rem">CUSTOMER NAME (print)</div><div class="line"></div>
+        <div class="lbl" style="font-weight:bold;color:var(--navy);font-size:.85rem">CUSTOMER SIGNATURE</div><div class="line"></div>
+        <p style="font-size:.85rem;color:var(--muted)">By signing, the customer confirms the work listed above was completed to their satisfaction.</p>
+      </div>
+      <div class="foot">Helpman · Home projects, handled. · Operated by General Handyman Solutions</div>`;
+  }
+  document.addEventListener('DOMContentLoaded', init);
+})();
+</script>
+</body>
+</html>
