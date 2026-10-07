@@ -1,9 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="Helpman">
   <rect width="240" height="240" rx="52" fill="#0B2D5B"/>
-  <g transform="translate(28,30) scale(0.77)">
-    <polygon points="16,136 120,32 224,136 224,168 120,64 16,168" fill="#6EA8FF"/>
-    <rect x="58" y="136" width="34" height="88" fill="#FFFFFF"/>
-    <rect x="148" y="136" width="34" height="88" fill="#FFFFFF"/>
-    <rect x="58" y="166" width="124" height="28" fill="#FFFFFF"/>
+  <g transform="translate(26,28) scale(0.78)"><rect x="156" y="18" width="24" height="46" fill="#6EA8FF"/>
+  <polygon points="14,118 120,26 226,118 226,144 120,52 14,144" fill="#6EA8FF"/>
+  <rect x="50" y="110" width="32" height="106" fill="#FFFFFF"/>
+  <rect x="158" y="110" width="32" height="106" fill="#FFFFFF"/>
+  <path d="M72,136 L118,174 L176,102" stroke="#6EA8FF" stroke-width="32" fill="none"/>
+  <g fill="#FFFFFF">
+    <rect x="109" y="62" width="12" height="12"/>
+    <rect x="124" y="62" width="12" height="12"/>
+    <rect x="109" y="77" width="12" height="12"/>
+    <rect x="124" y="77" width="12" height="12"/>
+  </g>
   </g>
 </svg>

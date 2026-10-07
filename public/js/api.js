@@ -238,7 +238,7 @@ const HP = (() => {
     header.innerHTML = `
       <div class="wrap header-inner">
         <a class="brand" href="index.html" aria-label="Helpman home">
-          <img class="helpman-logo" src="img/helpman-logo.svg?v=20261006b" alt="Helpman — Home projects, handled.">
+          <img class="helpman-logo" src="img/helpman-logo.svg?v=20261006c" alt="Helpman — Home projects, handled.">
         </a>
         <nav class="main-nav" aria-label="Main">
           ${links.map((l) => `<a href="${l.href}" class="${page === l.id ? 'active' : ''}${l.cta ? ' nav-cta' : ''}">${esc(l.label)}</a>`).join('')}
