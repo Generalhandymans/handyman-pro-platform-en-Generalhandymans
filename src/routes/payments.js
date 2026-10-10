@@ -124,6 +124,10 @@ router.post('/final-intent', authRequired, requireVerifiedEmail, ah(async (req, 
   if (!ms.length || ms.some(m => m.customer_approval !== 'approved')) {
     return res.status(409).json({ error: 'The final payment opens after every milestone is approved.' });
   }
+  const sheet = await db.prepare('SELECT id FROM completion_sheets WHERE project_id = ?').get(project.id);
+  if (!sheet && req.user.role !== 'admin') {
+    return res.status(409).json({ error: 'Please sign the completion sheet before paying the final balance.' });
+  }
   const balance = project.customer_price_cents - await paidSoFar(project.id);
   if (balance < 100) return res.status(409).json({ error: 'There is no balance left to collect.' });
   try {

@@ -83,6 +83,27 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
   res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id)));
 }));
 
+// ---- Admin: set a contractor's base location (for distance in matching) ----
+// Send { lat, lng } or { address } (geocoded when GEOCODE_API_KEY is set).
+router.patch('/:id/location', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const c = await db.prepare('SELECT id FROM contractors WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Contractor not found.' });
+  const geo = require('../services/geocode');
+  let { lat, lng, address } = req.body || {};
+  if (address) {
+    const pt = await geo.geocode(String(address));
+    if (!pt) return res.status(422).json({ error: 'Could not geocode that address. Send lat/lng instead or configure GEOCODE_API_KEY.' });
+    lat = pt.lat; lng = pt.lng;
+  }
+  lat = Number(lat); lng = Number(lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    return res.status(422).json({ error: 'Validation failed', fields: { lat: 'Latitude -90..90 required.', lng: 'Longitude -180..180 required.' } });
+  }
+  await db.prepare('UPDATE contractors SET lat = ?, lng = ? WHERE id = ?').run(lat, lng, c.id);
+  await auditLog(req.user.id, 'contractor.located', 'contractors', c.id, `lat ${lat}, lng ${lng}`);
+  res.json({ id: c.id, lat, lng });
+}));
+
 router.get('/:id', authRequired, requireRole('admin'), ah(async (req, res) => {
   const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Contractor not found.' });

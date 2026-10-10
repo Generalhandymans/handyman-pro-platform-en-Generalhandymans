@@ -18,6 +18,7 @@
       <button class="tab" data-tab="clients" role="tab">Clients</button>
       <button class="tab" data-tab="contractors" role="tab">Contractors</button>
       <button class="tab" data-tab="projects" role="tab">Projects</button>
+      <button class="tab" data-tab="agenda" role="tab">Agenda</button>
       <button class="tab" data-tab="messages" role="tab">Messages</button>
       <button class="tab" data-tab="campaigns" role="tab">Campaigns</button>
       <button class="tab" data-tab="reports" role="tab">Reports</button>
@@ -101,6 +102,26 @@
       <div id="admin-projects"><p class="muted">Loading projects…</p></div>
     </section>
 
+    <section class="tab-panel" id="panel-agenda" role="tabpanel">
+      <div class="section">
+        <div class="section-head">
+          <h2>Agenda</h2>
+          <div class="btn-row">
+            <button class="btn btn-outline btn-sm" id="ag-prev" type="button">← Previous week</button>
+            <button class="btn btn-outline btn-sm" id="ag-today" type="button">This week</button>
+            <button class="btn btn-outline btn-sm" id="ag-next" type="button">Next week →</button>
+          </div>
+        </div>
+        <p class="small muted" id="ag-range"></p>
+        <div id="agenda-days"><p class="muted">Loading agenda…</p></div>
+      </div>
+      <div class="section">
+        <div class="section-head"><h2>Needs a date</h2></div>
+        <p class="small muted">Active projects without scheduled dates. Pick the dates and save; you will be warned if the contractor is already booked.</p>
+        <div id="agenda-unscheduled"></div>
+      </div>
+    </section>
+
     <section class="tab-panel" id="panel-messages" role="tabpanel">
       <div class="section">
         <div class="section-head"><h2>Messages (mediated)</h2></div>
@@ -178,12 +199,89 @@
     document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
       t.addEventListener('click', () => {
         document.querySelectorAll('#admin-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
-        document.querySelectorAll('#panel-overview, #panel-clients, #panel-contractors, #panel-projects, #panel-messages, #panel-campaigns, #panel-reports')
+        document.querySelectorAll('#panel-overview, #panel-clients, #panel-contractors, #panel-projects, #panel-agenda, #panel-messages, #panel-campaigns, #panel-reports')
           .forEach((p) => p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
-        const fn = { overview: loadOverview, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports }[t.dataset.tab];
+        const fn = { overview: loadOverview, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, agenda: loadAgendaTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports }[t.dataset.tab];
         if (fn) fn();
       });
     });
+
+    // ---------- agenda: week view, overlap warnings, scheduling ----------
+    let agendaFrom = null;
+    const isoToday = () => new Date().toISOString().slice(0, 10);
+    const addDaysIso = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+    const mondayOf = (iso) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
+    const dayLabel = (iso) => new Date(iso + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' });
+
+    async function loadAgendaTab() {
+      if (!agendaFrom) agendaFrom = mondayOf(isoToday());
+      if (!loaded.agendaWired) {
+        loaded.agendaWired = true;
+        document.getElementById('ag-prev').addEventListener('click', () => { agendaFrom = addDaysIso(agendaFrom, -7); renderAgenda(); });
+        document.getElementById('ag-next').addEventListener('click', () => { agendaFrom = addDaysIso(agendaFrom, 7); renderAgenda(); });
+        document.getElementById('ag-today').addEventListener('click', () => { agendaFrom = mondayOf(isoToday()); renderAgenda(); });
+      }
+      await renderAgenda();
+    }
+
+    function agendaCard(i) {
+      const warn = i.conflicts && i.conflicts.length
+        ? ' ' + HP.badge('⚠ overlaps with ' + i.conflicts.map((x) => '#' + x).join(', '), 'err') : '';
+      const urgent = i.urgency === 'urgent' ? ' ' + HP.badge('urgent', 'warn') : '';
+      return `<div class="job-row" style="padding:.5rem .75rem;margin:.35rem 0;border:1px solid ${i.conflicts && i.conflicts.length ? '#dc2626' : '#e2e8f0'};border-radius:8px;">
+        <strong>#${i.id}</strong> · ${HP.esc(i.service_type || '')} · ${HP.esc(i.customer_name || '')}${urgent}${warn}<br>
+        <span class="small muted">${HP.esc(i.address || '')}${i.city ? ', ' + HP.esc(i.city) : ''} · ${i.contractor_name ? HP.esc(i.contractor_name) : '<em>no contractor yet</em>'} · ${HP.esc(HP.PROJECT_STAGE[i.stage] || i.stage)}</span>
+      </div>`;
+    }
+
+    async function renderAgenda() {
+      const from = agendaFrom, to = addDaysIso(from, 6);
+      document.getElementById('ag-range').textContent = `${dayLabel(from)} – ${dayLabel(to)}`;
+      let data;
+      try { data = await HP.api('GET', `/projects/schedule?from=${from}&to=${to}`); }
+      catch (e) { document.getElementById('agenda-days').innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      const today = isoToday();
+      let html = data.conflict_count ? `<p>${HP.badge(data.conflict_count + ' job(s) with a contractor double-booking this week', 'err')}</p>` : '';
+      for (let n = 0; n < 7; n++) {
+        const d = addDaysIso(from, n);
+        const todays = data.items.filter((i) => {
+          const s = String(i.scheduled_start).slice(0, 10), e = String(i.scheduled_end || i.scheduled_start).slice(0, 10);
+          return s <= d && d <= (e < s ? s : e);
+        });
+        html += `<div style="margin:.75rem 0;">
+          <h3 style="margin:.2rem 0;${d === today ? 'color:#2563eb;' : ''}">${dayLabel(d)}${d === today ? ' · today' : ''} <span class="small muted">(${todays.length})</span></h3>
+          ${todays.length ? todays.map(agendaCard).join('') : '<p class="small muted" style="margin:.2rem 0">Nothing scheduled.</p>'}
+        </div>`;
+      }
+      document.getElementById('agenda-days').innerHTML = html;
+
+      const box = document.getElementById('agenda-unscheduled');
+      if (!data.unscheduled.length) { box.innerHTML = '<p class="muted">Every active project has dates. 🎉</p>'; return; }
+      box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Project</th><th>Where</th><th>Contractor</th><th>Start</th><th>End</th><th></th></tr></thead><tbody>
+        ${data.unscheduled.map((i) => `<tr data-pid="${i.id}">
+          <td><strong>#${i.id}</strong> ${HP.esc(i.service_type || '')}${i.urgency === 'urgent' ? ' ' + HP.badge('urgent', 'warn') : ''}</td>
+          <td class="small">${HP.esc(i.address || '')}</td>
+          <td class="small">${i.contractor_name ? HP.esc(i.contractor_name) : '<em>none</em>'}</td>
+          <td><input type="date" class="ag-start" aria-label="Start date for project ${i.id}"></td>
+          <td><input type="date" class="ag-end" aria-label="End date for project ${i.id}"></td>
+          <td><button class="btn btn-primary btn-sm ag-save" type="button">Save</button></td></tr>`).join('')}
+      </tbody></table></div>`;
+      box.querySelectorAll('.ag-save').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const tr = btn.closest('tr');
+          const start = tr.querySelector('.ag-start').value, end = tr.querySelector('.ag-end').value;
+          if (!start) { HP.toast('Pick a start date first.', 'error'); return; }
+          HP.busy(btn, true, 'Saving…');
+          try {
+            const r = await HP.api('PATCH', `/projects/${tr.dataset.pid}/schedule`, { scheduled_start: start, scheduled_end: end || start });
+            if (r.conflicts && r.conflicts.length) HP.toast('Saved — but this contractor is already booked on project ' + r.conflicts.map((x) => '#' + x).join(', ') + '.', 'info');
+            else HP.toast('Scheduled.', 'ok');
+            renderAgenda();
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+          finally { HP.busy(btn, false); }
+        });
+      });
+    }
 
     // ---------- mediated messages (admin sees both sides) ----------
     async function loadMessagesTab() {

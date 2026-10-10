@@ -118,7 +118,7 @@ const HPMsg = (() => {
           const who = m.sender_role === 'admin' ? 'General Handyman Solutions support'
             : m.sender_role === 'customer' ? 'Customer' : 'Contractor';
           return `<div class="msg ${mine ? 'msg-mine' : 'msg-theirs'}">
-            <div class="msg-meta"><strong>${HP.esc(m.sender_name || who)}</strong> · <span>${HP.fmtDateTime(m.created_at)}</span></div>
+            <div class="msg-meta"><strong>${HP.esc(m.sender_name || who)}</strong> · <span>${HP.fmtDateTime(m.created_at)}</span>${m.flagged ? ` · <span class="badge badge-warn" title="Direct contact between customer and contractor is not allowed">⚠ possible ${HP.esc(m.flag_reason || 'contact details')}</span>` : ''}</div>
             <div class="msg-text">${HP.esc(m.body)}</div>
           </div>`;
         }).join('');

@@ -45,6 +45,7 @@ async function withDetails(p, role) {
     milestones: await db.prepare('SELECT * FROM milestones WHERE project_id = ? ORDER BY sort_order').all(p.id),
     photos: await db.prepare('SELECT id, filename, original_name, mime, kind, created_at FROM photos WHERE project_id = ? ORDER BY id').all(p.id),
     payments: await db.prepare('SELECT * FROM payments WHERE project_id = ? ORDER BY id').all(p.id),
+    completion_signed_at: ((await db.prepare('SELECT signed_at FROM completion_sheets WHERE project_id = ?').get(p.id)) || {}).signed_at || null,
     contractor: p.contractor_id
       ? await db.prepare('SELECT c.*, u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id)
       : null,
@@ -88,6 +89,28 @@ router.get('/', authRequired, ah(async (req, res) => {
     ).all(req.user.id);
   }
   res.json(await Promise.all(rows.map(r => withDetails(r, req.user.role))));
+}));
+
+// ---- Admin: agenda for a date window (default: today + 6 days) ----
+// Active projects with their dates, overlap warnings per contractor, and the
+// list that still needs a date. MUST stay above '/:id'.
+router.get('/schedule', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const sched = require('../services/schedule');
+  const from = sched.DATE_RE.test(String(req.query.from || '')) ? req.query.from : new Date().toISOString().slice(0, 10);
+  const to = sched.DATE_RE.test(String(req.query.to || '')) ? req.query.to : sched.addDays(from, 6);
+  if (to < from) return res.status(422).json({ error: 'Validation failed', fields: { to: 'End date cannot be before the start date.' } });
+  const rows = await db.prepare(
+    `SELECT p.id, p.stage, p.contractor_id, p.contractor_status, p.scheduled_start, p.scheduled_end,
+            j.service_type, j.address, j.city, j.name AS customer_name, j.urgency,
+            COALESCE(c.legal_name, u.name) AS contractor_name
+     FROM projects p
+     JOIN job_requests j ON j.id = p.job_request_id
+     LEFT JOIN contractors c ON c.id = p.contractor_id
+     LEFT JOIN users u ON u.id = c.user_id
+     WHERE p.stage IN ('assigned','scheduled','in_progress','review')
+     ORDER BY p.id DESC LIMIT 500`
+  ).all();
+  res.json(sched.buildSchedule(rows, from, to));
 }));
 
 router.get('/:id', authRequired, ah(async (req, res) => {
@@ -276,7 +299,17 @@ router.patch('/:id/schedule', authRequired, requireRole('admin'), ah(async (req,
   await db.prepare(`UPDATE projects SET scheduled_start = ?, scheduled_end = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(start, end, p.id);
   await auditLog(req.user.id, 'project.scheduled', 'projects', p.id, `Scheduled ${start || '—'} → ${end || '—'}`);
-  res.json(await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
+  const updated = await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id);
+  // Warn (never block) when the same contractor is already booked on those dates.
+  let conflicts = [];
+  if (updated.contractor_id != null && updated.scheduled_start) {
+    const sched = require('../services/schedule');
+    const others = await db.prepare(
+      'SELECT id, stage, contractor_id, scheduled_start, scheduled_end FROM projects WHERE contractor_id = ?'
+    ).all(updated.contractor_id);
+    conflicts = sched.conflictsFor(updated, others);
+  }
+  res.json({ ...updated, conflicts });
 }));
 
 // ---- Move stage (admin, or assigned contractor for execution stages) ----
@@ -334,6 +367,73 @@ router.patch('/:id/stage', authRequired, ah(async (req, res) => {
   }
   await auditLog(req.user.id, 'project.stage', 'projects', p.id, `Stage → ${stage}`);
   res.json(await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
+}));
+
+// ---- Completion sheet: the customer signs off on the finished work ----
+// Opens when EVERY milestone is approved. Signing is the customer's formal
+// acceptance and unlocks the final payment. Stores who, when, from which IP,
+// the checklist they confirmed and a drawn signature (PNG).
+router.get('/:id/sign-off', authRequired, ah(async (req, res) => {
+  const p = await loadProject(req, res);
+  if (!p) return;
+  const sheet = await db.prepare('SELECT * FROM completion_sheets WHERE project_id = ?').get(p.id);
+  if (!sheet) return res.json({ signed: false });
+  if (req.user.role === 'contractor') return res.json({ signed: true, signed_at: sheet.signed_at });
+  const { signer_user_id, ip, ...rest } = sheet;
+  res.json({ signed: true, ...rest, checklist: JSON.parse(sheet.checklist_json || '{}'), ...(req.user.role === 'admin' ? { ip, signer_user_id } : {}) });
+}));
+
+router.post('/:id/sign-off', authRequired, ah(async (req, res) => {
+  const p = await loadProject(req, res);
+  if (!p) return;
+  if (req.user.role !== 'customer') return res.status(403).json({ error: 'Only the customer can sign off on the work.' });
+  if (!['in_progress', 'review', 'completed'].includes(p.stage)) {
+    return res.status(409).json({ error: 'The work is not ready for sign-off yet.' });
+  }
+  const ms = await db.prepare('SELECT customer_approval FROM milestones WHERE project_id = ?').all(p.id);
+  if (!ms.length || ms.some(m => m.customer_approval !== 'approved')) {
+    return res.status(409).json({ error: 'Approve every milestone before signing off.' });
+  }
+  if (await db.prepare('SELECT id FROM completion_sheets WHERE project_id = ?').get(p.id)) {
+    return res.status(409).json({ error: 'This project is already signed off.' });
+  }
+  const b = req.body || {};
+  const errors = {};
+  if (!isNonEmpty(b.signer_name, 120)) errors.signer_name = 'Type your full name.';
+  const sig = typeof b.signature === 'string' ? b.signature : '';
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(sig) || sig.length < 800) errors.signature = 'Please draw your signature.';
+  else if (sig.length > 300000) errors.signature = 'Signature image is too large.';
+  const cl = b.checklist && typeof b.checklist === 'object' ? b.checklist : {};
+  if (cl.work_complete !== true) errors.work_complete = 'Confirm the work is complete.';
+  if (cl.site_clean !== true) errors.site_clean = 'Confirm the work area is clean.';
+  if (b.notes && !isNonEmpty(b.notes, 1000)) errors.notes = 'Notes are too long.';
+  if (failIfErrors(res, errors)) return;
+
+  try {
+    await db.prepare(
+      `INSERT INTO completion_sheets (project_id, signer_user_id, signer_name, signature_png, checklist_json, notes, ip)
+       VALUES (?,?,?,?,?,?,?)`
+    ).run(p.id, req.user.id, b.signer_name.trim(), sig,
+      JSON.stringify({ work_complete: true, site_clean: true }), (b.notes || '').trim() || null, req.ip || null);
+  } catch (e) {
+    // UNIQUE(project_id): a simultaneous second signature loses cleanly.
+    return res.status(409).json({ error: 'This project is already signed off.' });
+  }
+  await auditLog(req.user.id, 'project.signed_off', 'projects', p.id, `Signed by ${b.signer_name.trim()}`);
+  const job = await db.prepare('SELECT service_type, name FROM job_requests WHERE id = ?').get(p.job_request_id);
+  const admins = await db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
+  for (const a of admins) {
+    await notify({
+      to: a.email,
+      subject: `Customer signed off — project #${p.id}`,
+      html: shell('Completion sheet signed', `${job ? job.name : 'The customer'} signed off on the finished work. The final payment is now open to them.`, [
+        ['Project', `#${p.id} — ${job ? job.service_type : ''}`],
+        ['Signed by', b.signer_name.trim()],
+      ]),
+    }).catch(() => {});
+  }
+  const sheet = await db.prepare('SELECT signed_at FROM completion_sheets WHERE project_id = ?').get(p.id);
+  res.status(201).json({ signed: true, signed_at: sheet.signed_at });
 }));
 
 // ---- Contractor/admin: mark a milestone done ----

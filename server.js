@@ -17,6 +17,18 @@ const mailer = require('./src/services/mailer');
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
+// Optional error reporting. Enable with: npm i @sentry/node  +  SENTRY_DSN=...
+// Without the package or the DSN this does nothing.
+let Sentry = null;
+if (process.env.SENTRY_DSN) {
+  try {
+    Sentry = require('@sentry/node');
+    Sentry.init({ dsn: process.env.SENTRY_DSN, environment: process.env.NODE_ENV || 'development' });
+  } catch (e) {
+    console.warn('[sentry] SENTRY_DSN is set but @sentry/node is not installed. Run: npm i @sentry/node');
+  }
+}
+
 // Behind Render/Docker/any reverse proxy: trust ONE hop so req.ip is the real
 // client (rate limits are per visitor, and terms-acceptance IPs are not forgeable
 // through a raw x-forwarded-for header).
@@ -25,6 +37,7 @@ app.set('trust proxy', 1);
 // A rejected promise nobody awaited must be LOGGED, never silently kill the server.
 process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
+  if (Sentry) Sentry.captureException(reason);
 });
 
 // ---- Phase 1 hardening: security headers + structured logging ----
@@ -104,7 +117,6 @@ app.use(express.urlencoded({ extended: true }));
 
 // ---- Rate limiting (PRO 100%): abuse protection on public endpoints ----
 // Auth endpoints: 20 attempts / 15 min per IP. Job intake: 30 / hour per IP.
-// AUTH_RATE_LIMIT_MAX lets the test suite raise the cap; production default stays 20.
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, max: Number(process.env.AUTH_RATE_LIMIT_MAX) || 20,
   standardHeaders: 'draft-7', legacyHeaders: false,
@@ -199,6 +211,8 @@ app.use('/api/reports', require('./src/routes/reports'));
 app.use('/api/reviews', require('./src/routes/reviews'));
 app.use('/api/referrals', require('./src/routes/referrals'));
 app.use('/api/payments', require('./src/routes/payments'));
+app.use('/api/me', require('./src/routes/privacy'));
+app.use('/api/email', require('./src/routes/emailEvents'));
 app.use('/api', require('./src/routes/messages'));
 
 // ---- Static frontend ----
@@ -225,6 +239,7 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     return res.status(400).json({ error: err.message });
   }
   console.error('[error]', err && err.stack ? err.stack : err);
+  if (Sentry) Sentry.captureException(err);
   res.status(500).json({ error: 'Something went wrong on our end. Please try again.' });
 });
 

@@ -573,6 +573,148 @@ test('REGRESSION: health check touches the database; stripe webhook refuses when
   assert.equal(fi.status, 503, 'final-intent refuses when Stripe is not configured');
 });
 
+test('REGRESSION: customer can export their data (no margin, no secrets)', async () => {
+  const r = await api('GET', '/api/me/export', undefined, custToken);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.profile.email, 'cust@test.local');
+  assert.ok(r.data.requests.length >= 1 && r.data.projects.length >= 1);
+  const raw = JSON.stringify(r.data);
+  assert.ok(!raw.includes('contractor_cost_cents'), 'export never includes the contractor cost');
+  assert.ok(!raw.includes('password'), 'export never includes credentials');
+  const anon = await api('GET', '/api/me/export');
+  assert.equal(anon.status, 401);
+});
+
+test('REGRESSION: account deletion anonymizes, needs the password, and is blocked mid-project', async () => {
+  // blocked: custToken has an active project (note: password recovery test changed it to NewPass123!)
+  const blocked = await api('POST', '/api/me/delete', { password: 'NewPass123!' }, custToken);
+  assert.equal(blocked.status, 409);
+  // fresh customer with a request but no project
+  const k = await api('POST', '/api/auth/signup/customer', { name: 'Delete Me', email: 'todelete@test.local', phone: '555-101-2020', password: 'Customer123!' });
+  assert.equal(k.status, 201);
+  const job = await api('POST', '/api/jobs', {
+    name: 'Delete Me', phone: '555-101-2020', email: 'todelete@test.local', address: '9 Secret Ln',
+    service_type: 'painting', description: 'Paint the hallway, please include trim and doors.',
+  }, k.data.token);
+  assert.equal(job.status, 201);
+  const wrong = await api('POST', '/api/me/delete', { password: 'nope' }, k.data.token);
+  assert.equal(wrong.status, 403);
+  const ok = await api('POST', '/api/me/delete', { password: 'Customer123!' }, k.data.token);
+  assert.equal(ok.status, 200);
+  const u = await db.prepare('SELECT name, email, phone FROM users WHERE id = ?').get(k.data.user.id);
+  assert.equal(u.name, 'Deleted user');
+  assert.match(u.email, /^deleted-\d+@deleted\.invalid$/);
+  const j = await db.prepare('SELECT name, address, email FROM job_requests WHERE id = ?').get(job.data.id);
+  assert.equal(j.address, '[removed]');
+  assert.equal(j.email, null);
+  assert.equal((await api('GET', '/api/auth/me', undefined, k.data.token)).status, 401, 'old session is dead');
+  assert.equal((await api('POST', '/api/auth/login', { email: 'todelete@test.local', password: 'Customer123!' })).status, 401);
+  const unsub = require('../src/services/unsubscribe');
+  assert.equal(await unsub.isSuppressed('todelete@test.local'), true, 'no more marketing to that address');
+});
+
+test('REGRESSION: email-provider events put bounces and complaints on the suppression list', async () => {
+  const unsub = require('../src/services/unsubscribe');
+  delete process.env.SENDGRID_WEBHOOK_KEY;
+  assert.equal((await api('POST', '/api/email/events?key=x', [])).status, 503);
+  process.env.SENDGRID_WEBHOOK_KEY = 'test-webhook-key-123';
+  assert.equal((await api('POST', '/api/email/events?key=wrong', [])).status, 401);
+  const ok = await api('POST', '/api/email/events?key=test-webhook-key-123', [
+    { email: 'Bounced@Test.local', event: 'bounce' },
+    { email: 'fine@test.local', event: 'delivered' },
+    { email: 'angry@test.local', event: 'spamreport' },
+  ]);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.suppressed, 2);
+  assert.equal(await unsub.isSuppressed('bounced@test.local'), true);
+  assert.equal(await unsub.isSuppressed('fine@test.local'), false);
+  delete process.env.SENDGRID_WEBHOOK_KEY;
+});
+
+test('REGRESSION: admin can set a contractor location (validated); others cannot', async () => {
+  const bad = await api('PATCH', `/api/contractors/${contractorId}/location`, { lat: 999, lng: 5 }, adminToken);
+  assert.equal(bad.status, 422);
+  const ok = await api('PATCH', `/api/contractors/${contractorId}/location`, { lat: 38.2494, lng: -122.04 }, adminToken);
+  assert.equal(ok.status, 200);
+  const row = await db.prepare('SELECT lat, lng FROM contractors WHERE id = ?').get(contractorId);
+  assert.equal(Math.round(row.lat * 1000), 38249);
+  assert.equal((await api('PATCH', `/api/contractors/${contractorId}/location`, { lat: 1, lng: 1 }, contToken)).status, 403);
+});
+
+test('REGRESSION: agenda lists active projects and warns on contractor double-booking', async () => {
+  const a = await freshProject();
+  const b = await freshProject();
+  for (const p of [a, b]) {
+    assert.equal((await api('POST', `/api/projects/${p.projectId}/assign`, { contractor_id: contractorId }, adminToken)).status, 200);
+  }
+  const s1 = await api('PATCH', `/api/projects/${a.projectId}/schedule`, { scheduled_start: '2027-03-01', scheduled_end: '2027-03-03' }, adminToken);
+  assert.equal(s1.status, 200);
+  assert.deepEqual(s1.data.conflicts, []);
+  const s2 = await api('PATCH', `/api/projects/${b.projectId}/schedule`, { scheduled_start: '2027-03-03', scheduled_end: '2027-03-04' }, adminToken);
+  assert.equal(s2.status, 200, 'overlap warns but never blocks');
+  assert.deepEqual(s2.data.conflicts, [a.projectId]);
+
+  const ag = await api('GET', '/api/projects/schedule?from=2027-03-01&to=2027-03-07', undefined, adminToken);
+  assert.equal(ag.status, 200);
+  const ids = ag.data.items.map(i => i.id);
+  assert.ok(ids.includes(a.projectId) && ids.includes(b.projectId));
+  assert.ok(ag.data.items.filter(i => [a.projectId, b.projectId].includes(i.id)).every(i => i.conflicts.length === 1));
+  assert.ok(ag.data.conflict_count >= 2);
+  assert.ok(Array.isArray(ag.data.unscheduled));
+  // outside the window they do not appear
+  const other = await api('GET', '/api/projects/schedule?from=2027-04-01&to=2027-04-07', undefined, adminToken);
+  assert.ok(!other.data.items.some(i => i.id === a.projectId));
+  // permissions and validation
+  assert.equal((await api('GET', '/api/projects/schedule', undefined, custToken)).status, 403);
+  assert.equal((await api('GET', '/api/projects/schedule', undefined, contToken)).status, 403);
+  assert.equal((await api('GET', '/api/projects/schedule?from=2027-03-05&to=2027-03-01', undefined, adminToken)).status, 422);
+});
+
+test('REGRESSION: completion sheet needs approved milestones, is signed once by the customer, and is visible by role', async () => {
+  const fp = await freshProject();
+  const pid = fp.projectId;
+  assert.equal((await api('POST', `/api/projects/${pid}/assign`, { contractor_id: contractorId }, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/projects/${pid}/contractor-respond`, { accept: true, terms_accepted: true }, contToken)).status, 200);
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'in_progress' }, contToken)).status, 200);
+
+  const sig = 'data:image/png;base64,' + 'A'.repeat(1200);
+  const body = { signer_name: 'Test Customer', signature: sig, checklist: { work_complete: true, site_clean: true } };
+
+  // 1) not before every milestone is approved
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, body, custToken)).status, 409);
+  const detail = await api('GET', `/api/projects/${pid}`, undefined, adminToken);
+  for (const m of detail.data.milestones) {
+    await api('POST', `/api/projects/${pid}/milestones/${m.id}/complete`, {}, contToken);
+    assert.equal((await api('POST', `/api/projects/${pid}/milestones/${m.id}/approve`, { approved: true }, custToken)).status, 200);
+  }
+  // 2) only the customer signs
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, body, contToken)).status, 403);
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, body, adminToken)).status, 403);
+  // 3) validation: signature, name, checklist
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, { ...body, signature: 'data:image/png;base64,AAAA' }, custToken)).status, 422);
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, { ...body, signature: '<script>alert(1)</script>' }, custToken)).status, 422);
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, { ...body, signer_name: '' }, custToken)).status, 422);
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, { ...body, checklist: { work_complete: true } }, custToken)).status, 422);
+  // 4) signs, exactly once
+  const ok = await api('POST', `/api/projects/${pid}/sign-off`, body, custToken);
+  assert.equal(ok.status, 201);
+  assert.equal(ok.data.signed, true);
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, body, custToken)).status, 409);
+  // 5) who sees what
+  const asCust = await api('GET', `/api/projects/${pid}/sign-off`, undefined, custToken);
+  assert.equal(asCust.data.signer_name, 'Test Customer');
+  assert.equal(asCust.data.ip, undefined, 'customer does not get the IP');
+  const asAdmin = await api('GET', `/api/projects/${pid}/sign-off`, undefined, adminToken);
+  assert.ok(asAdmin.data.signature_png && 'ip' in asAdmin.data, 'admin sees the full record');
+  const asCont = await api('GET', `/api/projects/${pid}/sign-off`, undefined, contToken);
+  assert.equal(asCont.data.signed, true);
+  assert.equal(asCont.data.signature_png, undefined, 'contractor never gets the signature');
+  const proj = await api('GET', `/api/projects/${pid}`, undefined, custToken);
+  assert.ok(proj.data.completion_signed_at, 'project payload shows the signed date');
+  const audit = await db.prepare("SELECT id FROM admin_audit WHERE action = 'project.signed_off' AND entity_id = ?").get(pid);
+  assert.ok(audit, 'sign-off is in the audit trail');
+});
+
 after(async () => {
   // leave the server running for manual QA; tests used an isolated DB file.
   process.exit(0);

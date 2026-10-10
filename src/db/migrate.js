@@ -32,5 +32,5 @@ async function migrate() {
 
 module.exports = migrate;
 if (require.main === module) {
-  migrate().then(() => db.close && db.close()).catch((e) => { console.error(e); process.exit(1); });
+  migrate().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
 }

@@ -25,8 +25,30 @@
 - **Robustez:** `await` en llamadas asíncronas, `unhandledRejection` registrado, `/api/health` ejecuta `SELECT 1`, marca única (`BRAND_NAME`).
 - **Tests:** 12 pruebas de regresión nuevas y 1 prueba existente ajustada (completar exige hitos aprobados).
 
+## Segunda tanda (continuación)
+- **Frontend cableado:** el portal del cliente vincula solicitudes de invitado a la cuenta (`HP.claimPendingJobs`), avisa si el correo no está verificado (con botón para reenviarlo), ofrece **pagar el saldo final** cuando todos los hitos están aprobados y oculta el reintento de depósito si ya está pagado; el admin ve la marca de "posibles datos de contacto" en los mensajes.
+- **Privacidad:** `GET /api/me/export` (descarga JSON de tus datos, sin margen ni credenciales) y `POST /api/me/delete` (anonimiza la cuenta con confirmación de contraseña; se bloquea con un proyecto en curso; borra las fotos de solicitud; conserva registros financieros anonimizados).
+- **Correo:** `POST /api/email/events?key=…` recibe rebotes, quejas y bajas de SendGrid y los pone en la lista de supresión (`SENDGRID_WEBHOOK_KEY`).
+- **Ubicación del contratista:** `PATCH /api/contractors/:id/location` (lat/lng o dirección con geocodificación) para que el emparejamiento use distancia.
+- **CI:** `.github/workflows/test.yml` corre la suite en SQLite **y en PostgreSQL** (donde fallaban los errores de `await`).
+- **Sentry opcional:** `npm i @sentry/node` + `SENTRY_DSN`; sin eso no hace nada.
+- **Tests:** 4 pruebas nuevas (total 30). Tampoco ejecutadas.
+
+## Tercera tanda: agenda del admin
+- **Pestaña «Agenda»** en el panel: vista semanal por día (con navegación), cada trabajo muestra cliente, dirección, contratista y etapa; **aviso en rojo cuando un contratista está doble-reservado**; y una lista «Needs a date» para ponerle fechas a los proyectos activos sin agenda, directamente desde la tabla.
+- **API:** `GET /api/projects/schedule?from=&to=` (solo admin) y `PATCH /api/projects/:id/schedule` ahora devuelve `conflicts` (avisa, nunca bloquea).
+- **Lógica pura** en `services/schedule.js`, probada aparte (choques, ventana de fechas, cruce de año). Prueba de API nueva (31 en total, sin ejecutar).
+- **Límites:** la agenda no considera horas (solo días), disponibilidad del contratista ni vacaciones; el choque se calcula solo contra proyectos del mismo contratista.
+
+## Cuarta tanda: hoja de cierre firmada
+- **Cierra el eslabón «ejecución → cierre → cobro final»:** cuando todos los hitos están aprobados, el cliente abre la **hoja de cierre** en su portal, confirma que el trabajo está terminado y limpio, escribe su nombre y **dibuja su firma** (dedo o ratón). Se guarda quién firmó, cuándo, desde qué IP y la firma (PNG); se avisa a los administradores y queda en la auditoría.
+- **El saldo final exige esa firma** (`final-intent` responde 409 sin ella), y en el portal el botón «Pay final balance» aparece solo después de firmar.
+- **Quién ve qué:** el cliente ve su hoja sin la IP; el admin ve todo; el contratista solo ve que está firmada (nunca la firma). `completion_signed_at` aparece en el proyecto.
+- **Datos:** tabla `completion_sheets` (SQLite en `db.js`, PostgreSQL en `003_completion_sheets.sql`); una sola firma por proyecto garantizada por `UNIQUE`.
+- **Límites:** es una firma dibujada con registro de IP y fecha, útil como constancia; **no es una firma electrónica certificada**. No genera PDF todavía y el admin no tiene aún una pantalla para ver la hoja (el API ya la devuelve). Prueba de API nueva (32 en total, sin ejecutar).
+
 ## NO incluido (no son correcciones, son funciones nuevas o dependen de ti)
-Dominio de correo propio (SPF/DKIM/DMARC) y webhook de rebotes; Sentry/alertas; SMS/WhatsApp; agenda y despacho; roles del panel; disputas; hoja de cierre firmada; pagos a contratistas; cuadrillas propias; dashboard de KPIs; CI; IA en el CRM; exportación/borrado de datos del cliente; autenticación de las fotos (siguen siendo URLs con token de 128 bits: se redujo su exposición en logs, pero no es acceso autenticado).
+Dominio de correo propio (SPF/DKIM/DMARC); alertas de Sentry configuradas; SMS/WhatsApp; mapa de visitas y disponibilidad por hora; roles del panel; disputas; PDF de la hoja de cierre; pagos a contratistas; cuadrillas propias; dashboard de KPIs; IA en el CRM; autenticación de las fotos (siguen siendo URLs con token de 128 bits: se redujo su exposición en logs, pero no es acceso autenticado).
 
 ## Falta cablear en el frontend
-Llamar a `/api/jobs/:id/claim` tras crear cuenta; pantalla de pago del saldo final; mostrar al admin los mensajes marcados; avisar al usuario cuando su correo no está verificado (el API devuelve `code: EMAIL_NOT_VERIFIED`); formulario para fijar coordenadas del contratista.
+Pantalla del admin para fijar coordenadas del contratista (el API ya existe); botones en la interfaz para exportar y borrar la cuenta (los endpoints ya existen); pantalla de reembolsos para el admin. El portal del contratista no se revisó a fondo.

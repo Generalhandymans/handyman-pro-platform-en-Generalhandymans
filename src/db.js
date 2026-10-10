@@ -358,6 +358,19 @@ db.exec(`CREATE TABLE IF NOT EXISTS email_suppressions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
 
+// Completion sheet: the customer's signed acceptance of finished work.
+db.exec(`CREATE TABLE IF NOT EXISTS completion_sheets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  signer_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  signer_name TEXT NOT NULL,
+  signature_png TEXT NOT NULL,
+  checklist_json TEXT,
+  notes TEXT,
+  ip TEXT,
+  signed_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+
 // ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----
 // Also adds 'paid' to the status CHECK for Stripe-confirmed payments.
 try {

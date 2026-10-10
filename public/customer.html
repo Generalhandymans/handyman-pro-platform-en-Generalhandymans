@@ -111,6 +111,25 @@
       const me = await HP.requireAuth('customer');
       if (!me) return;
       document.getElementById('greeting').textContent = `Hi, ${me.name.split(' ')[0]} — my portal`;
+      // Requests created as a guest become part of this account (needs the saved claim token).
+      const linked = await HP.claimPendingJobs();
+      if (linked) HP.toast(`${linked} earlier request${linked > 1 ? 's were' : ' was'} added to your account.`, 'ok');
+      // Accepting a quote and paying need a verified email: tell the user up front.
+      if (!me.email_verified) {
+        const bar = document.createElement('div');
+        bar.className = 'notice';
+        bar.setAttribute('role', 'status');
+        bar.style.cssText = 'margin:0 0 1rem;padding:.75rem 1rem;border:1px solid #f59e0b;background:#fffbeb;border-radius:8px;';
+        bar.innerHTML = 'Please verify your email to accept quotes and pay. <button type="button" class="btn btn-outline btn-sm" id="resend-verify" style="margin-left:.5rem">Resend verification email</button>';
+        const g = document.getElementById('greeting');
+        g.parentNode.insertBefore(bar, g.nextSibling);
+        document.getElementById('resend-verify').addEventListener('click', async (ev) => {
+          HP.busy(ev.target, true, 'Sending…');
+          try { await HP.resendVerification(); HP.toast('Verification email sent. Check your inbox.', 'ok'); }
+          catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+          finally { HP.busy(ev.target, false); }
+        });
+      }
       try {
         const all = await HP.api('GET', '/reviews');
         reviewsByProject = {};
@@ -324,10 +343,10 @@
       }
       return stripeJsPromise;
     }
-    async function openStripePay({ projectId, amountCents, onSuccess }) {
-      payCtx = { projectId, amountCents, onSuccess };
+    async function openStripePay({ projectId, amountCents, onSuccess, kind = 'deposit' }) {
+      payCtx = { projectId, amountCents, onSuccess, kind };
       document.getElementById('pay-summary').innerHTML =
-        `<dl class="kv"><dt>Deposit due</dt><dd><strong>${HP.fmtMoney(amountCents)}</strong></dd></dl>
+        `<dl class="kv"><dt>${kind === 'final' ? 'Final balance due' : 'Deposit due'}</dt><dd><strong>${HP.fmtMoney(amountCents)}</strong></dd></dl>
          <p class="small muted">Secured by Stripe. Cards, Klarna, Affirm and Afterpay are accepted where available.</p>`;
       document.getElementById('pay-error').hidden = true;
       document.getElementById('pay-stripe-element').innerHTML = '';
@@ -341,7 +360,7 @@
       try {
         const status = await HP.api('GET', '/payments/stripe-status');
         if (!status.enabled || !status.publishable_key) throw new Error('Online payments are not enabled right now.');
-        const intent = await HP.api('POST', '/payments/deposit-intent', { project_id: projectId });
+        const intent = await HP.api('POST', `/payments/${kind === 'final' ? 'final' : 'deposit'}-intent`, { project_id: projectId });
         await loadStripeJs();
         stripeObj = window.Stripe(status.publishable_key);
         stripeElements = stripeObj.elements({ clientSecret: intent.client_secret });
@@ -393,7 +412,7 @@
         // return via return_url after the customer approves.
         if (paymentIntent && paymentIntent.status === 'succeeded') {
           closePayModal();
-          HP.toast('Deposit paid — thank you!', 'ok');
+          HP.toast(payCtx.kind === 'final' ? 'Final payment received — thank you!' : 'Deposit paid — thank you!', 'ok');
           if (payCtx.onSuccess) payCtx.onSuccess({ accepted: true, project_id: payCtx.projectId });
           else { loadProjects(); loadRequests(); }
         } else {
@@ -410,10 +429,32 @@
 
     // Retry button when a Stripe deposit is still pending/failed.
     function pendingDepositBtn(p) {
-      const pend = (p.payments || []).find((x) => x.kind === 'deposit' && ['pending', 'failed'].includes(x.status));
+      const pays = p.payments || [];
+      // Already paid (or recorded by support): nothing to retry.
+      if (pays.some((x) => x.kind === 'deposit' && ['paid', 'recorded'].includes(x.status))) return '';
+      const pend = pays.find((x) => x.kind === 'deposit' && ['pending', 'failed'].includes(x.status));
       if (!pend) return '';
       return `<div class="btn-row" style="margin-top:.6rem">
         <button class="btn btn-primary btn-sm" data-pay-retry="${p.id}" data-amount="${pend.amount_cents}">Complete deposit payment (${HP.fmtMoney(pend.amount_cents)})</button>
+      </div>`;
+    }
+
+    // Final balance: opens only when EVERY milestone is approved (the server enforces it too).
+    function finalBalanceCents(p) {
+      const ms = p.milestones || [];
+      if (!ms.length || ms.some((m) => m.customer_approval !== 'approved')) return 0;
+      let paid = 0;
+      for (const x of (p.payments || [])) {
+        if (!['paid', 'recorded'].includes(x.status)) continue;
+        if (x.kind === 'refund') paid -= x.amount_cents; else paid += x.amount_cents;
+      }
+      return Math.max(0, p.customer_price_cents - paid);
+    }
+    function finalBalanceBtn(p) {
+      const due = finalBalanceCents(p);
+      if (due < 100) return '';
+      return `<div class="btn-row" style="margin-top:.6rem">
+        <button class="btn btn-primary btn-sm" data-pay-final="${p.id}" data-amount="${due}">Pay final balance (${HP.fmtMoney(due)})</button>
       </div>`;
     }
 
@@ -491,6 +532,7 @@
         <div class="ms">${ms || '<p class="small muted">No milestones yet.</p>'}</div>
         <hr class="divider">${photos}
         <hr class="divider">${payments}
+        <div id="signoff-box-${p.id}"></div>
         ${review}`;
       body.querySelectorAll('[data-ms-approve]').forEach((btn) => {
         btn.addEventListener('click', async () => {
@@ -506,6 +548,7 @@
       });
       const rf = body.querySelector('#review-form');
       if (rf) rf.addEventListener('submit', (e) => submitReview(e, p.id, body));
+      mountSignOff(p, body);
       body.querySelectorAll('[data-pay-retry]').forEach((btn) => {
         btn.addEventListener('click', () => {
           openStripePay({
@@ -515,6 +558,83 @@
           });
         });
       });
+    }
+
+    // ---- Completion sheet (sign-off) → unlocks the final payment ----
+    async function mountSignOff(p, body) {
+      const box = body.querySelector('#signoff-box-' + p.id);
+      if (!box) return;
+      const ms = p.milestones || [];
+      if (!ms.length || ms.some((m) => m.customer_approval !== 'approved')) { box.innerHTML = ''; return; }
+      let sheet;
+      try { sheet = await HP.api('GET', `/projects/${p.id}/sign-off`); } catch (e) { return; }
+      if (!sheet.signed) {
+        box.innerHTML = `<hr class="divider"><h4>Completion sheet</h4>
+          <p class="small muted">Every milestone is approved. Sign to confirm the work is finished — this opens your final payment.</p>
+          <div class="btn-row"><button class="btn btn-primary btn-sm" id="signoff-btn" type="button">Review &amp; sign</button></div>`;
+        box.querySelector('#signoff-btn').addEventListener('click', () => openSignModal(p, () => refreshProject(p.id, body)));
+        return;
+      }
+      box.innerHTML = `<hr class="divider"><h4>Completion sheet</h4>
+        <p class="small">✓ Signed by <strong>${HP.esc(sheet.signer_name)}</strong> on ${HP.fmtDateTime(sheet.signed_at)}</p>${finalBalanceBtn(p)}`;
+      box.querySelectorAll('[data-pay-final]').forEach((btn) => {
+        btn.addEventListener('click', () => openStripePay({
+          projectId: Number(btn.dataset.payFinal), amountCents: Number(btn.dataset.amount), kind: 'final', onSuccess: null,
+        }));
+      });
+    }
+
+    function openSignModal(p, onDone) {
+      const ov = document.createElement('div');
+      ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', 'Sign completion sheet');
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:1000;padding:1rem;';
+      ov.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:440px;width:100%;padding:1.25rem;max-height:92vh;overflow:auto;">
+        <h3 style="margin-top:0">Sign off on project #${p.id}</h3>
+        <label class="small" style="display:block;margin:.5rem 0"><input type="checkbox" id="so-work"> The work is complete and I accept it.</label>
+        <label class="small" style="display:block;margin:.5rem 0"><input type="checkbox" id="so-clean"> The work area is clean.</label>
+        <label class="small" for="so-name">Your full name</label>
+        <input id="so-name" type="text" autocomplete="name" style="width:100%;margin-bottom:.5rem">
+        <label class="small">Draw your signature (finger or mouse)</label>
+        <canvas id="so-canvas" width="400" height="150" style="width:100%;height:150px;border:1px solid #cbd5e1;border-radius:8px;touch-action:none;background:#fff"></canvas>
+        <label class="small" for="so-notes">Notes (optional)</label>
+        <textarea id="so-notes" rows="2" style="width:100%"></textarea>
+        <p class="small" id="so-error" style="color:#dc2626" hidden></p>
+        <div class="btn-row" style="margin-top:.75rem">
+          <button type="button" class="btn btn-outline btn-sm" id="so-clear">Clear</button>
+          <button type="button" class="btn btn-outline btn-sm" id="so-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="so-submit">Sign</button>
+        </div></div>`;
+      document.body.appendChild(ov);
+      const cv = ov.querySelector('#so-canvas'), ctx = cv.getContext('2d');
+      ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.strokeStyle = '#0f172a';
+      let drawing = false, drawn = false;
+      const pos = (e) => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * cv.width / r.width, y: (e.clientY - r.top) * cv.height / r.height }; };
+      cv.addEventListener('pointerdown', (e) => { drawing = true; cv.setPointerCapture(e.pointerId); const q = pos(e); ctx.beginPath(); ctx.moveTo(q.x, q.y); });
+      cv.addEventListener('pointermove', (e) => { if (!drawing) return; const q = pos(e); ctx.lineTo(q.x, q.y); ctx.stroke(); drawn = true; });
+      const stop = () => { drawing = false; };
+      cv.addEventListener('pointerup', stop); cv.addEventListener('pointercancel', stop);
+      const onKey = (e) => { if (e.key === 'Escape') close(); };
+      const close = () => { document.removeEventListener('keydown', onKey); ov.remove(); };
+      document.addEventListener('keydown', onKey);
+      ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+      ov.querySelector('#so-cancel').addEventListener('click', close);
+      ov.querySelector('#so-clear').addEventListener('click', () => { ctx.clearRect(0, 0, cv.width, cv.height); drawn = false; });
+      const err = (m) => { const el = ov.querySelector('#so-error'); el.textContent = m; el.hidden = false; };
+      ov.querySelector('#so-submit').addEventListener('click', async (e) => {
+        const name = ov.querySelector('#so-name').value.trim();
+        if (!ov.querySelector('#so-work').checked || !ov.querySelector('#so-clean').checked) return err('Please confirm both statements.');
+        if (!name) return err('Type your full name.');
+        if (!drawn) return err('Please draw your signature.');
+        HP.busy(e.target, true, 'Signing…');
+        try {
+          await HP.api('POST', `/projects/${p.id}/sign-off`, {
+            signer_name: name, signature: cv.toDataURL('image/png'),
+            checklist: { work_complete: true, site_clean: true }, notes: ov.querySelector('#so-notes').value.trim(),
+          });
+          close(); HP.toast('Signed — thank you! Your final payment is now open.', 'ok'); if (onDone) onDone();
+        } catch (ex) { err(HP.friendlyMessage(ex)); HP.busy(e.target, false); }
+      });
+      ov.querySelector('#so-name').focus();
     }
 
     async function refreshProject(pid, body) {

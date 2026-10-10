@@ -274,6 +274,38 @@ const HP = (() => {
       return r ? JSON.parse(r).claim : null;
     } catch (e) { return null; }
   }
+  // After a guest signs up / logs in as a customer, link every request they
+  // created as a guest (tokens saved by the wizard) to the account. Safe to call
+  // repeatedly; returns how many requests were linked.
+  async function claimPendingJobs() {
+    const u = user();
+    if (!token() || !u || u.role !== 'customer') return 0;
+    let linked = 0;
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.indexOf('hp_claim_') === 0) keys.push(k);
+      }
+      for (const k of keys) {
+        let rec = null;
+        try { rec = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { rec = null; }
+        if (!rec || !rec.id || !rec.claim) { localStorage.removeItem(k); continue; }
+        try {
+          await api('POST', '/jobs/' + encodeURIComponent(rec.id) + '/claim', { claim_token: rec.claim });
+          linked++;
+          localStorage.removeItem(k);
+        } catch (e) {
+          // 403/404/409 = stale or someone else's: drop it. Network errors: keep for next time.
+          if (e && [403, 404, 409].includes(e.status)) localStorage.removeItem(k);
+        }
+      }
+    } catch (e) { /* storage unavailable: nothing to link */ }
+    return linked;
+  }
+  async function resendVerification() {
+    return api('POST', '/auth/verify/resend');
+  }
   function photoUrl(filename) { return '/api/photos/' + encodeURIComponent(filename); }
 
   return {
@@ -283,7 +315,7 @@ const HP = (() => {
     requireAuth, busy, badge, statusKind,
     JOB_STATUS, PROJECT_STAGE, TRADE_ICON,
     mountHeader, emptyState,
-    saveClaim, loadClaim, photoUrl,
+    saveClaim, loadClaim, photoUrl, claimPendingJobs, resendVerification,
   };
 })();
 
