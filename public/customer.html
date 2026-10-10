@@ -443,7 +443,7 @@
       const card = HP.el(`<article class="proj-card">
         <div class="proj-head">
           <button type="button" aria-expanded="false">
-            <span class="job-title">Project #${p.id}${p.contractor ? ' — ' + HP.esc(p.contractor.name || '') : ''}</span><br>
+            <span class="job-title">Project #${p.id}${p.contractor ? ' — ' + HP.esc(p.contractor.first_name || '') : ''}</span><br>
             <span class="job-meta">${HP.fmtMoney(p.customer_price_cents)} · started ${HP.fmtDate(p.created_at)}</span>
           </button>
           ${HP.badge(HP.PROJECT_STAGE[p.stage] || p.stage, HP.statusKind(p.stage))}

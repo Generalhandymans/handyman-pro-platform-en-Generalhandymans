@@ -79,7 +79,7 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
   if (failIfErrors(res, errors)) return;
   const sets = Object.keys(patch).map(k => `${k} = ?`);
   if (sets.length) await db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE id = ?`).run(...Object.values(patch), c.id);
-  auditLog(req.user.id, 'contractor.verified', 'contractors', c.id, JSON.stringify(patch));
+  await auditLog(req.user.id, 'contractor.verified', 'contractors', c.id, JSON.stringify(patch));
   res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id)));
 }));
 

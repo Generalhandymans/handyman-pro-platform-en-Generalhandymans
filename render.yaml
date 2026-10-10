@@ -1,49 +1,70 @@
-# General Handyman Solutions — Render blueprint (one-click deploy)
-# https://render.com — connect the Generalhandymans/general-handyman-solutions-platform repo,
-# create a new Blueprint, and Render provisions everything below.
+# Helpman / General Handyman Solutions — Render blueprint.
+# PRODUCTION layout: PostgreSQL (persistent) + object storage for photos.
+# The free web plan sleeps and has no disk, and SQLite on its ephemeral
+# filesystem is wiped on every restart/redeploy — do not run real customers on it.
+# VERIFY the plan names below in the Render dashboard before applying.
+databases:
+  - name: helpman-db
+    plan: basic-256mb        # pick a plan WITH backups; confirm the current plan name
 services:
   - type: web
     name: general-handyman-solutions
     runtime: node
-    plan: free
+    plan: starter            # the free plan sleeps; use a paid plan
     buildCommand: npm install
     startCommand: npm start
-    # Free plan: no persistent disk. The SQLite database lives on the ephemeral
-    # filesystem and is wiped whenever the service restarts or redeploys.
-    # For production data, switch plan to "starter" and add a disk:
-    #   disk:
-    #     name: handyman-data
-    #     mountPath: /opt/render/project/src/data
-    #     sizeGB: 1
+    healthCheckPath: /api/health   # now runs SELECT 1 against the database
     envVars:
+      - key: NODE_ENV
+        value: production    # enables fail-fast checks (JWT_SECRET, Stripe)
       - key: PORT
         value: 10000
       - key: NODE_VERSION
         value: 20.18.0
       - key: JWT_SECRET
         generateValue: true
-      - key: DB_PATH
-        value: /opt/render/project/src/data/handyman.db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: helpman-db
+          property: connectionString
+      - key: DB_SSL
+        value: "true"
+      - key: PUBLIC_URL
+        sync: false          # e.g. https://app.yourdomain.com (used in email links)
+      # Email: use a domain YOU own (SPF/DKIM/DMARC). A @gmail.com sender cannot be authenticated.
+      - key: EMAIL_PROVIDER
+        value: sendgrid
+      - key: SENDGRID_API_KEY
+        sync: false
       - key: HANDYMAN_FROM_EMAIL
-        value: generalhandymans@gmail.com
+        sync: false          # e.g. hello@yourdomain.com
       - key: HANDYMAN_FROM_NAME
         value: General Handyman Solutions
-      - key: EMAIL_PROVIDER
-        value: console
-      # First admin (set these BEFORE first deploy — no demo accounts are created):
+      - key: COMPANY_POSTAL_ADDRESS
+        sync: false          # required in the footer of promotional email
+      # First admin (set BEFORE first deploy — no demo accounts are created):
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-      # Stripe — set after creating your Stripe account (see src/services/stripe.js):
-      # - key: STRIPE_SECRET_KEY
-      #   sync: false
-      # - key: STRIPE_PUBLISHABLE_KEY
-      #   sync: false
-      # - key: STRIPE_WEBHOOK_SECRET
-      #   sync: false
-      # Optional — set in the Render dashboard after deploy:
+      # Stripe is REQUIRED when NODE_ENV=production (see ALLOW_MANUAL_PAYMENTS in .env.example).
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      # Photos: S3-compatible bucket (AWS S3, Cloudflare R2...). Keep the bucket PRIVATE.
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_REGION
+        sync: false
+      - key: S3_ENDPOINT
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      # Optional:
       # - key: OPENAI_API_KEY
-      # - key: SENDGRID_API_KEY
-      #   (then switch EMAIL_PROVIDER to sendgrid)
-    healthCheckPath: /api/health
+      # - key: GEOCODE_API_KEY   # Mapbox token; enables distance in contractor matching

@@ -8,6 +8,7 @@ const crm = require('../services/crm');
 const mailer = require('../services/mailer');
 const { auditLog } = require('../services/audit');
 
+const unsub = require('../services/unsubscribe');
 const router = express.Router();
 router.use(authRequired, requireRole('admin'));
 
@@ -61,6 +62,11 @@ router.post('/:id/queue', ah(async (req, res) => {
   const t = await db.prepare('SELECT * FROM email_templates WHERE id = ?').get(c.template_id);
   if (!t) return res.status(400).json({ error: 'Template missing.' });
 
+  // Real delivery needs the sender's physical address in every promotional email.
+  if (mailer.activeProvider() !== 'console' && !process.env.COMPANY_POSTAL_ADDRESS) {
+    return res.status(400).json({ error: 'Set COMPANY_POSTAL_ADDRESS before sending real campaigns (required in the footer of promotional email).' });
+  }
+
   let members;
   try { members = await crm.segmentMembers(c.segment); }
   catch (e) { return res.status(400).json({ error: e.message }); }
@@ -68,6 +74,7 @@ router.post('/:id/queue', ah(async (req, res) => {
   const haveRows = await db.prepare('SELECT to_email FROM email_outbox WHERE campaign_id = ?').all(c.id);
   const have = new Set(haveRows.map(r => r.to_email));
   let queued = 0;
+  let skippedUnsubscribed = 0;
   await db.transaction(async (t) => {
     const ins = t.prepare(
       `INSERT INTO email_outbox (campaign_id, to_email, to_name, subject, body_html, provider)
@@ -75,14 +82,15 @@ router.post('/:id/queue', ah(async (req, res) => {
     );
     for (const m of members) {
       if (!m.email || have.has(m.email)) continue;
+      if (await unsub.isSuppressed(m.email)) { skippedUnsubscribed++; continue; }
       const vars = { name: m.name || 'there', company: 'General Handyman Solutions', ...(m.context || {}) };
       await ins.run(c.id, m.email, m.name, crm.renderTemplate(t.subject, vars),
-        crm.renderTemplate(t.body_html, vars), mailer.activeProvider());
+        crm.renderTemplate(t.body_html, vars) + unsub.footerHtml(m.email), mailer.activeProvider());
       queued++;
     }
     await t.prepare(`UPDATE campaigns SET status = 'queued' WHERE id = ?`).run(c.id);
   });
-  res.json({ queued, campaign_id: c.id });
+  res.json({ queued, skipped_unsubscribed: skippedUnsubscribed, campaign_id: c.id });
 }));
 
 // Mark for sending; the background worker (server.js) drains the outbox.
@@ -90,8 +98,8 @@ router.post('/:id/send', ah(async (req, res) => {
   const c = await db.prepare('SELECT * FROM campaigns WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Campaign not found.' });
   await db.prepare(`UPDATE campaigns SET status = 'sending' WHERE id = ?`).run(c.id);
-  auditLog(req.user.id, 'campaign.sent', 'campaigns', c.id, `Campaign "${c.name}" → segment ${c.segment}`);
-  const n = processOutbox(50); // also flush a batch right now for immediacy
+  await auditLog(req.user.id, 'campaign.sent', 'campaigns', c.id, `Campaign "${c.name}" → segment ${c.segment}`);
+  const n = await processOutbox(50); // also flush a batch right now for immediacy
   res.json({ status: 'sending', flushed_now: n });
 }));
 
@@ -106,9 +114,20 @@ async function processOutbox(limit = 50) {
   const mark = db.prepare(`UPDATE email_outbox SET status = ?, sent_at = ?, error = ? WHERE id = ?`);
   const log = db.prepare(`INSERT INTO email_log (outbox_id, to_email, subject, status, provider) VALUES (?,?,?,?,?)`);
   for (const r of rows) {
-    await mark.run('sending', null, null, r.id);
+    // Claim the row atomically: a second worker/instance skips rows already taken.
+    const claim = await db.prepare(`UPDATE email_outbox SET status = 'sending' WHERE id = ? AND status = 'queued'`).run(r.id);
+    if (claim.changes !== 1) continue;
     try {
-      const result = await mailer.send({ to: r.to_email, subject: r.subject, html: r.body_html });
+      // Honor opt-outs that arrived AFTER the campaign was queued.
+      if (await unsub.isSuppressed(r.to_email)) {
+        await mark.run('failed', null, 'unsubscribed', r.id);
+        await log.run(r.id, r.to_email, r.subject, 'failed', r.provider);
+        continue;
+      }
+      const result = await mailer.send({
+        to: r.to_email, subject: r.subject, html: r.body_html,
+        headers: { 'List-Unsubscribe': `<${unsub.link(r.to_email)}>`, 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' },
+      });
       await mark.run(result.ok ? 'sent' : 'failed', result.ok ? new Date().toISOString() : null, result.error || null, r.id);
       await log.run(r.id, r.to_email, r.subject, result.ok ? 'sent' : 'failed', result.provider);
       // Close out finished campaigns.

@@ -334,6 +334,30 @@ if (!columnExists('photos', 'storage_provider')) {
   db.exec(`ALTER TABLE photos ADD COLUMN storage_provider TEXT NOT NULL DEFAULT 'local'`);
 }
 
+// ---- Hardening migrations (mirrored for PostgreSQL in src/db/migrations/002_hardening.sql) ----
+if (!columnExists('users', 'token_version')) {
+  db.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`);
+}
+if (!columnExists('messages', 'flagged')) {
+  db.exec(`ALTER TABLE messages ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0`);
+}
+if (!columnExists('messages', 'flag_reason')) {
+  db.exec(`ALTER TABLE messages ADD COLUMN flag_reason TEXT`);
+}
+if (!columnExists('job_requests', 'lat')) {
+  db.exec(`ALTER TABLE job_requests ADD COLUMN lat REAL`);
+  db.exec(`ALTER TABLE job_requests ADD COLUMN lng REAL`);
+}
+if (!columnExists('contractors', 'lat')) {
+  db.exec(`ALTER TABLE contractors ADD COLUMN lat REAL`);
+  db.exec(`ALTER TABLE contractors ADD COLUMN lng REAL`);
+}
+db.exec(`CREATE TABLE IF NOT EXISTS email_suppressions (
+  email TEXT PRIMARY KEY,
+  reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+
 // ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----
 // Also adds 'paid' to the status CHECK for Stripe-confirmed payments.
 try {
@@ -384,5 +408,25 @@ module.exports = db;
     },
     exec: async (sql) => db.exec(sql),
   };
-  db.transaction = (fn) => fn(asyncDb);
+  // Real transaction: BEGIN IMMEDIATE / COMMIT / ROLLBACK, one at a time.
+  // LIMIT (single SQLite connection): a write from ANOTHER request that lands
+  // while a transaction is awaiting joins that transaction. That is acceptable
+  // for tests and low traffic; production must use PostgreSQL (DATABASE_URL),
+  // where every transaction owns its own connection.
+  let txChain = Promise.resolve();
+  db.transaction = (fn) => {
+    const run = txChain.then(async () => {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = await fn(asyncDb);
+        db.exec('COMMIT');
+        return result;
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch (_) { /* already rolled back */ }
+        throw e;
+      }
+    });
+    txChain = run.catch(() => {});
+    return run;
+  };
 }

@@ -27,29 +27,56 @@ function getClient() {
   return stripeClient;
 }
 
-// Creates a PaymentIntent for a project deposit and records it as pending.
+// Creates a PaymentIntent (deposit or final balance) and records it as pending.
 // Returns { client_secret, payment_id } — the frontend confirms with the
 // publishable key via Stripe.js, the webhook marks it paid.
-async function createDepositIntent({ projectId, amountCents, customerEmail, description }) {
+async function createIntent({ projectId, amountCents, kind = 'deposit', customerEmail, description }) {
   const db = require('../db');
   const stripe = getClient();
+  const label = kind === 'final' ? 'final balance' : 'deposit';
   const pi = await stripe.paymentIntents.create({
     amount: amountCents,
     currency: 'usd',
     receipt_email: customerEmail || undefined,
-    description: description || `General Handyman Solutions — deposit for project #${projectId}`,
-    metadata: { project_id: String(projectId), kind: 'deposit' },
+    description: description || `General Handyman Solutions — ${label} for project #${projectId}`,
+    metadata: { project_id: String(projectId), kind },
     automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
   });
   const info = await db.prepare(
     `INSERT INTO payments (project_id, kind, amount_cents, status, provider, provider_ref, notes)
      VALUES (?,?,?,'pending','stripe',?,?)`
-  ).run(projectId, 'deposit', amountCents, pi.id, 'Stripe PaymentIntent created');
+  ).run(projectId, kind, amountCents, pi.id, 'Stripe PaymentIntent created');
   return { client_secret: pi.client_secret, payment_id: info.lastInsertRowid, payment_intent_id: pi.id };
+}
+// Backwards-compatible name.
+const createDepositIntent = (args) => createIntent({ ...args, kind: 'deposit' });
+
+// Refunds (part of) a PAID Stripe payment. Stripe itself rejects refunds above
+// what is still refundable; we also check first to return a clean error.
+async function refundPayment({ payment, amountCents }) {
+  const db = require('../db');
+  const stripe = getClient();
+  const pi = await stripe.paymentIntents.retrieve(payment.provider_ref, { expand: ['latest_charge'] });
+  const charge = pi.latest_charge;
+  const refundable = charge ? (charge.amount - charge.amount_refunded) : 0;
+  const amount = amountCents || refundable;
+  if (amount < 1 || amount > refundable) {
+    const err = new Error(`Refundable amount is ${refundable} cents.`);
+    err.statusCode = 400;
+    throw err;
+  }
+  const refund = await stripe.refunds.create({ payment_intent: payment.provider_ref, amount });
+  const info = await db.prepare(
+    `INSERT INTO payments (project_id, kind, amount_cents, status, provider, provider_ref, notes)
+     VALUES (?,?,?,'paid','stripe',?,?)`
+  ).run(payment.project_id, 'refund', amount, refund.id, `Refund of payment #${payment.id}`);
+  return { refund_id: refund.id, payment_id: info.lastInsertRowid, amount_cents: amount };
 }
 
 // Verifies the webhook signature and applies the event to our ledger.
-// Returns the event type handled, or null when signature verification fails.
+// Contract: returns null ONLY when the signature is invalid (caller -> 400);
+// returns the event type when handled; THROWS when processing fails so the
+// route answers 500 and Stripe retries. Idempotent: replays change nothing.
 async function handleWebhook(rawBody, signature) {
   const db = require('../db');
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -61,33 +88,47 @@ async function handleWebhook(rawBody, signature) {
   } catch (e) {
     return null; // bad signature — caller returns 400
   }
+
   if (event.type === 'payment_intent.succeeded') {
     const pi = event.data.object;
-    const nowSql = db._isPg ? 'CURRENT_TIMESTAMP::text' : "datetime('now')";
-    await db.prepare(
-      `UPDATE payments SET status = 'paid', notes = COALESCE(notes,'') || ' | Stripe confirmed ' || ${nowSql}
-       WHERE provider_ref = ? AND provider = 'stripe'`
-    ).run(pi.id);
-    // A confirmed deposit moves the job forward in the pipeline.
+    const pay = await db.prepare(
+      `SELECT id, amount_cents, status FROM payments WHERE provider = 'stripe' AND provider_ref = ?`
+    ).get(pi.id);
+    if (!pay) return event.type;                    // not one of ours
+    if (pay.status === 'paid') return event.type;   // replay: already applied
+    if (pi.amount_received !== pay.amount_cents) {  // never mark paid on a different amount
+      await db.prepare(
+        `UPDATE payments SET notes = COALESCE(notes,'') || ' | AMOUNT MISMATCH: received ' || ? WHERE id = ?`
+      ).run(String(pi.amount_received), pay.id);
+      throw new Error(`Amount mismatch on ${pi.id}: expected ${pay.amount_cents}, received ${pi.amount_received}`);
+    }
+    const upd = await db.prepare(
+      `UPDATE payments SET status = 'paid', notes = COALESCE(notes,'') || ' | Stripe confirmed'
+       WHERE id = ? AND status <> 'paid'`
+    ).run(pay.id);
+    const kind = pi.metadata && pi.metadata.kind;
     const pid = pi.metadata && pi.metadata.project_id;
-    if (pid) {
+    if (upd.changes === 1 && kind === 'deposit' && pid) {
       const proj = await db.prepare('SELECT job_request_id FROM projects WHERE id = ?').get(pid);
       if (proj) {
-        await db.prepare(`UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-          .run(proj.job_request_id);
+        // Only moves FORWARD: a late/replayed event can never pull a job back.
+        await db.prepare(
+          `UPDATE job_requests SET status = 'deposit_paid', updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND status IN ('new','ai_analyzed','quote_sent')`
+        ).run(proj.job_request_id);
       }
     }
-    return 'payment_intent.succeeded';
+    return event.type;
   }
+
   if (event.type === 'payment_intent.payment_failed') {
-    const pi = event.data.object;
     await db.prepare(
-      `UPDATE payments SET status = 'failed', notes = COALESCE(notes,'') || ' | Stripe failed ' || datetime('now')
-       WHERE provider_ref = ? AND provider = 'stripe'`
-    ).run(pi.id);
-    return 'payment_intent.payment_failed';
+      `UPDATE payments SET status = 'failed', notes = COALESCE(notes,'') || ' | Stripe failed'
+       WHERE provider = 'stripe' AND provider_ref = ? AND status = 'pending'`
+    ).run(event.data.object.id);
+    return event.type;
   }
   return event.type; // acknowledged, nothing to do
 }
 
-module.exports = { isEnabled, getClient, createDepositIntent, handleWebhook };
+module.exports = { isEnabled, getClient, createIntent, createDepositIntent, refundPayment, handleWebhook };

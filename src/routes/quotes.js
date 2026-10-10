@@ -61,7 +61,7 @@ router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
       deposit_cents, deposit_pct, valid_until)
      VALUES (?,?,?,?,?,?, ${validUntilSql})`
   ).run(job.id, b.estimate_id || null, b.customer_price_cents, b.contractor_cost_cents, deposit, depositPct);
-  auditLog(req.user.id, 'quote.created', 'quotes', info.lastInsertRowid,
+  await auditLog(req.user.id, 'quote.created', 'quotes', info.lastInsertRowid,
     `Job #${job.id}: customer ${fmt(b.customer_price_cents)}, contractor ${fmt(b.contractor_cost_cents)}, deposit ${depositPct}%`);
   res.status(201).json({
     ...await db.prepare('SELECT * FROM quotes WHERE id = ?').get(info.lastInsertRowid),
@@ -77,8 +77,8 @@ router.post('/:id/send', authRequired, requireRole('admin'), ah(async (req, res)
   if (q.status !== 'draft') return res.status(400).json({ error: 'Only draft quotes can be sent.' });
   await db.prepare(`UPDATE quotes SET status = 'sent', sent_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
   await db.prepare(`UPDATE job_requests SET status = 'quote_sent', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.job_request_id);
-  touchInteraction(q.job_request_id, 'quote_sent', `quote #${q.id}`);
-  auditLog(req.user.id, 'quote.sent', 'quotes', q.id, `Sent to customer, ${fmt(q.customer_price_cents)}`);
+  await touchInteraction(q.job_request_id, 'quote_sent', `quote #${q.id}`);
+  await auditLog(req.user.id, 'quote.sent', 'quotes', q.id, `Sent to customer, ${fmt(q.customer_price_cents)}`);
 
   // Notify the customer by email.
   const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(q.job_request_id);
@@ -133,8 +133,13 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
     if (q.status !== 'sent') return res.status(400).json({ error: 'This quote is no longer awaiting a response.' });
     await db.prepare(`UPDATE quotes SET status = 'rejected', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
     await db.prepare(`UPDATE job_requests SET status = 'lost', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
-    touchInteraction(job.id, 'customer_reply', 'quote rejected');
+    await touchInteraction(job.id, 'customer_reply', 'quote rejected');
     return res.json({ accepted: false });
+  }
+
+  // Money-moving action: needs a verified email.
+  if (!req.user.email_verified) {
+    return res.status(403).json({ error: 'Please verify your email first. Check your inbox or request a new link.', code: 'EMAIL_NOT_VERIFIED' });
   }
 
   // Legal gate: accepting the price + paying the deposit requires explicit
@@ -146,15 +151,17 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
   const { CLIENT_TERMS_VERSION, recordAcceptance } = require('../services/terms');
   const stripeSvc = require('../services/stripe');
   const stripeOn = stripeSvc.isEnabled();
-  const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.ip || null;
+  const ip = req.ip || null; // 'trust proxy' (server.js) makes this the real client IP; never read x-forwarded-for directly
 
   let projectId;
   try {
     projectId = await db.transaction(async (t) => {
-      // Re-check inside the transaction: prevents double-accept races.
-      const fresh = await t.prepare('SELECT status FROM quotes WHERE id = ?').get(q.id);
-      if (fresh.status !== 'sent') throw Object.assign(new Error('This quote is no longer awaiting a response.'), { statusCode: 400 });
-      await t.prepare(`UPDATE quotes SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE id = ?`).run(q.id);
+      // Atomic claim: the status change and the check are ONE statement, so two
+      // simultaneous accepts can never both succeed (a SELECT-then-UPDATE can).
+      const claimed = await t.prepare(
+        `UPDATE quotes SET status = 'accepted', responded_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'sent'`
+      ).run(q.id);
+      if (claimed.changes !== 1) throw Object.assign(new Error('This quote is no longer awaiting a response.'), { statusCode: 400 });
       const p = await t.prepare(
         `INSERT INTO projects (job_request_id, quote_id, customer_price_cents, contractor_cost_cents, stage)
          VALUES (?,?,?,?, 'assigned')`

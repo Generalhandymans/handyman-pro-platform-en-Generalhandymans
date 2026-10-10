@@ -10,18 +10,19 @@ router.use(authRequired, requireRole('admin'));
 
 // ---- Consolidated overview KPIs ----
 router.get('/overview', ah(async (req, res) => {
-  const g = async (sql, ...a) => await db.prepare(sql).get(...a);
-  const jobs = g(`SELECT COUNT(*) c FROM job_requests`).c;
-  const quotesSent = g(`SELECT COUNT(*) c FROM quotes WHERE status IN ('sent','accepted')`).c;
-  const quotesAccepted = g(`SELECT COUNT(*) c FROM quotes WHERE status = 'accepted'`).c;
-  const active = g(`SELECT COUNT(*) c FROM projects WHERE stage IN ('assigned','scheduled','in_progress','review')`).c;
-  const done = g(`SELECT COUNT(*) c FROM projects WHERE stage = 'completed'`).c;
-  const revenue = g(`SELECT COALESCE(SUM(customer_price_cents),0) s FROM projects WHERE stage = 'completed'`).s;
-  const cost = g(`SELECT COALESCE(SUM(contractor_cost_cents),0) s FROM projects WHERE stage = 'completed'`).s;
-  const contractors = g(`SELECT COUNT(*) c FROM contractors WHERE status = 'active'`).c;
-  const applicants = g(`SELECT COUNT(*) c FROM contractors WHERE status = 'pending'`).c;
-  const avgRating = g(`SELECT COALESCE(AVG(rating),0) r FROM reviews`).r;
-  const avgTicket = g(`SELECT COALESCE(AVG(customer_price_cents),0) a FROM projects WHERE stage = 'completed'`).a;
+  // Each metric is awaited; a missing row or NULL aggregate becomes 0.
+  const g = async (sql, key) => { const row = await db.prepare(sql).get(); return Number(row && row[key]) || 0; };
+  const jobs = await g(`SELECT COUNT(*) c FROM job_requests`, 'c');
+  const quotesSent = await g(`SELECT COUNT(*) c FROM quotes WHERE status IN ('sent','accepted')`, 'c');
+  const quotesAccepted = await g(`SELECT COUNT(*) c FROM quotes WHERE status = 'accepted'`, 'c');
+  const active = await g(`SELECT COUNT(*) c FROM projects WHERE stage IN ('assigned','scheduled','in_progress','review')`, 'c');
+  const done = await g(`SELECT COUNT(*) c FROM projects WHERE stage = 'completed'`, 'c');
+  const revenue = await g(`SELECT COALESCE(SUM(customer_price_cents),0) s FROM projects WHERE stage = 'completed'`, 's');
+  const cost = await g(`SELECT COALESCE(SUM(contractor_cost_cents),0) s FROM projects WHERE stage = 'completed'`, 's');
+  const contractors = await g(`SELECT COUNT(*) c FROM contractors WHERE status = 'active'`, 'c');
+  const applicants = await g(`SELECT COUNT(*) c FROM contractors WHERE status = 'pending'`, 'c');
+  const avgRating = await g(`SELECT COALESCE(AVG(rating),0) r FROM reviews`, 'r');
+  const avgTicket = await g(`SELECT COALESCE(AVG(customer_price_cents),0) a FROM projects WHERE stage = 'completed'`, 'a');
   res.json({
     jobs, quotes_sent: quotesSent, quotes_accepted: quotesAccepted,
     acceptance_rate: quotesSent ? Math.round(quotesAccepted / quotesSent * 100) : 0,
@@ -43,8 +44,8 @@ router.get('/funnel', ah(async (req, res) => {
   const byStatus = Object.fromEntries(stages.map(s => [s.status, s.count]));
   const funnel = order.filter(s => byStatus[s]).map(s => ({ stage: s, count: byStatus[s] }));
   const first = funnel.length ? funnel[0].count : 0;
-  const reviews = await db.prepare(`SELECT COUNT(*) c FROM reviews`).get().c;
-  const referrals = await db.prepare(`SELECT COUNT(*) c FROM referrals`).get().c;
+  const reviews = Number((await db.prepare(`SELECT COUNT(*) c FROM reviews`).get()).c) || 0;
+  const referrals = Number((await db.prepare(`SELECT COUNT(*) c FROM referrals`).get()).c) || 0;
   res.json({
     client_funnel: funnel.map(f => ({ ...f, pct_of_top: first ? Math.round(f.count / first * 100) : 0 })),
     post_project: { reviews, referrals_issued: referrals },

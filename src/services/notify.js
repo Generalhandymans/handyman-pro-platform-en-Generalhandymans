@@ -4,6 +4,7 @@
 // Sender identity is ALWAYS the business account (mailer module default).
 const db = require('../db');
 const mailer = require('./mailer');
+const BRAND = process.env.BRAND_NAME || 'Helpman';
 
 async function logEmail(to, subject, status, provider) {
   await db.prepare(
@@ -35,7 +36,7 @@ function shell(title, intro, rows) {
     `<tr><td style="color:#64748b;padding:6px 12px 6px 0;">${esc(k)}</td><td style="padding:6px 0;"><strong>${esc(v)}</strong></td></tr>`
   ).join('');
   return `<!doctype html><html><body style="font-family:Arial,sans-serif;color:#15202b;max-width:560px;margin:0 auto;padding:24px;">
-    <div style="font-weight:900;font-size:20px;margin-bottom:4px;">🛠 Handyman <em>Pro</em></div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:4px;">🛠 ${esc(BRAND)}</div>
     <h2 style="margin:8px 0 4px;">${esc(title)}</h2>
     <p style="color:#475569;">${esc(intro)}</p>
     ${rowHtml ? `<table>${rowHtml}</table>` : ''}

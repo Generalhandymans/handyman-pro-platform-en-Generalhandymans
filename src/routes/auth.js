@@ -172,7 +172,7 @@ router.post('/reset', ah(async (req, res) => {
   if (!user || !user.reset_expires || new Date(user.reset_expires).getTime() < Date.now()) {
     return res.status(400).json({ error: 'Invalid or expired reset token.' });
   }
-  await db.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?')
+  await db.prepare('UPDATE users SET password_hash = ?, reset_token = NULL, reset_expires = NULL, token_version = COALESCE(token_version, 0) + 1 WHERE id = ?')
     .run(hashPassword(password), user.id);
   res.json({ reset: true });
 }));

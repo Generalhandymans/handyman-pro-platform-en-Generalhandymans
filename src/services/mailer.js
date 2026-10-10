@@ -30,9 +30,9 @@ function activeProvider() {
   return 'console';
 }
 
-async function send({ to, subject, html }) {
+async function send({ to, subject, html, headers }) {
   const provider = activeProvider();
-  if (provider === 'sendgrid') return sendViaSendGrid({ to, subject, html });
+  if (provider === 'sendgrid') return sendViaSendGrid({ to, subject, html, headers });
   return sendViaConsole({ to, subject, html });
 }
 
@@ -42,7 +42,7 @@ async function sendViaConsole({ to, subject, html }) {
   return { ok: true, provider: 'console' };
 }
 
-async function sendViaSendGrid({ to, subject, html }) {
+async function sendViaSendGrid({ to, subject, html, headers }) {
   const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SENDGRID_KEY}` },
@@ -51,6 +51,7 @@ async function sendViaSendGrid({ to, subject, html }) {
       from: { email: FROM_EMAIL, name: FROM_NAME },
       subject,
       content: [{ type: 'text/html', value: html }],
+      ...(headers && Object.keys(headers).length ? { headers } : {}),
     }),
   });
   if (res.status === 202) return { ok: true, provider: 'sendgrid' };

@@ -25,6 +25,15 @@ async function contractorIdFor(userId) {
   return c ? c.id : null;
 }
 
+// Heuristic detector for phone numbers, emails and "contact me elsewhere" phrases.
+function detectContactLeak(text) {
+  const t = String(text || '');
+  if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(t)) return 'email address';
+  if (/(?:\+?\d[\s().-]?){9,}/.test(t)) return 'phone number';
+  if (/\b(whats\s?app|telegram|signal|venmo|zelle|cash\s?app|facebook|instagram|text me|call me|ll[aá]mame|escr[ií]beme|my number|mi n[uú]mero)\b/i.test(t)) return 'off-platform contact request';
+  return null;
+}
+
 // Returns the project if visible, else null. Visibility == messaging eligibility.
 async function visibleProject(req, projectId) {
   const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(projectId);
@@ -94,11 +103,12 @@ router.get('/threads/:tid/messages', ah(async (req, res) => {
   const found = await loadThread(req, res);
   if (!found) return;
   const rows = await db.prepare(
-    `SELECT m.id, m.body, m.sender_role, m.created_at, u.name AS sender_name
+    `SELECT m.id, m.body, m.sender_role, m.created_at, m.flagged, m.flag_reason, u.name AS sender_name
      FROM messages m LEFT JOIN users u ON u.id = m.sender_id
      WHERE m.thread_id = ? ORDER BY m.id`
   ).all(found.thread.id);
-  res.json(rows);
+  // Only support sees the contact-exchange flags.
+  res.json(req.user.role === 'admin' ? rows : rows.map(({ flagged, flag_reason, ...rest }) => rest));
 }));
 
 // ---- Post a message (notifies the other party by email) ----
@@ -112,9 +122,12 @@ router.post('/threads/:tid/messages', ah(async (req, res) => {
 
   // The sender_role must match the authenticated role — no impersonation.
   const senderRole = req.user.role === 'admin' ? 'admin' : req.user.role;
+  // Business rule: no direct contact. Customer/contractor messages that try to
+  // exchange contact details are FLAGGED for support (never silently blocked).
+  const flagReason = senderRole === 'admin' ? null : detectContactLeak(req.body.body);
   const info = await db.prepare(
-    'INSERT INTO messages (thread_id, sender_id, sender_role, body) VALUES (?,?,?,?)'
-  ).run(thread.id, req.user.id, senderRole, req.body.body.trim());
+    'INSERT INTO messages (thread_id, sender_id, sender_role, body, flagged, flag_reason) VALUES (?,?,?,?,?,?)'
+  ).run(thread.id, req.user.id, senderRole, req.body.body.trim(), flagReason ? 1 : 0, flagReason);
   const msg = await db.prepare('SELECT * FROM messages WHERE id = ?').get(info.lastInsertRowid);
 
   // Notify the OTHER party by email (support always in the middle).
@@ -131,11 +144,12 @@ router.post('/threads/:tid/messages', ah(async (req, res) => {
   for (const r of recipients) {
     await notify({
       to: r.email,
-      subject: `New message — General Handyman Solutions ${jobLabel}`,
+      subject: `${flagReason ? '⚠ Contact details? ' : ''}New message — General Handyman Solutions ${jobLabel}`,
       html: shell('New message', `${req.user.name} wrote in the ${thread.kind === 'client_support' ? 'customer support' : 'contractor support'} thread:`, [
         ['Project', jobLabel],
         ['From', `${req.user.name} (${senderRole})`],
         ['Message', req.body.body.trim().slice(0, 500)],
+        ...(flagReason ? [['Flagged', `Possible ${flagReason} — direct contact is not allowed`]] : []),
       ]),
     }).catch(() => {});
   }

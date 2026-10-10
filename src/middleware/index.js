@@ -4,6 +4,10 @@ const db = require('../db');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
 if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    // Never run production with a publicly known signing key.
+    throw new Error('JWT_SECRET is required in production.');
+  }
   console.warn('[warn] JWT_SECRET not set — using insecure dev default. Set it in .env');
 }
 
@@ -23,8 +27,12 @@ async function authRequiredAsync(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Authentication required' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = await db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id);
+    const user = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version FROM users WHERE id = ?').get(payload.id);
     if (!user) return res.status(401).json({ error: 'User no longer exists' });
+    // Tokens issued before a password reset carry an older version: reject them.
+    if ((payload.tv || 0) !== (user.token_version || 0)) {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
     req.user = user;
     next();
   } catch (e) {
@@ -43,7 +51,8 @@ async function optionalAuthAsync(req, res, next) {
   if (h.startsWith('Bearer ')) {
     try {
       const payload = jwt.verify(h.slice(7), JWT_SECRET);
-      req.user = (await db.prepare('SELECT id, name, email, phone, role, email_verified FROM users WHERE id = ?').get(payload.id)) || undefined;
+      const u = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version FROM users WHERE id = ?').get(payload.id);
+      req.user = (u && (payload.tv || 0) === (u.token_version || 0)) ? u : undefined;
     } catch (e) { /* stay a guest */ }
   }
   next();
@@ -58,6 +67,14 @@ function requireRole(...roles) {
     }
     next();
   };
+}
+
+// Money-moving actions (accept a quote, pay) require a verified email.
+function requireVerifiedEmail(req, res, next) {
+  if (!req.user || !req.user.email_verified) {
+    return res.status(403).json({ error: 'Please verify your email first. Check your inbox or request a new link.', code: 'EMAIL_NOT_VERIFIED' });
+  }
+  next();
 }
 
 // --- tiny validation helpers (keep them strict but simple) ---
@@ -84,7 +101,7 @@ function failIfErrors(res, errors) {
 }
 
 function signToken(user) {
-  return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+  return jwt.sign({ id: user.id, role: user.role, tv: user.token_version || 0 }, JWT_SECRET, { expiresIn: '7d' });
 }
 
-module.exports = { ah, authRequired, optionalAuth, requireRole, isEmail, isPhone, isNonEmpty, isInt, failIfErrors, signToken };
+module.exports = { ah, authRequired, optionalAuth, requireRole, requireVerifiedEmail, isEmail, isPhone, isNonEmpty, isInt, failIfErrors, signToken };

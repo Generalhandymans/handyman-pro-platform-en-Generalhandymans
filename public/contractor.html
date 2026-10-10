@@ -253,7 +253,6 @@
       body.innerHTML = `
         ${offerBox}
         <dl class="kv">
-          <dt>Customer price</dt><dd>${HP.fmtMoney(p.customer_price_cents)}</dd>
           <dt>Your payout</dt><dd><strong>${HP.fmtMoney(p.contractor_cost_cents)}</strong></dd>
           <dt>Current stage</dt><dd>${HP.esc(HP.PROJECT_STAGE[p.stage] || p.stage)}</dd>
         </dl>

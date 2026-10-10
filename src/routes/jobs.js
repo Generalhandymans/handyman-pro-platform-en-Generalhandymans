@@ -76,37 +76,59 @@ router.post('/', ah(async (req, res) => {
     claimToken
   );
   const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(info.lastInsertRowid);
-  refreshLeadScore(job.id);
+  await refreshLeadScore(job.id);
+  geocodeJob(job); // fire-and-forget; no-op unless GEOCODE_API_KEY is set
   res.status(201).json({ ...publicJob(await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id)), claim_token: claimToken });
 }));
 
+function geocodeJob(job) {
+  const geo = require('../services/geocode');
+  if (!geo.enabled()) return;
+  const addr = [job.address, job.city, job.state, job.zip].filter(Boolean).join(', ');
+  geo.geocode(addr).then(async (pt) => {
+    if (pt) await db.prepare('UPDATE job_requests SET lat = ?, lng = ? WHERE id = ?').run(pt.lat, pt.lng, job.id);
+  }).catch(() => {});
+}
+
+// ---- Link a guest request to the logged-in customer's account ----
+// Requires the claim token the guest received at creation (never links by email:
+// that would let anyone take over someone else's request).
+router.post('/:id/claim', authRequired, requireRole('customer'), ah(async (req, res) => {
+  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(req.params.id);
+  const token = String((req.body || {}).claim_token || '');
+  const real = job && job.claim_token ? String(job.claim_token) : '';
+  const ok = real && token.length === real.length &&
+    crypto.timingSafeEqual(Buffer.from(token), Buffer.from(real));
+  if (!ok) return res.status(403).json({ error: 'Invalid claim link.' });
+  if (job.customer_id && job.customer_id !== req.user.id) {
+    return res.status(409).json({ error: 'This request already belongs to another account.' });
+  }
+  await db.prepare('UPDATE job_requests SET customer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(req.user.id, job.id);
+  res.json(publicJob(await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id)));
+}));
+
 // ---- Upload photos for a request (runs the vision hook, optimizes images) ----
-router.post('/:id/photos', upload.array('photos', 6), ah(async (req, res) => {
-  const job = await loadJob(req, res);
-  if (!job) return;
+// Authorize BEFORE multer touches the disk: unauthorized callers cannot fill it.
+async function preflightJob(req, res, next) {
+  try {
+    const job = await loadJob(req, res);
+    if (!job) return;
+    req.job = job;
+    next();
+  } catch (e) { next(e); }
+}
+router.post('/:id/photos', preflightJob, upload.array('photos', 6), ah(async (req, res) => {
+  const job = req.job;
   if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No photos received.' });
 
   const analyzed = await vision.analyzePhotos(req.files.map(f => ({
     path: f.path, mime: f.mimetype, filename: f.filename, originalName: f.originalname,
   })));
 
-  const storage = require('../services/storage');
-  const useS3 = storage.isConfigured();
+  const { persist } = require('../services/photostore');
   const saved = [];
   for (const f of req.files) {
-    const opt = await photoSvc.optimize(f.path, f.mimetype);
-    let storageKey = null;
-    let storageProvider = 'local';
-    let filename = f.filename;
-    if (useS3) {
-      // Upload the optimized file to object storage; keep the local temp copy only briefly.
-      const ext = (f.originalname.split('.').pop() || 'jpg');
-      storageKey = storage.objectKey({ kind: 'request', extension: ext });
-      await storage.putObject({ key: storageKey, filePath: opt.path || f.path, contentType: f.mimetype });
-      storageProvider = 's3';
-      filename = storageKey; // photos.filename doubles as the lookup key
-      try { require('fs').unlinkSync(f.path); } catch (e) { /* best effort */ }
-    }
+    const { opt, filename, storageKey, storageProvider } = await persist(f, 'request');
     const info = await db.prepare(
       `INSERT INTO photos (job_request_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by, storage_key, storage_provider)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
@@ -114,7 +136,7 @@ router.post('/:id/photos', upload.array('photos', 6), ah(async (req, res) => {
       JSON.stringify(analyzed), req.user ? req.user.id : null, storageKey, storageProvider);
     saved.push(await db.prepare('SELECT * FROM photos WHERE id = ?').get(info.lastInsertRowid));
   }
-  touchInteraction(job.id, 'photos_uploaded', `${saved.length} photo(s)${photoSvc.available() ? ' (optimized)' : ''}`);
+  await touchInteraction(job.id, 'photos_uploaded', `${saved.length} photo(s)${photoSvc.available() ? ' (optimized)' : ''}`);
   res.status(201).json({ photos: saved, vision: { mode: analyzed.mode, observations: analyzed.observations }, optimized: photoSvc.available() });
 }));
 
@@ -127,7 +149,7 @@ router.post('/:id/estimate', ah(async (req, res) => {
     await db.prepare('UPDATE job_requests SET scope_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
       .run(JSON.stringify(scope), job.id);
   }
-  const photoCount = await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id).c;
+  const photoCount = Number((await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id)).c) || 0;
 
   let result;
   try {
@@ -160,7 +182,7 @@ router.post('/:id/estimate', ah(async (req, res) => {
     JSON.stringify(result.line_items), JSON.stringify(result.missing),
     JSON.stringify(result.risks), result.confidence, JSON.stringify(result.factors), result.engine_version);
   await db.prepare(`UPDATE job_requests SET status = 'ai_analyzed', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(job.id);
-  touchInteraction(job.id, 'estimate_requested', `engine v${result.engine_version}`);
+  await touchInteraction(job.id, 'estimate_requested', `engine v${result.engine_version}`);
   res.status(201).json({ id: info.lastInsertRowid, job_request_id: job.id, ...result });
 }));
 

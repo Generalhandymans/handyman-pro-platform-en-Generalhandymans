@@ -17,6 +17,16 @@ const mailer = require('./src/services/mailer');
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
+// Behind Render/Docker/any reverse proxy: trust ONE hop so req.ip is the real
+// client (rate limits are per visitor, and terms-acceptance IPs are not forgeable
+// through a raw x-forwarded-for header).
+app.set('trust proxy', 1);
+
+// A rejected promise nobody awaited must be LOGGED, never silently kill the server.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason && reason.stack ? reason.stack : reason);
+});
+
 // ---- Phase 1 hardening: security headers + structured logging ----
 // NOTE: CSP is intentionally OFF for now — the portals use inline <script>
 // tags, so script-src 'self' would break the app. Full CSP requires moving
@@ -36,7 +46,9 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     const ms = Number(process.hrtime.bigint() - started) / 1e6;
     logger.info({
-      method: req.method, path: req.originalUrl,
+      // No query string (claim tokens, unsubscribe tokens) and no photo capability tokens in logs.
+      method: req.method,
+      path: req.originalUrl.split('?')[0].replace(/^\/api\/photos\/.*/, '/api/photos/[redacted]'),
       status: res.statusCode, duration_ms: Math.round(ms * 10) / 10,
     }, 'http_request');
   });
@@ -46,7 +58,14 @@ app.use((req, res, next) => {
 // ---- First boot: NEVER auto-seed demo data into a fresh database ----
 // Production path: create the real admin from ADMIN_EMAIL + ADMIN_PASSWORD.
 // Demo path: set SEED_DEMO=true to load the demo dataset explicitly.
-(async () => {
+const boot = (async () => {
+// Production guard: without Stripe, accepting a quote would mark the deposit as
+// paid with no money collected. Opt out explicitly only for a manual-payments pilot.
+if (process.env.NODE_ENV === 'production' && !process.env.STRIPE_SECRET_KEY && process.env.ALLOW_MANUAL_PAYMENTS !== 'true') {
+  throw new Error('STRIPE_SECRET_KEY is required in production (set ALLOW_MANUAL_PAYMENTS=true only for a manual-payments pilot).');
+}
+// PostgreSQL: apply pending schema migrations before serving traffic.
+await require('./src/db/migrate')();
 try {
   const users = (await db.prepare('SELECT COUNT(*) AS c FROM users').get()).c;
   if (users === 0) {
@@ -74,6 +93,8 @@ try {
   console.error('[boot] First-boot setup failed:', e.message);
 }
 })();
+// A failed boot (bad config, failed migration) must stop the process loudly.
+boot.catch((e) => { console.error('[boot] FATAL:', e.message); process.exit(1); });
 
 // Stripe webhooks need the RAW body for signature verification: register the
 // raw parser for that exact path BEFORE the JSON parser below.
@@ -83,8 +104,9 @@ app.use(express.urlencoded({ extended: true }));
 
 // ---- Rate limiting (PRO 100%): abuse protection on public endpoints ----
 // Auth endpoints: 20 attempts / 15 min per IP. Job intake: 30 / hour per IP.
+// AUTH_RATE_LIMIT_MAX lets the test suite raise the cap; production default stays 20.
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, max: 20,
+  windowMs: 15 * 60 * 1000, max: Number(process.env.AUTH_RATE_LIMIT_MAX) || 20,
   standardHeaders: 'draft-7', legacyHeaders: false,
   message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
 });
@@ -118,13 +140,20 @@ app.get('/api/photos/:filename', async (req, res) => {
     const abs = path.join(__dirname, 'uploads', row.filename);
     if (!fs.existsSync(abs)) return res.status(404).json({ error: 'Photo file missing.' });
     res.type(row.mime || 'image/jpeg');
+    res.set('Cache-Control', 'private, max-age=3600');
+    res.set('X-Robots-Tag', 'noindex');
     res.sendFile(abs);
   } catch (e) {
     res.status(500).json({ error: 'Could not load photo.' });
   }
 });
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  try {
+    await db.prepare('SELECT 1 AS ok').get();
+  } catch (e) {
+    return res.status(503).json({ ok: false, error: 'database unavailable' });
+  }
   res.json({ ok: true, service: 'general-handyman-solutions', mail_provider: mailer.activeProvider(), from: `${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>` });
 });
 
@@ -132,6 +161,29 @@ app.get('/api/health', (req, res) => {
 app.get('/api/terms-versions', (req, res) => {
   const { CLIENT_TERMS_VERSION, CONTRACTOR_TERMS_VERSION } = require('./src/services/terms');
   res.json({ client: CLIENT_TERMS_VERSION, contractor: CONTRACTOR_TERMS_VERSION });
+});
+
+// ---- Public: unsubscribe from promotional email ----
+// GET shows a confirmation button (mail scanners prefetch links; a GET must not
+// unsubscribe anyone). POST performs it — also the target of RFC 8058 one-click.
+const unsub = require('./src/services/unsubscribe');
+function unsubParams(req) {
+  const email = unsub.decodeEmail(req.query.e);
+  return { email, ok: !!email && unsub.verify(email, req.query.t) };
+}
+app.get('/api/unsubscribe', (req, res) => {
+  const { email, ok } = unsubParams(req);
+  res.type('html').send(ok
+    ? `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><body style="font-family:Arial,sans-serif;max-width:480px;margin:48px auto;padding:0 16px;">
+<h2>Unsubscribe</h2><p>Stop promotional emails to <strong>${email.replace(/</g, '&lt;')}</strong>? You will still get messages about your projects and account.</p>
+<form method="POST" action="/api/unsubscribe?e=${encodeURIComponent(req.query.e)}&t=${encodeURIComponent(req.query.t)}"><button style="padding:10px 18px;font-size:16px;">Yes, unsubscribe me</button></form></body>`
+    : '<!doctype html><body style="font-family:Arial,sans-serif;max-width:480px;margin:48px auto;"><h2>Invalid link</h2><p>This unsubscribe link is not valid.</p></body>');
+});
+app.post('/api/unsubscribe', async (req, res) => {
+  const { email, ok } = unsubParams(req);
+  if (!ok) return res.status(400).type('html').send('<!doctype html><body style="font-family:Arial,sans-serif;max-width:480px;margin:48px auto;"><h2>Invalid link</h2></body>');
+  await unsub.suppress(email, 'unsubscribed');
+  res.type('html').send('<!doctype html><body style="font-family:Arial,sans-serif;max-width:480px;margin:48px auto;"><h2>You are unsubscribed</h2><p>You will no longer receive promotional emails.</p></body>');
 });
 
 // ---- API routes ----
@@ -176,10 +228,10 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   res.status(500).json({ error: 'Something went wrong on our end. Please try again.' });
 });
 
-app.listen(PORT, () => {
+boot.then(() => app.listen(PORT, () => {
   console.log(`General Handyman Solutions listening on http://localhost:${PORT}`);
   console.log(`Mail: provider=${mailer.activeProvider()} from="${mailer.FROM_NAME} <${mailer.FROM_EMAIL}>"`);
   if (mailer.activeProvider() === 'console') {
     console.log('Mail is in LOG mode: campaigns are recorded in email_log, nothing is really sent. See README "Business email setup".');
   }
-});
+})).catch(() => { /* boot failure already logged and exiting */ });

@@ -1,4 +1,4 @@
-# Handyman Pro — portable container (Fly.io, Railway, any Docker host)
+# Helpman — portable container (Fly.io, Railway, any Docker host)
 FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./

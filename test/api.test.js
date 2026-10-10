@@ -16,6 +16,7 @@ for (const f of [TEST_DB, TEST_DB + '-shm', TEST_DB + '-wal']) {
 }
 process.env.DB_PATH = TEST_DB;
 process.env.PORT = '3457';
+process.env.AUTH_RATE_LIMIT_MAX = '1000'; // suite makes >20 auth calls from one IP
 process.env.JWT_SECRET = 'test-secret-for-automated-tests-only';
 
 const db = require('../src/db');
@@ -365,10 +366,18 @@ test('rate limiting headers present on auth endpoints', async () => {
   const r = await api('POST', '/api/auth/login', { email: 'admin@test.local', password: 'wrong' });
   assert.equal(r.status, 401);
   const rl = r.headers.get('ratelimit'); // draft-7 combined header
-  assert.ok(rl && rl.includes('limit=20'), 'rate-limit headers present');
+  const expectedLimit = process.env.AUTH_RATE_LIMIT_MAX || '20';
+  assert.ok(rl && rl.includes('limit=' + expectedLimit), 'rate-limit headers present');
 });
 
 test('project completion notifies customer', async () => {
+  // Gate: every milestone must be approved by the customer before completion.
+  const pd = await api('GET', `/api/projects/${projectId}`, undefined, adminToken);
+  for (const m of pd.data.milestones.filter(x => x.customer_approval !== 'approved')) {
+    await api('POST', `/api/projects/${projectId}/milestones/${m.id}/complete`, {}, contToken);
+    const ap = await api('POST', `/api/projects/${projectId}/milestones/${m.id}/approve`, { approved: true }, custToken);
+    assert.equal(ap.status, 200);
+  }
   const s = await api('PATCH', `/api/projects/${projectId}/stage`, { stage: 'completed' }, adminToken);
   assert.equal(s.status, 200);
   const n = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%complete%' ORDER BY id DESC").get();
@@ -391,6 +400,177 @@ test('contractor recommendations: admin gets ranked matches, others refused', as
   assert.equal(c.status, 403);
   const anon = await api('GET', `/api/projects/${projectId}/recommendations`);
   assert.equal(anon.status, 401);
+});
+
+// ===================== REGRESSION TESTS (audit hardening) =====================
+// Helper: create + send + accept a fresh quote -> returns { quoteId, projectId }.
+async function freshProject(price = 50000, cost = 30000) {
+  const q = await api('POST', '/api/quotes', { job_request_id: jobId, customer_price_cents: price, contractor_cost_cents: cost, deposit_pct: 30 }, adminToken);
+  await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+  const r = await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: true, terms_accepted: true }, custToken);
+  return { quoteId: q.data.id, projectId: r.data.project_id, status: r.status };
+}
+
+test('REGRESSION: project API never leaks margin or contractor email (role-aware)', async () => {
+  const list = await api('GET', '/api/projects', undefined, custToken);
+  assert.equal(list.status, 200);
+  assert.ok(list.data.length > 0, 'project list is not empty');
+  assert.ok(list.data.every(p => p.id), 'list items are real objects, not {}');
+  const detail = await api('GET', `/api/projects/${projectId}`, undefined, custToken);
+  assert.equal(detail.data.contractor_cost_cents, undefined, 'customer must not see contractor cost');
+  assert.ok(!JSON.stringify(detail.data).includes('cont@test.local'), 'customer must not see contractor email');
+  const asContractor = await api('GET', `/api/projects/${projectId}`, undefined, contToken);
+  assert.equal(asContractor.data.customer_price_cents, undefined, 'contractor must not see customer price');
+  assert.equal(asContractor.data.payments, undefined, 'contractor must not see payments');
+  assert.ok(asContractor.data.contractor_cost_cents > 0, 'contractor still sees their own budget');
+  const asAdmin = await api('GET', `/api/projects/${projectId}`, undefined, adminToken);
+  assert.ok(asAdmin.data.customer_price_cents > 0 && asAdmin.data.contractor_cost_cents > 0, 'admin sees both');
+  const pays = await api('GET', '/api/payments', undefined, contToken);
+  assert.deepEqual(pays.data, [], 'contractor sees no payments');
+});
+
+test('REGRESSION: admin KPI overview returns real numbers', async () => {
+  const r = await api('GET', '/api/reports/overview', undefined, adminToken);
+  assert.equal(r.status, 200);
+  for (const k of ['jobs', 'quotes_sent', 'quotes_accepted', 'projects_completed', 'revenue_cents', 'cost_cents', 'avg_ticket_cents']) {
+    assert.equal(typeof r.data[k], 'number', `${k} is a number`);
+  }
+  assert.ok(r.data.jobs >= 1, 'jobs counted');
+  assert.ok(r.data.revenue_cents > 0, 'revenue counted from completed projects');
+});
+
+test('REGRESSION: accepting the same quote twice at once creates ONE project', async () => {
+  const q = await api('POST', '/api/quotes', { job_request_id: jobId, customer_price_cents: 70000, contractor_cost_cents: 40000, deposit_pct: 30 }, adminToken);
+  await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+  const body = { accept: true, terms_accepted: true };
+  const [a, b] = await Promise.all([
+    api('POST', `/api/quotes/${q.data.id}/respond`, body, custToken),
+    api('POST', `/api/quotes/${q.data.id}/respond`, body, custToken),
+  ]);
+  assert.deepEqual([a.status, b.status].sort(), [200, 400]);
+  const n = (await db.prepare('SELECT COUNT(*) c FROM projects WHERE quote_id = ?').get(q.data.id)).c;
+  assert.equal(Number(n), 1, 'exactly one project for the quote');
+});
+
+test('REGRESSION: guest request can be claimed by an account with its claim token', async () => {
+  const g = await api('POST', '/api/jobs', {
+    name: 'Guest Person', phone: '555-777-8888', email: 'guest@test.local',
+    address: '1 Main St', service_type: 'painting', description: 'Paint one bedroom, walls and ceiling please.',
+  });
+  assert.equal(g.status, 201);
+  const gid = g.data.id, token = g.data.claim_token;
+  const bad = await api('POST', `/api/jobs/${gid}/claim`, { claim_token: 'x'.repeat(32) }, custToken);
+  assert.equal(bad.status, 403);
+  const anon = await api('POST', `/api/jobs/${gid}/claim`, { claim_token: token });
+  assert.equal(anon.status, 401);
+  const ok = await api('POST', `/api/jobs/${gid}/claim`, { claim_token: token }, custToken);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.customer_id, custId);
+  const mine = await api('GET', `/api/jobs/${gid}`, undefined, custToken);
+  assert.equal(mine.status, 200, 'owner can now read the request with their account');
+  // a different customer cannot take it over
+  const other = await api('POST', '/api/auth/signup/customer', { name: 'Other Cust', email: 'other@test.local', phone: '555-222-3333', password: 'Customer123!' });
+  const steal = await api('POST', `/api/jobs/${gid}/claim`, { claim_token: token }, other.data.token);
+  assert.equal(steal.status, 409);
+});
+
+test('REGRESSION: unverified email cannot accept a quote', async () => {
+  const k = await api('POST', '/api/auth/signup/customer', { name: 'Unverified', email: 'unv@test.local', phone: '555-444-5555', password: 'Customer123!' });
+  assert.equal(k.status, 201);
+  const job = await api('POST', '/api/jobs', {
+    name: 'Unverified', phone: '555-444-5555', email: 'unv@test.local', address: '2 Main St',
+    service_type: 'painting', description: 'Paint the living room walls, two coats.',
+  }, k.data.token);
+  const q = await api('POST', '/api/quotes', { job_request_id: job.data.id, customer_price_cents: 40000, contractor_cost_cents: 25000, deposit_pct: 30 }, adminToken);
+  await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+  const r = await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: true, terms_accepted: true }, k.data.token);
+  assert.equal(r.status, 403);
+  assert.equal(r.data.code, 'EMAIL_NOT_VERIFIED');
+});
+
+test('REGRESSION: contractor cannot be offered a job before the deposit is in', async () => {
+  const fp = await freshProject();
+  assert.ok(fp.projectId, 'project created');
+  const job = await db.prepare('SELECT job_request_id FROM projects WHERE id = ?').get(fp.projectId);
+  await db.prepare("UPDATE job_requests SET status = 'quote_sent' WHERE id = ?").run(job.job_request_id);
+  const blocked = await api('POST', `/api/projects/${fp.projectId}/assign`, { contractor_id: contractorId }, adminToken);
+  assert.equal(blocked.status, 409);
+  // recording the deposit manually moves the pipeline forward and unblocks assignment
+  const rec = await api('POST', '/api/payments', { project_id: fp.projectId, kind: 'deposit', amount_cents: 15000 }, adminToken);
+  assert.equal(rec.status, 201);
+  const ok = await api('POST', `/api/projects/${fp.projectId}/assign`, { contractor_id: contractorId }, adminToken);
+  assert.equal(ok.status, 200);
+});
+
+test('REGRESSION: project cannot complete without approved milestones (admin force is audited)', async () => {
+  const fp = await freshProject();
+  const blocked = await api('PATCH', `/api/projects/${fp.projectId}/stage`, { stage: 'completed' }, adminToken);
+  assert.equal(blocked.status, 409);
+  const forced = await api('PATCH', `/api/projects/${fp.projectId}/stage`, { stage: 'completed', force: true }, adminToken);
+  assert.equal(forced.status, 200);
+  const audit = await db.prepare("SELECT id FROM admin_audit WHERE action = 'project.force_completed' AND entity_id = ?").get(fp.projectId);
+  assert.ok(audit, 'forced completion is in the audit trail');
+});
+
+test('REGRESSION: messages that exchange contact details are flagged for support only', async () => {
+  const m = await api('POST', `/api/threads/${csThread}/messages`, { body: 'Call me at 707-555-0123 or mail me@example.com' }, custToken);
+  assert.equal(m.status, 201);
+  const asAdmin = await api('GET', `/api/threads/${csThread}/messages`, undefined, adminToken);
+  const flagged = asAdmin.data.find(x => x.id === m.data.id);
+  assert.equal(flagged.flagged, 1);
+  const asCust = await api('GET', `/api/threads/${csThread}/messages`, undefined, custToken);
+  const seen = asCust.data.find(x => x.id === m.data.id);
+  assert.equal(seen.flagged, undefined, 'customer does not see the flag');
+});
+
+test('REGRESSION: password reset revokes tokens issued before it', async () => {
+  const k = await api('POST', '/api/auth/signup/customer', { name: 'Reset Me', email: 'reset@test.local', phone: '555-666-7777', password: 'Customer123!' });
+  const oldToken = k.data.token;
+  assert.equal((await api('GET', '/api/auth/me', undefined, oldToken)).status, 200);
+  await api('POST', '/api/auth/forgot', { email: 'reset@test.local' });
+  const u = await db.prepare('SELECT reset_token FROM users WHERE email = ?').get('reset@test.local');
+  const rs = await api('POST', '/api/auth/reset', { token: u.reset_token, password: 'NewPassword123!' });
+  assert.equal(rs.status, 200);
+  assert.equal((await api('GET', '/api/auth/me', undefined, oldToken)).status, 401, 'old session is revoked');
+  const login = await api('POST', '/api/auth/login', { email: 'reset@test.local', password: 'NewPassword123!' });
+  assert.equal(login.status, 200);
+  assert.equal((await api('GET', '/api/auth/me', undefined, login.data.token)).status, 200);
+});
+
+test('REGRESSION: unauthorized photo upload writes nothing to disk', async () => {
+  const dir = path.join(__dirname, '..', 'uploads');
+  const count = () => (fs.existsSync(dir) ? fs.readdirSync(dir).length : 0);
+  const before = count();
+  const form = new FormData();
+  form.append('photos', new Blob([Buffer.from('fake image bytes')], { type: 'image/jpeg' }), 'x.jpg');
+  const res = await fetch(`${BASE}/api/jobs/${jobId}/photos`, { method: 'POST', body: form }); // no token, no claim
+  assert.equal(res.status, 403);
+  assert.equal(count(), before, 'no file was written for an unauthorized caller');
+});
+
+test('REGRESSION: unsubscribe links are signed; opt-outs are honored', async () => {
+  const unsub = require('../src/services/unsubscribe');
+  const link = unsub.link('Optout@Test.local').replace(/^https?:\/\/[^/]+/, '');
+  const page = await fetch(BASE + link);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Yes, unsubscribe me/);
+  const forged = await fetch(BASE + link.replace(/t=[a-f0-9]+/, 't=' + '0'.repeat(64)), { method: 'POST' });
+  assert.equal(forged.status, 400);
+  const done = await fetch(BASE + link, { method: 'POST' });
+  assert.equal(done.status, 200);
+  assert.equal(await unsub.isSuppressed('optout@test.local'), true);
+  const crm = require('../src/services/crm');
+  assert.ok(Array.isArray(await crm.segmentMembers('all_customers')), 'segments resolve to an array');
+});
+
+test('REGRESSION: health check touches the database; stripe webhook refuses when off', async () => {
+  const h = await api('GET', '/api/health');
+  assert.equal(h.status, 200);
+  assert.equal(h.data.ok, true);
+  const w = await api('POST', '/api/payments/webhook', { x: 1 });
+  assert.equal(w.status, 503);
+  const fi = await api('POST', '/api/payments/final-intent', { project_id: projectId }, custToken);
+  assert.equal(fi.status, 503, 'final-intent refuses when Stripe is not configured');
 });
 
 after(async () => {

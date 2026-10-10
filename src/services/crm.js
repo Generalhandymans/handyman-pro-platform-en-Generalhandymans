@@ -24,7 +24,7 @@ async function computeLeadScore(job) {
   if (job.phone) s += 8;
   if (job.address) s += 8;
   if (job.description && job.description.trim().length > 50) s += 8;
-  const photos = await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id).c;
+  const photos = Number((await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id)).c) || 0;
   if (photos > 0) s += 8;                       // 40 max for completeness
   if (job.urgency === 'urgent') s += 10;        // urgency signal
   const ageDays = (Date.now() - new Date(job.created_at + 'Z').getTime()) / 86400000;
@@ -152,53 +152,53 @@ async function retentionAtRisk(c) {
 async function segmentMembers(segment) {
   switch (segment) {
     case 'all_customers':
-      return await db.prepare(
+      return (await db.prepare(
         `SELECT DISTINCT email AS email, name FROM job_requests WHERE email IS NOT NULL AND email != ''`
-      ).all().map(r => ({ ...r, context: {} }));
+      ).all()).map(r => ({ ...r, context: {} }));
 
     case 'past_customers':
-      return await db.prepare(
+      return (await db.prepare(
         `SELECT DISTINCT j.email AS email, j.name AS name FROM job_requests j
          JOIN projects p ON p.job_request_id = j.id
          WHERE p.stage = 'completed' AND j.email IS NOT NULL AND j.email != ''`
-      ).all().map(r => ({ ...r, context: {} }));
+      ).all()).map(r => ({ ...r, context: {} }));
 
     case 'inactive_clients_90d': {
       // Real customers (completed project or accepted quote) with no activity in 90+ days.
-      return await db.prepare(
+      return (await db.prepare(
         `SELECT DISTINCT j.email AS email, j.name AS name FROM job_requests j
          WHERE j.email IS NOT NULL AND j.email != ''
            AND j.updated_at < ${dt('-90 days')}
            AND (EXISTS (SELECT 1 FROM projects p WHERE p.job_request_id = j.id AND p.stage = 'completed')
                 OR EXISTS (SELECT 1 FROM quotes q WHERE q.job_request_id = j.id AND q.status = 'accepted'))`
-      ).all().map(r => ({ ...r, context: {} }));
+      ).all()).map(r => ({ ...r, context: {} }));
     }
 
     case 'lost_leads':
-      return await db.prepare(
+      return (await db.prepare(
         `SELECT DISTINCT j.email AS email, j.name AS name, j.service_type AS service_type
          FROM job_requests j
          WHERE j.email IS NOT NULL AND j.email != ''
            AND (j.status = 'lost'
                 OR EXISTS (SELECT 1 FROM quotes q WHERE q.job_request_id = j.id AND q.status IN ('rejected','expired')))`
-      ).all().map(r => ({ email: r.email, name: r.name, context: { service_type: r.service_type } }));
+      ).all()).map(r => ({ email: r.email, name: r.name, context: { service_type: r.service_type } }));
 
     case 'all_contractors':
-      return await db.prepare(
+      return (await db.prepare(
         `SELECT u.email AS email, u.name AS name FROM contractors c JOIN users u ON u.id = c.user_id`
-      ).all().map(r => ({ ...r, context: {} }));
+      ).all()).map(r => ({ ...r, context: {} }));
 
     case 'pending_contractors':
-      return await db.prepare(
+      return (await db.prepare(
         `SELECT u.email AS email, u.name AS name FROM contractors c JOIN users u ON u.id = c.user_id
          WHERE c.status = 'pending'`
-      ).all().map(r => ({ ...r, context: {} }));
+      ).all()).map(r => ({ ...r, context: {} }));
 
     case 'top_contractors':
-      return await db.prepare(
+      return (await db.prepare(
         `SELECT u.email AS email, u.name AS name FROM contractors c JOIN users u ON u.id = c.user_id
          WHERE c.status = 'active' AND c.rating_avg >= 4.5`
-      ).all().map(r => ({ ...r, context: {} }));
+      ).all()).map(r => ({ ...r, context: {} }));
 
     default:
       throw new Error('Unknown segment: ' + segment);
@@ -215,10 +215,10 @@ async function recruitmentGaps() {
   ).all();
   const gaps = [];
   for (const o of open) {
-    const supply = await db.prepare(
+    const supply = Number((await db.prepare(
       `SELECT COUNT(*) c FROM contractors
        WHERE status = 'active' AND (specialties LIKE '%' || ? || '%') AND (city = ? OR ? = '')`
-    ).get(o.service_type, o.city, o.city).c;
+    ).get(o.service_type, o.city, o.city)).c) || 0;
     if (supply === 0) gaps.push({ ...o, active_contractors: 0 });
   }
   return gaps;
