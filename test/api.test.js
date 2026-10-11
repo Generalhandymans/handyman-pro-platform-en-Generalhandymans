@@ -715,6 +715,176 @@ test('REGRESSION: completion sheet needs approved milestones, is signed once by 
   assert.ok(audit, 'sign-off is in the audit trail');
 });
 
+test('REGRESSION: contractor payouts are created on completion, guarded by the customer balance, paid once, and role-scoped', async () => {
+  const complete = async (pid) => api('PATCH', `/api/projects/${pid}/stage`, { stage: 'completed', force: true }, adminToken);
+  const rowFor = async (pid) => (await api('GET', '/api/payables', undefined, adminToken)).data.payables.find(r => r.project_id === pid);
+
+  // Project A: the customer still owes money
+  const A = await freshProject();
+  assert.equal((await api('POST', `/api/projects/${A.projectId}/assign`, { contractor_id: contractorId }, adminToken)).status, 200);
+  assert.equal((await complete(A.projectId)).status, 200);
+  const a = await rowFor(A.projectId);
+  assert.equal(a.payable_cents, 30000);
+  assert.equal(a.status, 'pending');
+  assert.equal(a.customer_balance_cents, 35000);
+  const before = (await db.prepare('SELECT jobs_completed AS n FROM contractors WHERE id = ?').get(contractorId)).n;
+  assert.equal((await complete(A.projectId)).status, 200, 'completing again is harmless');
+  assert.equal((await db.prepare('SELECT jobs_completed AS n FROM contractors WHERE id = ?').get(contractorId)).n, before, 'the job is not counted twice');
+  assert.equal((await api('GET', '/api/payables', undefined, adminToken)).data.payables.filter(r => r.project_id === A.projectId).length, 1);
+
+  // roles
+  assert.equal((await api('GET', '/api/payables', undefined, contToken)).status, 403);
+  assert.equal((await api('GET', '/api/payables', undefined, custToken)).status, 403);
+  assert.equal((await api('GET', '/api/payables/mine', undefined, custToken)).status, 403);
+  const mine = await api('GET', '/api/payables/mine', undefined, contToken);
+  assert.ok(mine.data.payables.some(r => r.project_id === A.projectId));
+  assert.ok(mine.data.totals.pending_cents >= 30000);
+
+  // guarded payment
+  assert.equal((await api('POST', `/api/payables/${a.id}/pay`, {}, adminToken)).status, 422, 'method required');
+  const blocked = await api('POST', `/api/payables/${a.id}/pay`, { method: 'ach' }, adminToken);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.data.customer_balance_cents, 35000);
+  assert.equal((await api('POST', `/api/payables/${a.id}/approve`, {}, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/payables/${a.id}/approve`, {}, adminToken)).status, 409);
+  const forced = await api('POST', `/api/payables/${a.id}/pay`, { method: 'check', reference: '#1042', force: true }, adminToken);
+  assert.equal(forced.status, 200);
+  assert.equal(forced.data.status, 'paid');
+  assert.equal(forced.data.paid_method, 'check');
+  assert.equal((await api('POST', `/api/payables/${a.id}/pay`, { method: 'ach', force: true }, adminToken)).status, 409, 'cannot be paid twice');
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'payable.paid_forced' AND entity_id = ?").get(a.id));
+
+  // Project B: customer settled in full -> no override needed
+  const B = await freshProject();
+  await api('POST', `/api/projects/${B.projectId}/assign`, { contractor_id: contractorId }, adminToken);
+  assert.equal((await api('POST', '/api/payments', { project_id: B.projectId, kind: 'final', amount_cents: 35000 }, adminToken)).status, 201);
+  await complete(B.projectId);
+  const b = await rowFor(B.projectId);
+  assert.equal(b.customer_balance_cents, 0);
+  assert.equal((await api('POST', `/api/payables/${b.id}/pay`, { method: 'zelle' }, adminToken)).status, 200);
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'payable.paid' AND entity_id = ?").get(b.id));
+
+  // Project C: cancel needs a reason; a cancelled payable cannot be paid
+  const C = await freshProject();
+  await api('POST', `/api/projects/${C.projectId}/assign`, { contractor_id: contractorId }, adminToken);
+  await complete(C.projectId);
+  const c = await rowFor(C.projectId);
+  assert.equal((await api('POST', `/api/payables/${c.id}/cancel`, {}, adminToken)).status, 422);
+  assert.equal((await api('POST', `/api/payables/${c.id}/cancel`, { notes: 'Work redone by another contractor' }, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/payables/${c.id}/pay`, { method: 'ach', force: true }, adminToken)).status, 409);
+
+  // yearly totals + CSV
+  const year = new Date().getUTCFullYear();
+  const sum = await api('GET', `/api/payables/summary?year=${year}`, undefined, adminToken);
+  assert.equal(sum.status, 200);
+  assert.ok(sum.data.total_cents >= 60000, 'both paid payouts are counted');
+  const csv = await fetch(`${BASE}/api/payables/summary?format=csv&year=${year}`, { headers: { Authorization: 'Bearer ' + adminToken } });
+  assert.match(csv.headers.get('content-type'), /text\/csv/);
+  assert.match(await csv.text(), /^contractor_id,name,email,payouts,total_usd/);
+  assert.equal((await api('GET', '/api/payables/summary', undefined, custToken)).status, 403);
+  const gen = await api('POST', '/api/payables/generate', {}, adminToken);
+  assert.equal(gen.status, 200);
+  assert.equal(typeof gen.data.created, 'number');
+});
+
+test('REGRESSION: KPI dashboard endpoint returns every block with real numbers; admin only', async () => {
+  assert.equal((await api('GET', '/api/reports/kpis', undefined, custToken)).status, 403);
+  assert.equal((await api('GET', '/api/reports/kpis', undefined, contToken)).status, 403);
+  assert.equal((await api('GET', '/api/reports/kpis')).status, 401);
+  const k = await api('GET', '/api/reports/kpis?days=365', undefined, adminToken);
+  assert.equal(k.status, 200);
+  assert.equal(k.data.window.days, 365);
+  for (const block of ['funnel', 'speed', 'sources', 'money', 'receivables', 'payables', 'quality', 'capacity', 'not_tracked']) {
+    assert.ok(k.data[block] !== undefined, `${block} present`);
+  }
+  assert.ok(k.data.funnel.requests >= 1 && k.data.funnel.quoted >= 1 && k.data.funnel.accepted >= 1);
+  assert.ok(k.data.funnel.accepted <= k.data.funnel.quoted && k.data.funnel.quoted <= k.data.funnel.requests, 'funnel never grows');
+  assert.equal(typeof k.data.money.collected_cents, 'number');
+  assert.ok(k.data.money.avg_ticket_cents > 0);
+  assert.equal(typeof k.data.receivables.total_cents, 'number');
+  assert.equal(typeof k.data.payables.owed_cents, 'number');
+  assert.ok(k.data.capacity.active_projects >= 1);
+  assert.ok(Array.isArray(k.data.not_tracked) && k.data.not_tracked.length > 0, 'it says what it does NOT measure');
+  const bad = await api('GET', '/api/reports/kpis?days=banana', undefined, adminToken);
+  assert.equal(bad.data.window.days, 30, 'invalid window falls back to 30 days');
+});
+
+// Helper: invite a staff member, let them set a password, sign them in.
+async function makeStaff(role, email) {
+  const inv = await api('POST', '/api/staff', { name: `${role} Person`, email, staff_role: role }, adminToken);
+  assert.equal(inv.status, 201, `invite ${role}`);
+  const u = await db.prepare('SELECT reset_token FROM users WHERE email = ?').get(email);
+  assert.equal((await api('POST', '/api/auth/reset', { token: u.reset_token, password: 'StaffPass123!' })).status, 200);
+  const lg = await api('POST', '/api/auth/login', { email, password: 'StaffPass123!' });
+  assert.equal(lg.status, 200);
+  return { id: inv.data.id, token: lg.data.token };
+}
+
+test('REGRESSION: team roles — support, finance and dispatch each reach only their own area', async () => {
+  // only owners manage the team; invites are validated
+  assert.equal((await api('GET', '/api/staff', undefined, custToken)).status, 403);
+  assert.equal((await api('GET', '/api/staff', undefined, contToken)).status, 403);
+  assert.equal((await api('POST', '/api/staff', { name: 'X', email: 'x@test.local', staff_role: 'god' }, adminToken)).status, 422);
+  const sup = await makeStaff('support', 'sup@test.local');
+  const fin = await makeStaff('finance', 'fin@test.local');
+  const dis = await makeStaff('dispatch', 'dis@test.local');
+  assert.equal((await api('POST', '/api/staff', { name: 'Dup', email: 'sup@test.local', staff_role: 'support' }, adminToken)).status, 409);
+  assert.equal((await api('GET', '/api/staff', undefined, sup.token)).status, 403, 'support cannot manage the team');
+
+  const me = await api('GET', '/api/auth/me', undefined, sup.token);
+  assert.equal(me.data.staff_role, 'support');
+  assert.ok(me.data.permissions.includes('support') && !me.data.permissions.includes('finance'));
+  const owner = await api('GET', '/api/auth/me', undefined, adminToken);
+  assert.equal(owner.data.staff_role, 'owner', 'a pre-existing admin is an owner');
+
+  // ---- support: customers yes, money / dispatch / costs no ----
+  assert.equal((await api('GET', '/api/jobs', undefined, sup.token)).status, 200);
+  assert.equal((await api('GET', '/api/campaigns', undefined, sup.token)).status, 200);
+  assert.equal((await api('GET', '/api/reports/kpis', undefined, sup.token)).status, 403);
+  assert.equal((await api('GET', '/api/payables', undefined, sup.token)).status, 403);
+  assert.equal((await api('POST', '/api/payments', { project_id: projectId, kind: 'final', amount_cents: 100 }, sup.token)).status, 403);
+  assert.equal((await api('POST', '/api/payments/1/refund', {}, sup.token)).status, 403);
+  assert.equal((await api('POST', `/api/projects/${projectId}/assign`, { contractor_id: contractorId }, sup.token)).status, 403);
+  assert.equal((await api('PATCH', `/api/projects/${projectId}/stage`, { stage: 'review' }, sup.token)).status, 403);
+  assert.equal((await api('GET', '/api/crm/audit', undefined, sup.token)).status, 403, 'audit log is owner only');
+  const supView = await api('GET', `/api/projects/${projectId}`, undefined, sup.token);
+  assert.equal(supView.status, 200);
+  assert.equal(supView.data.contractor_cost_cents, undefined, 'support never sees the contractor cost');
+  assert.ok(supView.data.customer_price_cents > 0);
+
+  // ---- finance: money yes, operations / marketing no ----
+  assert.equal((await api('GET', '/api/reports/kpis', undefined, fin.token)).status, 200);
+  assert.equal((await api('GET', '/api/payables', undefined, fin.token)).status, 200);
+  assert.equal((await api('GET', '/api/jobs', undefined, fin.token)).status, 200);
+  assert.equal((await api('GET', '/api/campaigns', undefined, fin.token)).status, 403);
+  assert.equal((await api('POST', `/api/projects/${projectId}/assign`, { contractor_id: contractorId }, fin.token)).status, 403);
+  assert.ok((await api('GET', `/api/projects/${projectId}`, undefined, fin.token)).data.contractor_cost_cents > 0, 'finance sees costs');
+
+  // ---- dispatch: operations yes, money no ----
+  assert.equal((await api('GET', '/api/projects/schedule', undefined, dis.token)).status, 200);
+  assert.notEqual((await api('POST', `/api/projects/${projectId}/assign`, { contractor_id: 999999 }, dis.token)).status, 403, 'dispatch may assign (bad id fails for another reason)');
+  assert.equal((await api('GET', '/api/reports/kpis', undefined, dis.token)).status, 403);
+  assert.equal((await api('GET', '/api/payables', undefined, dis.token)).status, 403);
+  assert.equal((await api('POST', '/api/payments', { project_id: projectId, kind: 'final', amount_cents: 100 }, dis.token)).status, 403);
+  assert.ok((await api('GET', `/api/projects/${projectId}`, undefined, dis.token)).data.contractor_cost_cents > 0);
+
+  // ---- owner keeps everything ----
+  assert.equal((await api('GET', '/api/reports/kpis', undefined, adminToken)).status, 200);
+  assert.equal((await api('GET', '/api/crm/audit', undefined, adminToken)).status, 200);
+
+  // ---- role changes apply immediately; the last owner is protected ----
+  assert.equal((await api('PATCH', `/api/staff/${sup.id}`, { staff_role: 'finance' }, adminToken)).status, 200);
+  assert.equal((await api('GET', '/api/payables', undefined, sup.token)).status, 200, 'new role takes effect without signing in again');
+  assert.equal((await api('PATCH', `/api/staff/${owner.data.id}`, { staff_role: 'support' }, adminToken)).status, 409, 'cannot demote the last owner');
+  assert.equal((await api('POST', `/api/staff/${owner.data.id}/deactivate`, {}, adminToken)).status, 409, 'cannot deactivate yourself');
+
+  // ---- deactivation signs the person out everywhere ----
+  assert.equal((await api('POST', `/api/staff/${dis.id}/deactivate`, {}, adminToken)).status, 200);
+  assert.equal((await api('GET', '/api/auth/me', undefined, dis.token)).status, 401);
+  assert.equal((await api('POST', '/api/auth/login', { email: 'dis@test.local', password: 'StaffPass123!' })).status, 403);
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'staff.deactivated' AND entity_id = ?").get(dis.id));
+});
+
 after(async () => {
   // leave the server running for manual QA; tests used an isolated DB file.
   process.exit(0);

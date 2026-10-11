@@ -5,6 +5,7 @@
 // With STRIPE_SECRET_KEY set: customers pay deposits through Stripe
 // PaymentIntents; the webhook marks them paid automatically.
 const express = require('express');
+const { requireStaff, can } = require('../services/permissions');
 const db = require('../db');
 const { ah, authRequired, requireRole, requireVerifiedEmail, isInt, isNonEmpty, failIfErrors } = require('../middleware');
 const stripeSvc = require('../services/stripe');
@@ -149,7 +150,7 @@ router.post('/final-intent', authRequired, requireVerifiedEmail, ah(async (req, 
 }));
 
 // ---- Refund a PAID Stripe payment (admin). Omit amount_cents for a full refund. ----
-router.post('/:id/refund', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.post('/:id/refund', authRequired, requireStaff('finance'), ah(async (req, res) => {
   if (!stripeSvc.isEnabled()) return res.status(503).json({ error: 'Stripe is not configured.' });
   const pay = await db.prepare('SELECT * FROM payments WHERE id = ?').get(req.params.id);
   if (!pay) return res.status(404).json({ error: 'Payment not found.' });
@@ -192,7 +193,7 @@ router.get('/', authRequired, ah(async (req, res) => {
   res.json(rows);
 }));
 
-router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.post('/', authRequired, requireStaff('finance'), ah(async (req, res) => {
   const b = req.body || {};
   const errors = {};
   if (!await db.prepare('SELECT id FROM projects WHERE id = ?').get(b.project_id)) errors.project_id = 'Project not found.';

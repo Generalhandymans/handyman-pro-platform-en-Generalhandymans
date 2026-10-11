@@ -18,6 +18,7 @@
     <div class="tabs" role="tablist" id="portal-tabs">
       <button class="tab active" data-tab="profile" role="tab">Profile</button>
       <button class="tab" data-tab="jobs" role="tab">My jobs</button>
+      <button class="tab" data-tab="payouts" role="tab">Payouts</button>
       <button class="tab" data-tab="messages" role="tab">Messages</button>
     </div>
 
@@ -46,6 +47,14 @@
 
     <section class="tab-panel" id="panel-jobs" role="tabpanel">
       <div id="jobs-list"><p class="muted">Loading your jobs…</p></div>
+    </section>
+
+    <section class="tab-panel" id="panel-payouts" role="tabpanel">
+      <div class="card">
+        <h2 style="margin-top:0">My payouts</h2>
+        <p class="small muted">A payout is created when a job you worked on is completed. Support approves it and pays it by the due date.</p>
+        <div id="payouts-box"><p class="muted">Loading payouts…</p></div>
+      </div>
     </section>
 
     <section class="tab-panel" id="panel-messages" role="tabpanel">
@@ -91,8 +100,25 @@
         document.querySelectorAll('#portal-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
         document.querySelectorAll('.tab-panel').forEach((p) =>
           p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
+        if (t.dataset.tab === 'payouts') loadPayouts();
       });
     });
+
+    async function loadPayouts() {
+      const box = document.getElementById('payouts-box');
+      try {
+        const d = await HP.api('GET', '/payables/mine');
+        if (!d.payables.length) { box.innerHTML = '<p class="muted">No payouts yet. They appear when a job you worked on is completed.</p>'; return; }
+        const kind = { pending: 'warn', approved: 'info', paid: 'ok', cancelled: 'muted' };
+        box.innerHTML = `<dl class="kv"><dt>Waiting to be paid</dt><dd><strong>${HP.fmtMoney(d.totals.pending_cents)}</strong></dd><dt>Paid so far</dt><dd><strong>${HP.fmtMoney(d.totals.paid_cents)}</strong></dd></dl>
+          <div class="table-scroll"><table><thead><tr><th>Project</th><th>Amount</th><th>Status</th><th>Due</th><th>Paid</th></tr></thead><tbody>
+          ${d.payables.map((r) => `<tr><td>#${r.project_id}</td><td>${HP.fmtMoney(r.payable_cents)}</td>
+            <td>${HP.badge(r.status, kind[r.status] || 'muted')}</td>
+            <td class="small">${r.due_at ? HP.fmtDateTime(r.due_at) : '—'}</td>
+            <td class="small">${r.paid_at ? HP.fmtDateTime(r.paid_at) + ' · ' + HP.esc(r.paid_method || '') + (r.paid_reference ? ' · ' + HP.esc(r.paid_reference) : '') : '—'}</td></tr>`).join('')}
+          </tbody></table></div>`;
+      } catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; }
+    }
 
     const CONTRACTOR_STAGES = ['scheduled', 'in_progress', 'review'];
 

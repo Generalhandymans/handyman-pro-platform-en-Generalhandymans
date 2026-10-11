@@ -1,5 +1,6 @@
 // Projects: execution flow with milestones, client approvals, tracking, photos.
 const express = require('express');
+const { requireStaff, can } = require('../services/permissions');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -39,7 +40,7 @@ async function projectVisibleTo(req, p) {
 //  - customers must not see the contractor's cost (= the platform margin) nor
 //    any way to contact the contractor directly;
 //  - contractors must not see what the customer pays.
-async function withDetails(p, role) {
+async function withDetails(p, role, user) {
   const full = {
     ...p,
     milestones: await db.prepare('SELECT * FROM milestones WHERE project_id = ? ORDER BY sort_order').all(p.id),
@@ -50,7 +51,10 @@ async function withDetails(p, role) {
       ? await db.prepare('SELECT c.*, u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id)
       : null,
   };
-  if (role === 'admin') return full;
+  if (role === 'admin') {
+    if (user && !can(user, 'costs')) { const { contractor_cost_cents, ...rest } = full; return rest; }
+    return full;
+  }
   if (role === 'customer') {
     const { contractor_cost_cents, ...proj } = full;
     const c = full.contractor;
@@ -88,13 +92,13 @@ router.get('/', authRequired, ah(async (req, res) => {
        WHERE j.customer_id = ? ORDER BY p.id DESC`
     ).all(req.user.id);
   }
-  res.json(await Promise.all(rows.map(r => withDetails(r, req.user.role))));
+  res.json(await Promise.all(rows.map(r => withDetails(r, req.user.role, req.user))));
 }));
 
 // ---- Admin: agenda for a date window (default: today + 6 days) ----
 // Active projects with their dates, overlap warnings per contractor, and the
 // list that still needs a date. MUST stay above '/:id'.
-router.get('/schedule', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.get('/schedule', authRequired, requireStaff('read'), ah(async (req, res) => {
   const sched = require('../services/schedule');
   const from = sched.DATE_RE.test(String(req.query.from || '')) ? req.query.from : new Date().toISOString().slice(0, 10);
   const to = sched.DATE_RE.test(String(req.query.to || '')) ? req.query.to : sched.addDays(from, 6);
@@ -116,11 +120,11 @@ router.get('/schedule', authRequired, requireRole('admin'), ah(async (req, res) 
 router.get('/:id', authRequired, ah(async (req, res) => {
   const p = await loadProject(req, res);
   if (!p) return;
-  res.json(await withDetails(p, req.user.role));
+  res.json(await withDetails(p, req.user.role, req.user));
 }));
 
 // ---- Admin: contractor recommendations for a project (matching engine) ----
-router.get('/:id/recommendations', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.get('/:id/recommendations', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
   const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found.' });
   const job = await db.prepare('SELECT service_type, lat, lng FROM job_requests WHERE id = ?').get(p.job_request_id);
@@ -175,7 +179,7 @@ router.get('/:id/recommendations', authRequired, requireRole('admin'), ah(async 
 }));
 
 // ---- Admin: offer a project to a contractor (contractor must accept + agree to terms) ----
-router.post('/:id/assign', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.post('/:id/assign', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
   const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found.' });
   const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get((req.body || {}).contractor_id);
@@ -279,7 +283,7 @@ router.post('/:id/contractor-respond', authRequired, ah(async (req, res) => {
 }));
 
 // ---- Admin: set scheduled dates (end must be >= start) ----
-router.patch('/:id/schedule', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.patch('/:id/schedule', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
   const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found.' });
   const { scheduled_start, scheduled_end } = req.body || {};
@@ -325,6 +329,7 @@ router.patch('/:id/stage', authRequired, ah(async (req, res) => {
     return res.status(403).json({ error: 'Accept the job offer first.' });
   }
   if (req.user.role === 'customer') return res.status(403).json({ error: 'Customers cannot move stages.' });
+  if (req.user.role === 'admin' && !can(req.user, 'dispatch')) return res.status(403).json({ error: 'Your team role cannot move project stages.', code: 'STAFF_ROLE' });
 
   // Gate: a project closes only after the customer approved every milestone
   // (an admin may override with force:true — that override is audited).
@@ -344,10 +349,14 @@ router.patch('/:id/stage', authRequired, ah(async (req, res) => {
   const jobStatus = { scheduled: 'scheduled', in_progress: 'in_progress', review: 'review', completed: 'completed', cancelled: 'cancelled' }[stage];
   if (jobStatus) await db.prepare(`UPDATE job_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(jobStatus, p.job_request_id);
 
-  if (stage === 'completed') {
+  // Only on the TRANSITION into completed: re-sending the same stage must not
+  // count the job twice or email the customer again.
+  if (stage === 'completed' && p.stage !== 'completed') {
     // Close the loop: contractor stats + job completion.
     if (p.contractor_id) {
       await db.prepare('UPDATE contractors SET jobs_completed = jobs_completed + 1 WHERE id = ?').run(p.contractor_id);
+      // What we owe the contractor for this job (admin approves and pays it later).
+      await require('../services/payables').ensurePayable(p);
     }
     // Notify the customer that the project is complete.
     const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);

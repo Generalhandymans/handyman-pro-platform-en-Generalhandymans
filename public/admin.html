@@ -15,13 +15,16 @@
 
     <div class="tabs" role="tablist" id="admin-tabs">
       <button class="tab active" data-tab="overview" role="tab">Overview</button>
+      <button class="tab" data-tab="kpis" role="tab">KPIs</button>
       <button class="tab" data-tab="clients" role="tab">Clients</button>
       <button class="tab" data-tab="contractors" role="tab">Contractors</button>
       <button class="tab" data-tab="projects" role="tab">Projects</button>
       <button class="tab" data-tab="agenda" role="tab">Agenda</button>
+      <button class="tab" data-tab="payouts" role="tab">Payouts</button>
       <button class="tab" data-tab="messages" role="tab">Messages</button>
       <button class="tab" data-tab="campaigns" role="tab">Campaigns</button>
       <button class="tab" data-tab="reports" role="tab">Reports</button>
+      <button class="tab" data-tab="team" role="tab">Team</button>
     </div>
 
     <section class="tab-panel active" id="panel-overview" role="tabpanel">
@@ -31,6 +34,18 @@
         <div class="section-head"><h2>Audit log</h2></div>
         <p class="small muted">Who did what, when: quote creation/sending, contractor assignment, milestone completion/approval, campaigns, contractor verification.</p>
         <div id="audit-list"><p class="muted">Loading audit log…</p></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-kpis" role="tabpanel">
+      <div class="section">
+        <div class="section-head">
+          <h2>Business KPIs</h2>
+          <select id="kpi-days" aria-label="Time window">
+            <option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option>
+          </select>
+        </div>
+        <div id="kpi-body"><p class="muted">Loading KPIs…</p></div>
       </div>
     </section>
 
@@ -122,6 +137,42 @@
       </div>
     </section>
 
+    <section class="tab-panel" id="panel-payouts" role="tabpanel">
+      <div class="section">
+        <div class="section-head">
+          <h2>Contractor payouts</h2>
+          <div class="btn-row">
+            <select id="po-filter" aria-label="Filter payouts by status">
+              <option value="">All</option><option value="pending">Pending</option><option value="approved">Approved</option>
+              <option value="paid">Paid</option><option value="cancelled">Cancelled</option>
+            </select>
+            <button class="btn btn-outline btn-sm" id="po-backfill" type="button">Create missing</button>
+            <button class="btn btn-outline btn-sm" id="po-csv" type="button">Download yearly CSV</button>
+          </div>
+        </div>
+        <p class="small muted">The platform records payouts; send the money by ACH, check, Zelle, etc., then mark it paid with the method and reference. A payout is blocked while the customer still owes money (you can override on purpose).</p>
+        <div id="po-totals" style="margin:.5rem 0"></div>
+        <div id="po-list"><p class="muted">Loading payouts…</p></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-team" role="tabpanel">
+      <div class="section">
+        <div class="section-head"><h2>Team</h2></div>
+        <p class="small muted"><strong>Owner</strong>: everything · <strong>Finance</strong>: payments, refunds, payouts, KPIs · <strong>Dispatch</strong>: assign, schedule, stages, contractors · <strong>Support</strong>: messages, quotes, CRM, campaigns (never sees contractor costs or money).</p>
+        <form id="team-invite" class="btn-row" style="gap:.5rem;flex-wrap:wrap;margin:.75rem 0;" novalidate>
+          <input id="tm-name" type="text" placeholder="Full name" aria-label="Full name" required>
+          <input id="tm-email" type="email" placeholder="Email" aria-label="Email" required>
+          <select id="tm-role" aria-label="Team role">
+            <option value="support">Support</option><option value="dispatch">Dispatch</option>
+            <option value="finance">Finance</option><option value="owner">Owner</option>
+          </select>
+          <button class="btn btn-primary btn-sm" type="submit">Invite</button>
+        </form>
+        <div id="team-list"><p class="muted">Loading team…</p></div>
+      </div>
+    </section>
+
     <section class="tab-panel" id="panel-messages" role="tabpanel">
       <div class="section">
         <div class="section-head"><h2>Messages (mediated)</h2></div>
@@ -199,9 +250,9 @@
     document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
       t.addEventListener('click', () => {
         document.querySelectorAll('#admin-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
-        document.querySelectorAll('#panel-overview, #panel-clients, #panel-contractors, #panel-projects, #panel-agenda, #panel-messages, #panel-campaigns, #panel-reports')
+        document.querySelectorAll('#panel-overview, #panel-kpis, #panel-clients, #panel-contractors, #panel-projects, #panel-agenda, #panel-payouts, #panel-messages, #panel-campaigns, #panel-reports, #panel-team')
           .forEach((p) => p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
-        const fn = { overview: loadOverview, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, agenda: loadAgendaTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports }[t.dataset.tab];
+        const fn = { overview: loadOverview, kpis: loadKpis, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, agenda: loadAgendaTab, payouts: loadPayoutsTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports, team: loadTeam }[t.dataset.tab];
         if (fn) fn();
       });
     });
@@ -283,6 +334,187 @@
       });
     }
 
+    // ---------- team (owner only) ----------
+    async function loadTeam() {
+      if (!loaded.teamWired) {
+        loaded.teamWired = true;
+        document.getElementById('team-invite').addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          const btn = ev.target.querySelector('button[type=submit]');
+          HP.busy(btn, true, 'Inviting…');
+          try {
+            await HP.api('POST', '/staff', {
+              name: document.getElementById('tm-name').value.trim(),
+              email: document.getElementById('tm-email').value.trim(),
+              staff_role: document.getElementById('tm-role').value,
+            });
+            HP.toast('Invitation sent. They set their password from the email link.', 'ok');
+            ev.target.reset(); loadTeam();
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+          finally { HP.busy(btn, false); }
+        });
+      }
+      const box = document.getElementById('team-list');
+      let rows;
+      try { rows = await HP.api('GET', '/staff'); }
+      catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      const roles = ['owner', 'finance', 'dispatch', 'support'];
+      box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody>
+        ${rows.map((r) => `<tr data-id="${r.id}"><td>${HP.esc(r.name)}</td><td class="small">${HP.esc(r.email)}</td>
+          <td>${r.staff_role === 'disabled' ? HP.badge('deactivated', 'muted')
+            : `<select class="tm-role" aria-label="Role of ${HP.esc(r.name)}">${roles.map((x) => `<option value="${x}"${x === r.staff_role ? ' selected' : ''}>${x}</option>`).join('')}</select>`}</td>
+          <td>${r.staff_role === 'disabled' ? '' : '<button class="btn btn-outline btn-sm tm-off" type="button">Deactivate</button>'}</td></tr>`).join('')}
+        </tbody></table></div>`;
+      box.querySelectorAll('tr[data-id]').forEach((tr) => {
+        const id = tr.dataset.id;
+        const sel = tr.querySelector('.tm-role');
+        if (sel) sel.addEventListener('change', async () => {
+          try { await HP.api('PATCH', `/staff/${id}`, { staff_role: sel.value }); HP.toast('Role updated.', 'ok'); }
+          catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); loadTeam(); }
+        });
+        const off = tr.querySelector('.tm-off');
+        if (off) off.addEventListener('click', async () => {
+          if (!window.confirm('Deactivate this person? They are signed out immediately.')) return;
+          try { await HP.api('POST', `/staff/${id}/deactivate`, {}); HP.toast('Deactivated.', 'ok'); loadTeam(); }
+          catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+      });
+    }
+
+    // ---------- KPI dashboard ----------
+    async function loadKpis() {
+      if (!loaded.kpisWired) {
+        loaded.kpisWired = true;
+        document.getElementById('kpi-days').addEventListener('change', loadKpis);
+      }
+      const body = document.getElementById('kpi-body');
+      const days = document.getElementById('kpi-days').value;
+      let k;
+      try { k = await HP.api('GET', '/reports/kpis?days=' + days); }
+      catch (e) { body.innerHTML = `<div class="banner banner-warn">Could not load KPIs: ${HP.esc(HP.friendlyMessage(e))}</div>`; return; }
+      const P = (v) => (v == null ? '—' : v + '%');
+      const H = (m) => (m.median_hours == null ? '—' : (m.median_hours >= 48 ? (m.median_hours / 24).toFixed(1) + ' d' : m.median_hours + ' h'));
+      const card = (l, v, s) => `<div class="kpi"><div class="v">${HP.esc(v)}</div><div class="l">${HP.esc(l)}</div>${s ? `<div class="s">${HP.esc(s)}</div>` : ''}</div>`;
+      const f = k.funnel;
+      const steps = [['Requests', f.requests], ['Quoted', f.quoted], ['Accepted', f.accepted], ['Deposit paid', f.deposit_paid], ['Completed', f.completed]];
+      const top = Math.max(1, f.requests);
+      const bars = steps.map(([l, n], i) => `<div style="display:flex;align-items:center;gap:.6rem;margin:.3rem 0;">
+          <div style="width:110px" class="small">${l}</div>
+          <div style="flex:1;background:#f1f5f9;border-radius:6px;"><div style="width:${Math.max(2, n / top * 100)}%;background:#2563eb;color:#fff;border-radius:6px;padding:.15rem .5rem;font-size:.85rem;white-space:nowrap">${n}</div></div>
+          <div style="width:64px;text-align:right" class="small muted">${i ? P([null, f.rates.request_to_quote, f.rates.quote_to_accept, f.rates.accept_to_deposit, f.rates.deposit_to_completed][i]) : ''}</div></div>`).join('');
+      const ar = k.receivables, pb = k.payables, m = k.money, q = k.quality, c = k.capacity;
+      body.innerHTML = `
+        <h3>Money</h3>
+        <div class="kpis">
+          ${card('Collected', HP.fmtMoney(m.collected_cents), 'net of ' + HP.fmtMoney(m.refunds_cents) + ' refunds')}
+          ${card('Booked', HP.fmtMoney(m.booked_cents), m.quotes_accepted + ' quotes accepted')}
+          ${card('Avg ticket', m.avg_ticket_cents == null ? '—' : HP.fmtMoney(m.avg_ticket_cents), '')}
+          ${card('Margin (completed)', P(m.completed_margin_pct), 'projected on new work: ' + P(m.booked_margin_pct))}
+          ${card('Customers owe us', HP.fmtMoney(ar.total_cents), ar.count + ' project(s)')}
+          ${card('Overdue 61+ days', HP.fmtMoney(ar.d61_plus), '31–60 d: ' + HP.fmtMoney(ar.d31_60))}
+          ${card('We owe contractors', HP.fmtMoney(pb.owed_cents), HP.fmtMoney(pb.overdue_cents) + ' overdue')}
+          ${card('Paid to contractors', HP.fmtMoney(pb.paid_in_window_cents), 'in this window')}
+        </div>
+        <h3>Funnel <span class="small muted">(requests created in this window)</span></h3>
+        ${bars}
+        <p class="small muted">Overall: ${P(f.rates.overall)} of requests completed. ${HP.esc(f.note)}</p>
+        <h3>Speed <span class="small muted">(median)</span></h3>
+        <div class="kpis">
+          ${card('Request → quote sent', H(k.speed.request_to_quote), 'n=' + k.speed.request_to_quote.n)}
+          ${card('Quote → accepted', H(k.speed.quote_to_accept), 'n=' + k.speed.quote_to_accept.n)}
+          ${card('Accepted → deposit', H(k.speed.accept_to_deposit), 'n=' + k.speed.accept_to_deposit.n)}
+          ${card('Project → signed off', H(k.speed.project_to_signoff), 'n=' + k.speed.project_to_signoff.n)}
+        </div>
+        <h3>Quality &amp; capacity</h3>
+        <div class="kpis">
+          ${card('Avg rating', q.avg_rating == null ? '—' : q.avg_rating + ' ★', q.reviews + ' review(s)')}
+          ${card('Milestones rejected', P(q.milestone_rejection_pct), 'rework signal')}
+          ${card('Repeat customers', P(q.repeat_rate_pct), q.repeat_customers + ' of ' + q.customers_with_completed)}
+          ${card('Active projects', c.active_projects, c.unscheduled + ' without dates')}
+          ${card('Double-booked', c.double_booked, 'see the Agenda tab')}
+        </div>
+        <h3>Lead sources</h3>
+        ${k.sources.length ? `<div class="table-scroll"><table><thead><tr><th>Source</th><th>Requests</th><th>Accepted</th><th>Rate</th></tr></thead><tbody>
+          ${k.sources.map((s) => `<tr><td>${HP.esc(s.source)}</td><td>${s.requests}</td><td>${s.accepted}</td><td>${P(s.accept_rate)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">No requests in this window.</p>'}
+        <details style="margin-top:1rem"><summary class="small muted">Not measured yet</summary>
+          <ul class="small muted">${k.not_tracked.map((x) => `<li>${HP.esc(x)}</li>`).join('')}</ul></details>`;
+    }
+
+    // ---------- contractor payouts ----------
+    async function loadPayoutsTab() {
+      if (!loaded.payoutsWired) {
+        loaded.payoutsWired = true;
+        document.getElementById('po-filter').addEventListener('change', renderPayouts);
+        document.getElementById('po-backfill').addEventListener('click', async (ev) => {
+          HP.busy(ev.target, true, 'Working…');
+          try { const r = await HP.api('POST', '/payables/generate'); HP.toast(r.created ? `${r.created} payout(s) created.` : 'Nothing missing.', 'ok'); renderPayouts(); }
+          catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); } finally { HP.busy(ev.target, false); }
+        });
+        document.getElementById('po-csv').addEventListener('click', async () => {
+          const year = new Date().getFullYear();
+          try {
+            const res = await fetch(`/api/payables/summary?format=csv&year=${year}`, { headers: { Authorization: 'Bearer ' + HP.token() } });
+            if (!res.ok) throw new Error('Download failed');
+            const url = URL.createObjectURL(await res.blob());
+            const a = document.createElement('a'); a.href = url; a.download = `payouts-${year}.csv`; a.click(); URL.revokeObjectURL(url);
+          } catch (e) { HP.toast('Could not download the CSV.', 'error'); }
+        });
+      }
+      await renderPayouts();
+    }
+
+    async function payoutAction(path, body, okMsg) {
+      try { await HP.api('POST', path, body); HP.toast(okMsg, 'ok'); await renderPayouts(); return true; }
+      catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); return e; }
+    }
+
+    async function renderPayouts() {
+      const box = document.getElementById('po-list');
+      const st = document.getElementById('po-filter').value;
+      let d;
+      try { d = await HP.api('GET', '/payables' + (st ? '?status=' + st : '')); }
+      catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      document.getElementById('po-totals').innerHTML = `${HP.badge('Owed: ' + HP.fmtMoney(d.totals.owed_cents), 'warn')} ${HP.badge('Paid: ' + HP.fmtMoney(d.totals.paid_cents), 'ok')}`;
+      if (!d.payables.length) { box.innerHTML = '<p class="muted">No payouts here yet. They are created when a project with a contractor is completed.</p>'; return; }
+      const kind = { pending: 'warn', approved: 'info', paid: 'ok', cancelled: 'muted' };
+      box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Project</th><th>Contractor</th><th>Amount</th><th>Status</th><th>Due</th><th>Customer owes</th><th></th></tr></thead><tbody>
+        ${d.payables.map((r) => {
+          const open = ['pending', 'approved'].includes(r.status);
+          return `<tr data-id="${r.id}">
+            <td>#${r.project_id} <span class="small muted">${HP.esc(r.service_type || '')}</span></td>
+            <td>${HP.esc(r.contractor_name || '')}</td>
+            <td><strong>${HP.fmtMoney(r.payable_cents)}</strong></td>
+            <td>${HP.badge(r.status, kind[r.status] || 'muted')}${r.paid_method ? `<div class="small muted">${HP.esc(r.paid_method)}${r.paid_reference ? ' · ' + HP.esc(r.paid_reference) : ''}</div>` : ''}</td>
+            <td class="small">${r.due_at ? HP.fmtDateTime(r.due_at) : '—'}</td>
+            <td>${r.customer_balance_cents >= 100 ? HP.badge(HP.fmtMoney(r.customer_balance_cents), 'err') : HP.badge('settled', 'ok')}</td>
+            <td>${open ? `<div class="btn-row">
+              ${r.status === 'pending' ? '<button class="btn btn-outline btn-sm po-approve" type="button">Approve</button>' : ''}
+              <button class="btn btn-primary btn-sm po-pay" type="button">Mark paid…</button>
+              <button class="btn btn-outline btn-sm po-cancel" type="button">Cancel</button></div>` : ''}</td></tr>`;
+        }).join('')}</tbody></table></div>`;
+      box.querySelectorAll('tr[data-id]').forEach((tr) => {
+        const id = tr.dataset.id;
+        const row = d.payables.find((x) => String(x.id) === id);
+        const approve = tr.querySelector('.po-approve');
+        if (approve) approve.addEventListener('click', () => payoutAction(`/payables/${id}/approve`, {}, 'Approved.'));
+        const cancel = tr.querySelector('.po-cancel');
+        if (cancel) cancel.addEventListener('click', () => {
+          const why = window.prompt('Why is this payout cancelled?');
+          if (why && why.trim()) payoutAction(`/payables/${id}/cancel`, { notes: why.trim() }, 'Cancelled.');
+        });
+        const pay = tr.querySelector('.po-pay');
+        if (pay) pay.addEventListener('click', async () => {
+          const method = (window.prompt('How did you pay? (ach, check, zelle, cash, other)', 'ach') || '').trim().toLowerCase();
+          if (!method) return;
+          const reference = (window.prompt('Reference (check number, transfer id…) — optional') || '').trim();
+          const r = await payoutAction(`/payables/${id}/pay`, { method, reference }, 'Marked as paid.');
+          if (r && r.status === 409 && r.body && r.body.customer_balance_cents) {
+            if (window.confirm(r.message + '\n\nPay anyway?')) payoutAction(`/payables/${id}/pay`, { method, reference, force: true }, 'Marked as paid (customer balance outstanding).');
+          }
+        });
+      });
+    }
+
     // ---------- mediated messages (admin sees both sides) ----------
     async function loadMessagesTab() {
       if (loaded.messages) return;
@@ -299,7 +531,18 @@
     async function init() {
       const me = await HP.requireAuth('admin');
       if (!me) return;
-      loadOverview();
+      window.__perms = me.permissions || [];
+      const TAB_AREA = { overview: 'finance', kpis: 'finance', clients: 'support', contractors: 'dispatch', projects: 'read', agenda: 'read',
+        payouts: 'finance', messages: 'support', campaigns: 'marketing', reports: 'finance', team: 'staff' };
+      let first = null;
+      document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
+        const need = TAB_AREA[t.dataset.tab];
+        if (need && !window.__perms.includes(need)) t.hidden = true;
+        else if (!first) first = t;
+      });
+      const sub = document.querySelector('.page-sub');
+      if (sub && me.staff_role) sub.textContent += ` You are signed in as ${me.staff_role}.`;
+      if (first && first.dataset.tab !== 'overview') first.click(); else loadOverview();
     }
 
     // =================================================================
@@ -336,7 +579,8 @@
       } catch (e) {
         box.innerHTML = `<div class="banner banner-warn">Could not load overview: ${HP.esc(HP.friendlyMessage(e))}</div>`;
       }
-      loadAuditLog();
+      if ((window.__perms || []).includes('staff')) loadAuditLog();
+      else { const s = document.getElementById('audit-list'); if (s) s.closest('.section').hidden = true; }
     }
 
     async function loadAuditLog() {

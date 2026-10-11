@@ -19,7 +19,11 @@ async function migrate() {
     const done = await db.prepare('SELECT name FROM schema_migrations WHERE name = ?').get(f);
     if (done) continue;
     await db.transaction(async (t) => {
-      await t.exec(fs.readFileSync(path.join(dir, f), 'utf8'));
+      // Some files carry their own BEGIN;/COMMIT; — strip them: the runner already wraps each file
+      // in ONE transaction (a nested COMMIT would end it early and break atomicity).
+      const sql = fs.readFileSync(path.join(dir, f), 'utf8')
+        .replace(/^\s*BEGIN\s*;\s*$/gim, '').replace(/^\s*COMMIT\s*;\s*$/gim, '');
+      await t.exec(sql);
       // Explicit RETURNING: the pg adapter appends "RETURNING id" to INSERTs without one,
       // and this table has no id column.
       await t.prepare('INSERT INTO schema_migrations (name) VALUES (?) RETURNING name').run(f);

@@ -1,5 +1,6 @@
 // Contractors: profiles, verification workflow (admin), performance.
 const express = require('express');
+const { requireStaff, can } = require('../services/permissions');
 const db = require('../db');
 const { ah, authRequired, requireRole, isNonEmpty, failIfErrors } = require('../middleware');
 const { contractorLifecycle, contractorScore, retentionAtRisk } = require('../services/crm');
@@ -16,7 +17,7 @@ async function enriched(c) {
 }
 
 // Admin: everyone with lifecycle + score.
-router.get('/', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.get('/', authRequired, requireStaff('read'), ah(async (req, res) => {
   const rows = await db.prepare('SELECT * FROM contractors ORDER BY id DESC').all();
   res.json(rows.map(enriched));
 }));
@@ -49,7 +50,7 @@ router.patch('/me', authRequired, requireRole('contractor'), ah(async (req, res)
 }));
 
 // Admin: verification workflow — license, insurance, background check, activation.
-router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.patch('/:id/verify', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
   const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Contractor not found.' });
   const b = req.body || {};
@@ -85,7 +86,7 @@ router.patch('/:id/verify', authRequired, requireRole('admin'), ah(async (req, r
 
 // ---- Admin: set a contractor's base location (for distance in matching) ----
 // Send { lat, lng } or { address } (geocoded when GEOCODE_API_KEY is set).
-router.patch('/:id/location', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.patch('/:id/location', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
   const c = await db.prepare('SELECT id FROM contractors WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Contractor not found.' });
   const geo = require('../services/geocode');
@@ -104,7 +105,7 @@ router.patch('/:id/location', authRequired, requireRole('admin'), ah(async (req,
   res.json({ id: c.id, lat, lng });
 }));
 
-router.get('/:id', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.get('/:id', authRequired, requireStaff('read'), ah(async (req, res) => {
   const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Contractor not found.' });
   res.json(await enriched(c));

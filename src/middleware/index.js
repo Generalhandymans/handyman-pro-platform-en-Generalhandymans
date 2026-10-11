@@ -27,8 +27,9 @@ async function authRequiredAsync(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Authentication required' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version FROM users WHERE id = ?').get(payload.id);
+    const user = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version, staff_role FROM users WHERE id = ?').get(payload.id);
     if (!user) return res.status(401).json({ error: 'User no longer exists' });
+    if (user.role === 'admin' && user.staff_role === 'disabled') return res.status(401).json({ error: 'This account is disabled.' });
     // Tokens issued before a password reset carry an older version: reject them.
     if ((payload.tv || 0) !== (user.token_version || 0)) {
       return res.status(401).json({ error: 'Invalid or expired token' });
@@ -51,8 +52,8 @@ async function optionalAuthAsync(req, res, next) {
   if (h.startsWith('Bearer ')) {
     try {
       const payload = jwt.verify(h.slice(7), JWT_SECRET);
-      const u = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version FROM users WHERE id = ?').get(payload.id);
-      req.user = (u && (payload.tv || 0) === (u.token_version || 0)) ? u : undefined;
+      const u = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version, staff_role FROM users WHERE id = ?').get(payload.id);
+      req.user = (u && (payload.tv || 0) === (u.token_version || 0) && u.staff_role !== 'disabled') ? u : undefined;
     } catch (e) { /* stay a guest */ }
   }
   next();

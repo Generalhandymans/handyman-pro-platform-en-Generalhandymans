@@ -211,6 +211,8 @@ app.use('/api/reports', require('./src/routes/reports'));
 app.use('/api/reviews', require('./src/routes/reviews'));
 app.use('/api/referrals', require('./src/routes/referrals'));
 app.use('/api/payments', require('./src/routes/payments'));
+app.use('/api/payables', require('./src/routes/payables'));
+app.use('/api/staff', require('./src/routes/staff'));
 app.use('/api/me', require('./src/routes/privacy'));
 app.use('/api/email', require('./src/routes/emailEvents'));
 app.use('/api', require('./src/routes/messages'));

@@ -338,6 +338,9 @@ if (!columnExists('photos', 'storage_provider')) {
 if (!columnExists('users', 'token_version')) {
   db.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`);
 }
+if (!columnExists('users', 'staff_role')) {
+  db.exec(`ALTER TABLE users ADD COLUMN staff_role TEXT`);
+}
 if (!columnExists('messages', 'flagged')) {
   db.exec(`ALTER TABLE messages ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0`);
 }
@@ -369,6 +372,22 @@ db.exec(`CREATE TABLE IF NOT EXISTS completion_sheets (
   notes TEXT,
   ip TEXT,
   signed_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+
+// Money owed to contractors: one payable per completed project.
+db.exec(`CREATE TABLE IF NOT EXISTS contractor_payables (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  payable_cents INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','paid','cancelled')),
+  due_at TEXT,
+  paid_at TEXT,
+  paid_method TEXT,
+  paid_reference TEXT,
+  paid_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
 
 // ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----

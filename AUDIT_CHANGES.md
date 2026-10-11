@@ -47,8 +47,43 @@
 - **Datos:** tabla `completion_sheets` (SQLite en `db.js`, PostgreSQL en `003_completion_sheets.sql`); una sola firma por proyecto garantizada por `UNIQUE`.
 - **Límites:** es una firma dibujada con registro de IP y fecha, útil como constancia; **no es una firma electrónica certificada**. No genera PDF todavía y el admin no tiene aún una pantalla para ver la hoja (el API ya la devuelve). Prueba de API nueva (32 en total, sin ejecutar).
 
+## Quinta tanda: pagos a contratistas
+- **Se crea automáticamente un «payable»** (lo que se le debe al contratista = `contractor_cost_cents`) cuando un proyecto con contratista se completa. Es idempotente (una sola vez por proyecto, garantizado por `UNIQUE`) y vence en `PAYOUT_TERMS_DAYS` días (7 por defecto).
+- **Admin, pestaña «Payouts»:** lista con filtro, totales «Owed / Paid», **Aprobar**, **Marcar pagado** (método: ach, check, zelle, cash, other + referencia), **Cancelar** (con motivo), «Create missing» para proyectos ya completados y **CSV anual** por contratista para preparar impuestos.
+- **Protección:** no se paga a un contratista mientras el cliente aún debe dinero; el admin puede forzarlo a conciencia y queda en la auditoría como `payable.paid_forced`. El pago es atómico (dos admins no pagan dos veces). Al pagar, el contratista recibe un correo.
+- **Contratista, pestaña «Payouts»:** ve sus pagos, lo pendiente y lo cobrado (nunca lo que pagó el cliente).
+- **Datos:** `contractor_payables` (SQLite en `db.js`; en PostgreSQL ya existía en `001` y `004_contractor_payouts.sql` añade columnas e índice único).
+- **Arreglo extra (error preexistente):** volver a enviar la etapa «completed» contaba el trabajo dos veces en el contratista y reenviaba el correo al cliente; ahora esos efectos solo ocurren al **pasar** a completado.
+- **Arreglo extra:** `001_initial.sql` trae sus propios `BEGIN;`/`COMMIT;`, que rompían la transacción del ejecutor de migraciones; ahora se quitan antes de ejecutarlo.
+- **Límites:** la plataforma **registra** el pago, no mueve el dinero (eso sería Stripe Connect, otra fase). El CSV es un total de pagos, **no un formulario fiscal**: consulta con tu contador qué corresponde. Los reembolsos posteriores al pago no ajustan el payable. Prueba de API nueva (33 en total, sin ejecutar).
+
+## Sexta tanda: dashboard de KPIs
+- **Pestaña «KPIs»** en el panel admin (ventana de 30 días, 90 días o 12 meses) con:
+  - **Dinero:** cobrado (depósitos + hitos + saldo final − reembolsos, por fecha de pago), reservado, ticket promedio, margen de lo completado y margen proyectado de lo nuevo.
+  - **Cuentas por cobrar** con antigüedad (0–30, 31–60, 61+ días) y **cuentas por pagar** a contratistas (con lo vencido).
+  - **Embudo** solicitud → cotizada → aceptada → depósito → completada, con la tasa de cada paso.
+  - **Velocidad** (medianas): pedir→cotizar, cotizar→aceptar, aceptar→depósito, proyecto→firma de cierre.
+  - **Calidad y capacidad:** calificación, hitos rechazados (señal de retrabajo), recompra, proyectos activos sin fecha y doble-reservas.
+  - **Fuentes de clientes** con su tasa de aceptación.
+- **Qué NO mide, y lo dice en pantalla:** NPS, no-shows y reprogramaciones, costo de adquisición y utilización de contratistas (no hay datos).
+- **Cómo se calcula:** `services/kpis.js` es una función pura (recibe filas, devuelve números) probada con datos conocidos: 17 comprobaciones pasaron (cohorte, embudo, medianas, cobrado con reembolsos y pagos fallidos excluidos, antigüedad de cuentas por cobrar, y datos vacíos que dan «—» y no ceros). El endpoint `GET /api/reports/kpis?days=` es solo para admin; prueba de API nueva (34 en total, sin ejecutar).
+- **Límites honestos:** las fechas de «depósito pagado» son la fecha del registro del pago (en Stripe, la de creación del intento); no existe fecha exacta de cierre del proyecto, por eso el margen se mide por proyectos **iniciados** en la ventana; las tasas finales del embudo suben a medida que madura la cohorte.
+
+## Séptima tanda: roles del panel
+- **Cuatro roles de equipo** (`users.staff_role`; todas las cuentas siguen siendo `role='admin'`, y las que ya existían son **owner** sin tocar nada):
+  | Rol | Puede |
+  |---|---|
+  | **owner** | todo, incluido gestionar el equipo y ver el registro de auditoría |
+  | **finance** | pagos, reembolsos, pagos a contratistas, KPIs; ve costos |
+  | **dispatch** | asignar, agendar, mover etapas, contratistas; ve costos |
+  | **support** | mensajes, cotizaciones, CRM y campañas; **nunca ve el costo del contratista ni el dinero** |
+- **Equipo (solo owner):** pestaña «Team» para invitar (llega un correo para fijar contraseña, válido 24 h), cambiar el rol y desactivar. Los cambios de rol aplican de inmediato; desactivar cierra todas las sesiones de esa persona y bloquea su ingreso. **Siempre queda al menos un owner** y nadie puede desactivarse a sí mismo.
+- **El panel oculta lo que cada rol no puede usar** y abre en su primera pestaña disponible; el servidor es quien lo hace cumplir (la interfaz es solo comodidad).
+- **Archivos:** `services/permissions.js`, `routes/staff.js`, migración `005_staff_roles.sql`. Prueba nueva con la matriz completa de permisos (35 en total, sin ejecutar).
+- **Límites:** los mensajes siguen visibles para cualquier miembro del equipo (no hay permisos por conversación), y un miembro de soporte aún puede pedir la creación de un pago final en nombre de un cliente (el cliente es quien paga). No hay autenticación en dos pasos para cuentas con acceso al dinero.
+
 ## NO incluido (no son correcciones, son funciones nuevas o dependen de ti)
-Dominio de correo propio (SPF/DKIM/DMARC); alertas de Sentry configuradas; SMS/WhatsApp; mapa de visitas y disponibilidad por hora; roles del panel; disputas; PDF de la hoja de cierre; pagos a contratistas; cuadrillas propias; dashboard de KPIs; IA en el CRM; autenticación de las fotos (siguen siendo URLs con token de 128 bits: se redujo su exposición en logs, pero no es acceso autenticado).
+Dominio de correo propio (SPF/DKIM/DMARC); alertas de Sentry configuradas; SMS/WhatsApp; mapa de visitas y disponibilidad por hora; disputas; PDF de la hoja de cierre; Stripe Connect para mover el dinero; cuadrillas propias; IA en el CRM; autenticación de las fotos (siguen siendo URLs con token de 128 bits: se redujo su exposición en logs, pero no es acceso autenticado).
 
 ## Falta cablear en el frontend
 Pantalla del admin para fijar coordenadas del contratista (el API ya existe); botones en la interfaz para exportar y borrar la cuenta (los endpoints ya existen); pantalla de reembolsos para el admin. El portal del contratista no se revisó a fondo.

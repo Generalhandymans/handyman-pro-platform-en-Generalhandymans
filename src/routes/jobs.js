@@ -1,5 +1,6 @@
 // Job requests: public intake, photo upload (with vision hook), real estimation.
 const express = require('express');
+const { requireStaff, can } = require('../services/permissions');
 const multer = require('multer');
 const crypto = require('crypto');
 const path = require('path');
@@ -214,7 +215,7 @@ router.get('/mine/list', authRequired, requireRole('customer'), ah(async (req, r
 }));
 
 // ---- Admin: list / update ----
-router.get('/', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.get('/', authRequired, requireStaff('read'), ah(async (req, res) => {
   const { status } = req.query;
   const rows = status
     ? await db.prepare('SELECT * FROM job_requests WHERE status = ? ORDER BY id DESC').all(status)
@@ -222,7 +223,7 @@ router.get('/', authRequired, requireRole('admin'), ah(async (req, res) => {
   res.json(rows);
 }));
 
-router.patch('/:id', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.patch('/:id', authRequired, requireStaff('support'), ah(async (req, res) => {
   const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Job request not found.' });
   const allowed = ['new', 'ai_analyzed', 'quote_sent', 'deposit_paid', 'assigned', 'scheduled', 'in_progress', 'review', 'completed', 'lost', 'cancelled'];

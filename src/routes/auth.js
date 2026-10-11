@@ -104,11 +104,19 @@ router.post('/login', ah(async (req, res) => {
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
+  if (user.role === 'admin' && user.staff_role === 'disabled') {
+    return res.status(403).json({ error: 'This account is disabled. Ask an owner.' });
+  }
   res.json({ token: signToken(user), user: publicUser(user) });
 }));
 
 router.get('/me', authRequired, ah(async (req, res) => {
   const out = { ...publicUser(req.user) };
+  if (req.user.role === 'admin') {
+    const perms = require('../services/permissions');
+    out.staff_role = perms.effectiveRole(req.user);
+    out.permissions = perms.permissionsOf(req.user);
+  }
   if (req.user.role === 'contractor') {
     out.contractor = await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id) || null;
   }

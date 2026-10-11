@@ -1,5 +1,6 @@
 // Quotes: platform prices the job (customer price vs contractor cost = margin).
 const express = require('express');
+const { requireStaff, can } = require('../services/permissions');
 const db = require('../db');
 const { ah, authRequired, requireRole, isInt, failIfErrors } = require('../middleware');
 const { touchInteraction } = require('../services/crm');
@@ -38,7 +39,7 @@ function jobVisibleTo(req, job) {
 }
 
 // ---- Admin: create a quote from a job (optionally linked to an estimate) ----
-router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.post('/', authRequired, requireStaff('support'), ah(async (req, res) => {
   const b = req.body || {};
   const errors = {};
   const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(b.job_request_id);
@@ -71,7 +72,7 @@ router.post('/', authRequired, requireRole('admin'), ah(async (req, res) => {
 }));
 
 // ---- Admin: send the quote to the customer ----
-router.post('/:id/send', authRequired, requireRole('admin'), ah(async (req, res) => {
+router.post('/:id/send', authRequired, requireStaff('support'), ah(async (req, res) => {
   const q = await db.prepare('SELECT * FROM quotes WHERE id = ?').get(req.params.id);
   if (!q) return res.status(404).json({ error: 'Quote not found.' });
   if (q.status !== 'draft') return res.status(400).json({ error: 'Only draft quotes can be sent.' });

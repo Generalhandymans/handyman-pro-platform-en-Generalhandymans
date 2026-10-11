@@ -2,6 +2,7 @@
 // Sending is NEVER fake: default provider logs to console AND records every
 // attempt in email_log. See src/services/mailer.js.
 const express = require('express');
+const { requireStaff, can } = require('../services/permissions');
 const db = require('../db');
 const { ah, authRequired, requireRole, isNonEmpty, failIfErrors } = require('../middleware');
 const crm = require('../services/crm');
@@ -10,7 +11,7 @@ const { auditLog } = require('../services/audit');
 
 const unsub = require('../services/unsubscribe');
 const router = express.Router();
-router.use(authRequired, requireRole('admin'));
+router.use(authRequired, requireStaff('marketing'));
 
 const SEGMENTS = ['all_customers', 'past_customers', 'inactive_clients_90d', 'lost_leads',
   'all_contractors', 'pending_contractors', 'top_contractors'];

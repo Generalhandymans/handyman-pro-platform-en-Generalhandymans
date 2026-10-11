@@ -1,11 +1,12 @@
 // CRM endpoints: two-sided pipeline views, follow-up tasks, segments.
 const express = require('express');
+const { requireStaff, can } = require('../services/permissions');
 const db = require('../db');
 const { ah, authRequired, requireRole } = require('../middleware');
 const crm = require('../services/crm');
 
 const router = express.Router();
-router.use(authRequired, requireRole('admin'));
+router.use(authRequired, requireStaff('support'));
 
 // ---- CLIENT pipeline: counts + pipeline value per stage ----
 router.get('/pipeline', ah(async (req, res) => {
@@ -72,7 +73,7 @@ router.get('/email-log', ah(async (req, res) => {
 }));
 
 // ---- Admin audit trail ----
-router.get('/audit', ah(async (req, res) => {
+router.get('/audit', requireStaff('staff'), ah(async (req, res) => {
   const { action, limit } = req.query;
   const lim = Math.min(Number(limit) || 100, 500);
   const rows = action
