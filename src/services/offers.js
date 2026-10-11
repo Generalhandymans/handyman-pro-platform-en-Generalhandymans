@@ -9,7 +9,7 @@ const { auditLog } = require('./audit');
 const { touchInteraction } = require('./crm');
 const { CONTRACTOR_TERMS_VERSION, recordAcceptance } = require('./terms');
 const {
-  notify, esc, contractorPhotoUrl, techAssignedCustomer, jobOfferContractor,
+  notify, esc, contractorPhotoUrl, prettyDay, techAssignedCustomer, jobOfferContractor,
   offerAcceptedContractor, scheduleConfirmedContractor, scheduleConfirmedCustomer,
 } = require('./notify');
 
@@ -179,7 +179,7 @@ async function sendScheduleConfirmation(p) {
   if (cont.user_email) {
     await notify({
       to: cont.user_email,
-      subject: `Appointment confirmed — ${day} (#${p.id})`,
+      subject: `Appointment confirmed — ${prettyDay(day)} (#${p.id})`,
       html: scheduleConfirmedContractor({
         name: cont.user_name.split(' ')[0], projectId: p.id, day,
         window: p.arrival_window || '',
@@ -191,7 +191,7 @@ async function sendScheduleConfirmation(p) {
   if (custEmail) {
     await notify({
       to: custEmail,
-      subject: `Your visit is scheduled — ${day} (#${p.id})`,
+      subject: `Your visit is scheduled — ${prettyDay(day)} (#${p.id})`,
       html: scheduleConfirmedCustomer({
         customerName: String(cust.name || 'there').split(' ')[0],
         techName: cont.user_name,

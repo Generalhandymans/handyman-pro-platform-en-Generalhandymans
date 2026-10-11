@@ -5,21 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Helpman — Job offer</title>
 <link rel="icon" href="favicon.svg">
+<link rel="stylesheet" href="css/styles.css">
 <style>
-  body{font-family:Arial,sans-serif;color:#15202b;max-width:560px;margin:0 auto;padding:24px;}
-  .card{border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin-top:12px;}
-  .btn{display:inline-block;padding:12px 28px;border-radius:8px;font-weight:bold;text-decoration:none;cursor:pointer;border:0;font-size:16px;margin:6px 8px 6px 0;}
-  .btn-ok{background:#16a34a;color:#fff;} .btn-no{background:#fff;color:#111827;border:2px solid #e2e8f0;}
-  .btn:disabled{opacity:.5;cursor:wait;}
-  .muted{color:#64748b;} .small{font-size:13px;}
-  .terms{display:flex;gap:8px;align-items:flex-start;margin:14px 0;background:#f8fafc;padding:12px;border-radius:8px;}
-  #msg{margin-top:12px;font-weight:bold;}
-  .ok-msg{color:#16a34a;} .err-msg{color:#dc2626;}
+  .offer-wrap{max-width:620px;margin:0 auto;padding:2rem 1rem;}
+  .offer-logo{display:block;margin:0 auto 1.5rem;max-width:280px;width:100%;height:auto;}
+  .offer-terms{display:flex;gap:.6rem;align-items:flex-start;background:var(--amber-soft);border:1px solid var(--line);padding:.9rem 1rem;border-radius:var(--radius);margin:1.2rem 0;}
+  .offer-meta{color:var(--muted);font-size:.9rem;}
+  .offer-day{font-size:1.4rem;color:var(--navy);margin:.4rem 0;}
+  #offer-msg{margin-top:1rem;font-weight:700;}
+  #offer-msg.ok{color:var(--ok);} #offer-msg.err{color:var(--err);}
 </style>
 </head>
 <body>
-<div style="text-align:center"><img src="img/logo-header.jpg" alt="Helpman" style="max-width:220px;height:auto;"></div>
-<div id="app"><p class="muted">Loading…</p></div>
+<main class="offer-wrap">
+  <img class="offer-logo" src="img/logo-header.jpg" alt="Helpman — General Handyman Solutions">
+  <div id="app"><div class="card"><p class="muted">Loading…</p></div></div>
+</main>
 <script src="js/api.js"></script>
 <script>
 (function () {
@@ -29,7 +30,9 @@
   const app = document.getElementById('app');
   const esc = HP.esc;
 
-  function fail(msg) { app.innerHTML = `<div class="card"><p class="err-msg" id="msg">${esc(msg)}</p><p class="muted small">If you think this is a mistake, contact dispatch.</p></div>`; }
+  function fail(msg) {
+    app.innerHTML = `<div class="card"><p id="offer-msg" class="err">${esc(msg)}</p><p class="muted small">If you think this is a mistake, contact dispatch.</p></div>`;
+  }
 
   async function load() {
     try {
@@ -44,53 +47,62 @@
   }
 
   function renderOffer(s) {
+    const first = esc((s.contractor_name || '').split(' ')[0]);
     app.innerHTML = `<div class="card">
-      <h2>Job offer — ${esc(s.service_type)} (#${s.project_id})</h2>
-      <p><strong>Hi ${esc(s.contractor_name.split(' ')[0])}</strong>, General Handyman Solutions is offering you this project:</p>
-      <p><strong>Address:</strong> ${esc(s.address || '—')}<br>
-      <strong>Details:</strong> ${esc(s.description || '—')}</p>
-      <p class="muted small">This offer expires ${esc((s.expires_at || '').slice(0, 16).replace('T', ' '))}.</p>
-      <label class="terms"><input type="checkbox" id="terms"> <span class="small">I accept the <a href="contractor-terms.html" target="_blank" rel="noopener">Independent Contractor Terms</a> for this job. Required to accept.</span></label>
-      <button class="btn btn-ok" id="b-ok">Accept job</button>
-      <button class="btn btn-no" id="b-no">Decline</button>
-      <p id="msg"></p></div>`;
-      if (pre === '0') document.getElementById('b-no').focus();
-      document.getElementById('b-ok').onclick = () => respond('offers', offerToken, true);
-      document.getElementById('b-no').onclick = () => respond('offers', offerToken, false);
+      <h2 style="margin-top:0;color:var(--navy)">Job offer — ${esc(s.service_type)} <span class="muted">#${s.project_id}</span></h2>
+      <p>Hi <strong>${first}</strong>, General Handyman Solutions is offering you this project:</p>
+      <dl class="kv">
+        <dt>Address</dt><dd>${esc(s.address || '—')}</dd>
+        <dt>Details</dt><dd>${esc(s.description || '—')}</dd>
+      </dl>
+      <p class="offer-meta">This offer expires ${esc((s.expires_at || '').slice(0, 16).replace('T', ' '))}.</p>
+      <label class="offer-terms"><input type="checkbox" id="terms" style="margin-top:.2rem">
+        <span class="small">I accept the <a href="contractor-terms.html" target="_blank" rel="noopener">Independent Contractor Terms</a> for this job. Required to accept.</span></label>
+      <div class="btn-row">
+        <button class="btn btn-ok" id="b-ok" type="button">Accept job</button>
+        <button class="btn btn-outline" id="b-no" type="button">Decline</button>
+      </div>
+      <p id="offer-msg" role="status"></p></div>`;
+    if (pre === '0') document.getElementById('b-no').focus();
+    document.getElementById('b-ok').onclick = () => respond('offers', offerToken, true);
+    document.getElementById('b-no').onclick = () => respond('offers', offerToken, false);
   }
 
   function renderSchedule(s) {
     app.innerHTML = `<div class="card">
-      <h2>Appointment confirmation (#${s.project_id})</h2>
+      <h2 style="margin-top:0;color:var(--navy)">Appointment confirmation <span class="muted">#${s.project_id}</span></h2>
       <p>Your appointment for <strong>${esc(s.service_type)}</strong> is set for:</p>
-      <p style="font-size:20px;"><strong>${esc(s.day)}</strong>${s.arrival_window ? `<br><span class="muted">Arrival window: ${esc(s.arrival_window)}</span>` : ''}</p>
-      <p class="muted small">Arrival times are approximate — please keep the schedule a little flexible.</p>
-      <button class="btn btn-ok" id="b-ok">I confirm</button>
-      <button class="btn btn-no" id="b-no">I can't make it</button>
-      <p id="msg"></p></div>`;
-      if (pre === '0') document.getElementById('b-no').focus();
-      document.getElementById('b-ok').onclick = () => respond('schedule-confirm', schedToken, true);
-      document.getElementById('b-no').onclick = () => respond('schedule-confirm', schedToken, false);
+      <p class="offer-day"><strong>${esc(s.day)}</strong></p>
+      ${s.arrival_window ? `<p class="offer-meta">Arrival window: <strong>${esc(s.arrival_window)}</strong></p>` : ''}
+      <div class="banner" style="background:var(--info-bg);border:1px solid var(--line);">⏰ Arrival times are approximate — please keep the schedule a little flexible.</div>
+      <div class="btn-row">
+        <button class="btn btn-ok" id="b-ok" type="button">I confirm</button>
+        <button class="btn btn-outline" id="b-no" type="button">I can&apos;t make it</button>
+      </div>
+      <p id="offer-msg" role="status"></p></div>`;
+    if (pre === '0') document.getElementById('b-no').focus();
+    document.getElementById('b-ok').onclick = () => respond('schedule-confirm', schedToken, true);
+    document.getElementById('b-no').onclick = () => respond('schedule-confirm', schedToken, false);
   }
 
   async function respond(kind, token, accept) {
-    const msg = document.getElementById('msg');
+    const msg = document.getElementById('offer-msg');
     if (kind === 'offers' && accept && !document.getElementById('terms').checked) {
-      msg.className = 'err-msg'; msg.textContent = 'Please accept the Independent Contractor Terms first.';
+      msg.className = 'err'; msg.textContent = 'Please accept the Independent Contractor Terms first.';
       return;
     }
     const ok = document.getElementById('b-ok'), no = document.getElementById('b-no');
-    ok.disabled = no.disabled = true;
+    HP.busy(ok, true, 'Sending…'); HP.busy(no, true, '');
     try {
       const r = await HP.api('POST', `/${kind}/${encodeURIComponent(token)}/respond`,
         accept ? { accept: true, terms_accepted: kind === 'offers' ? true : undefined } : { accept: false });
-      msg.className = 'ok-msg';
+      msg.className = 'ok';
       msg.textContent = kind === 'offers'
-        ? (r.accepted ? 'Offer accepted! The job is now waiting for the day to be confirmed — watch your email.' : 'Offer declined. Dispatch has been notified.')
-        : (r.confirmed ? 'Schedule confirmed. See you then!' : 'Understood — dispatch has been notified to pick a new day.');
+        ? (r.accepted ? '✔ Offer accepted! The job is now waiting for the day to be confirmed — watch your email.' : 'Offer declined. Dispatch has been notified.')
+        : (r.confirmed ? '✔ Schedule confirmed. See you then!' : 'Understood — dispatch has been notified to pick a new day.');
       ok.style.display = no.style.display = 'none';
-      const t = document.getElementById('terms'); if (t) t.closest('.terms').style.display = 'none';
-    } catch (e) { msg.className = 'err-msg'; msg.textContent = HP.friendlyMessage(e); ok.disabled = no.disabled = false; }
+      const t = document.getElementById('terms'); if (t) t.closest('.offer-terms').style.display = 'none';
+    } catch (e) { msg.className = 'err'; msg.textContent = HP.friendlyMessage(e); HP.busy(ok, false); HP.busy(no, false); }
   }
 
   load();
