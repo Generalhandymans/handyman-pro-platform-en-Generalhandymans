@@ -133,4 +133,7 @@ async function handleWebhook(rawBody, signature) {
   return event.type; // acknowledged, nothing to do
 }
 
-module.exports = { isEnabled, getClient, createIntent, createDepositIntent, refundPayment, handleWebhook };
+// Test hook: lets the automated tests inject a fake Stripe client (no network). Never used in production.
+function _setClientForTests(client) { stripeClient = client; }
+
+module.exports = { _setClientForTests, isEnabled, getClient, createIntent, createDepositIntent, refundPayment, handleWebhook };

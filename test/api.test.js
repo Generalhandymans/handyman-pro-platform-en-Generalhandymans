@@ -859,6 +859,467 @@ test('REGRESSION: campaigns — queue skips opt-outs, escapes names in the HTML,
   assert.equal((await api('GET', '/api/campaigns', undefined, fin.token)).status, 403);
 });
 
+// ---- A fake Stripe (no network): records intents/refunds so the tests can check OUR money logic ----
+let FAKE_STRIPE_SEQ = 0; // global: real Stripe ids are unique across the whole account, so the fake's must be too
+function makeFakeStripe() {
+  const intents = new Map(), refunds = []; const state = { failRefundAfter: Infinity };
+  const refunded = (id) => refunds.filter(r => r.payment_intent === id).reduce((a, r) => a + r.amount, 0);
+  return {
+    state, intents, refundLog: refunds,
+    paymentIntents: {
+      create: async (p) => { const id = `pi_fake_${++FAKE_STRIPE_SEQ}`; const pi = { id, client_secret: `${id}_secret`, amount: p.amount, amount_received: 0, metadata: p.metadata, status: 'requires_payment_method' }; intents.set(id, pi); return pi; },
+      cancel: async (id) => { intents.get(id).status = 'canceled'; return intents.get(id); },
+      retrieve: async (id) => { const pi = intents.get(id); return { ...pi, latest_charge: { amount: pi.amount_received, amount_refunded: refunded(id) } }; },
+    },
+    refunds: { create: async ({ payment_intent, amount }) => {
+      if (refunds.length >= state.failRefundAfter) throw new Error('simulated Stripe outage');
+      const pi = intents.get(payment_intent);
+      if (amount > pi.amount_received - refunded(payment_intent)) throw new Error('over-refund');
+      const r = { id: `re_fake_${++FAKE_STRIPE_SEQ}`, payment_intent, amount }; refunds.push(r); return r;
+    } },
+    webhooks: { constructEvent: (raw, sig, secret) => { if (sig !== `valid-${secret}`) throw new Error('bad signature'); return JSON.parse(Buffer.from(raw).toString('utf8')); } },
+    // test helper: the customer "pays" an intent and Stripe notifies us
+    pay(id, amount) { const pi = intents.get(id); pi.amount_received = amount === undefined ? pi.amount : amount; pi.status = 'succeeded'; return pi; },
+  };
+}
+async function stripeWebhook(type, obj, sig = 'valid-whsec_fake') {
+  const res = await fetch(`${BASE}/api/payments/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'stripe-signature': sig },
+    body: JSON.stringify({ id: 'evt_' + Math.random().toString(36).slice(2), type, data: { object: obj } }) });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+function withFakeStripe(fn) {
+  return async () => {
+    const stripeSvc = require('../src/services/stripe');
+    const keep = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PUBLISHABLE_KEY'].map(k => [k, process.env[k]]);
+    const fake = makeFakeStripe();
+    process.env.STRIPE_SECRET_KEY = 'sk_test_fake'; process.env.STRIPE_WEBHOOK_SECRET = 'whsec_fake'; process.env.STRIPE_PUBLISHABLE_KEY = 'pk_test_fake';
+    stripeSvc._setClientForTests(fake);
+    try { await fn(fake); }
+    finally { stripeSvc._setClientForTests(null); for (const [k, v] of keep) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
+  };
+}
+// quote -> send -> accept while Stripe is ON (the deposit is NOT recorded until Stripe confirms)
+async function acceptWithStripe(price = 50000, cost = 30000) {
+  const q = await api('POST', '/api/quotes', { job_request_id: jobId, customer_price_cents: price, contractor_cost_cents: cost, deposit_pct: 30 }, adminToken);
+  await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+  const r = await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: true, terms_accepted: true }, custToken);
+  assert.equal(r.status, 200);
+  return r.data.project_id;
+}
+
+test('REGRESSION: Stripe deposit — amount comes from the quote, the webhook is verified, idempotent, amount-checked and never moves a job backwards', withFakeStripe(async (fake) => {
+  const st = await api('GET', '/api/payments/stripe-status');
+  assert.equal(st.data.enabled, true);
+  assert.equal(st.data.publishable_key, 'pk_test_fake');
+
+  const pid = await acceptWithStripe();
+  const before = await db.prepare('SELECT COUNT(*) c FROM payments WHERE project_id = ? AND status IN (\'paid\',\'recorded\')').get(pid);
+  assert.equal(Number(before.c), 0, 'with Stripe on, accepting does NOT mark the deposit paid');
+  assert.notEqual((await db.prepare('SELECT j.status FROM projects p JOIN job_requests j ON j.id = p.job_request_id WHERE p.id = ?').get(pid)).status, 'deposit_paid');
+
+  // intent: only the owner, verified, and the amount is the quote's 30% (the client cannot choose it)
+  assert.equal((await api('POST', '/api/payments/deposit-intent', { project_id: pid, amount_cents: 1 }, contToken)).status, 403);
+  const intent = await api('POST', '/api/payments/deposit-intent', { project_id: pid, amount_cents: 1 }, custToken);
+  assert.equal(intent.status, 201);
+  assert.equal(intent.data.amount_cents, 15000, 'amount is derived from the quote, not from the request');
+  assert.equal(fake.intents.get(intent.data.payment_intent_id).amount, 15000);
+  assert.ok(intent.data.client_secret);
+  // a second intent supersedes the first (ledger stays clean)
+  const intent2 = await api('POST', '/api/payments/deposit-intent', { project_id: pid }, custToken);
+  assert.equal(fake.intents.get(intent.data.payment_intent_id).status, 'canceled');
+  const rows = (await api('GET', `/api/payments?project_id=${pid}`, undefined, adminToken)).data;
+  assert.equal(rows.find(r => r.provider_ref === intent.data.payment_intent_id).status, 'failed');
+  const piId = intent2.data.payment_intent_id;
+
+  // webhook: signature, unknown intents, wrong amount, then the real thing
+  assert.equal((await stripeWebhook('payment_intent.succeeded', { id: piId, amount_received: 15000, metadata: { project_id: String(pid), kind: 'deposit' } }, 'forged')).status, 400);
+  assert.equal((await stripeWebhook('payment_intent.succeeded', { id: 'pi_not_ours', amount_received: 1, metadata: {} })).status, 200, 'unknown intents are ignored');
+  const mism = await stripeWebhook('payment_intent.succeeded', { id: piId, amount_received: 14999, metadata: { project_id: String(pid), kind: 'deposit' } });
+  assert.equal(mism.status, 500, 'a wrong amount is rejected so Stripe retries and a human sees it');
+  const cur = (await api('GET', `/api/payments?project_id=${pid}`, undefined, adminToken)).data.find(r => r.provider_ref === piId);
+  assert.equal(cur.status, 'pending');
+  assert.match(cur.notes, /AMOUNT MISMATCH/);
+  const ok = await stripeWebhook('payment_intent.succeeded', { id: piId, amount_received: 15000, metadata: { project_id: String(pid), kind: 'deposit' } });
+  assert.equal(ok.status, 200);
+  const jobStatus = async () => (await db.prepare('SELECT j.status FROM projects p JOIN job_requests j ON j.id = p.job_request_id WHERE p.id = ?').get(pid)).status;
+  assert.equal(await jobStatus(), 'deposit_paid');
+  assert.equal((await api('GET', `/api/payments?project_id=${pid}`, undefined, adminToken)).data.find(r => r.provider_ref === piId).status, 'paid');
+
+  // replay: nothing changes, and a job that already moved on is never pulled back
+  await db.prepare("UPDATE job_requests SET status = 'assigned' WHERE id = (SELECT job_request_id FROM projects WHERE id = ?)").run(pid);
+  assert.equal((await stripeWebhook('payment_intent.succeeded', { id: piId, amount_received: 15000, metadata: { project_id: String(pid), kind: 'deposit' } })).status, 200);
+  assert.equal(await jobStatus(), 'assigned', 'a replayed event does not move the job backwards');
+  assert.equal(Number((await db.prepare("SELECT COUNT(*) c FROM payments WHERE project_id = ? AND kind = 'deposit' AND status = 'paid'").get(pid)).c), 1);
+  // already paid: no new intent
+  assert.equal((await api('POST', '/api/payments/deposit-intent', { project_id: pid }, custToken)).status, 409);
+
+  // a failed payment is recorded as failed
+  const pid2 = await acceptWithStripe();
+  const i2 = await api('POST', '/api/payments/deposit-intent', { project_id: pid2 }, custToken);
+  assert.equal((await stripeWebhook('payment_intent.payment_failed', { id: i2.data.payment_intent_id, metadata: {} })).status, 200);
+  assert.equal((await api('GET', `/api/payments?project_id=${pid2}`, undefined, adminToken)).data.find(r => r.provider_ref === i2.data.payment_intent_id).status, 'failed');
+}));
+
+test('REGRESSION: Stripe final balance — needs approved milestones, the signed sheet and no dispute; refunds are finance-only and capped', withFakeStripe(async (fake) => {
+  // a project whose deposit was paid through Stripe, in progress with an accepted contractor
+  const pid = await acceptWithStripe();
+  const dep = await api('POST', '/api/payments/deposit-intent', { project_id: pid }, custToken);
+  fake.pay(dep.data.payment_intent_id);
+  await stripeWebhook('payment_intent.succeeded', { id: dep.data.payment_intent_id, amount_received: 15000, metadata: { project_id: String(pid), kind: 'deposit' } });
+  assert.equal((await api('POST', `/api/projects/${pid}/assign`, { contractor_id: contractorId }, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/projects/${pid}/contractor-respond`, { accept: true, terms_accepted: true }, contToken)).status, 200);
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'in_progress' }, contToken)).status, 200);
+
+  // 1) milestones first
+  assert.equal((await api('POST', '/api/payments/final-intent', { project_id: pid }, custToken)).status, 409, 'milestones not approved');
+  const ms = (await api('GET', `/api/projects/${pid}`, undefined, adminToken)).data.milestones;
+  for (const m of ms) { await api('POST', `/api/projects/${pid}/milestones/${m.id}/complete`, {}, contToken); await api('POST', `/api/projects/${pid}/milestones/${m.id}/approve`, { approved: true }, custToken); }
+  // 2) then the signed completion sheet
+  const sheet = await api('POST', '/api/payments/final-intent', { project_id: pid }, custToken);
+  assert.equal(sheet.status, 409);
+  assert.match(sheet.data.error, /sign/i);
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, { signer_name: 'Test Customer', signature: 'data:image/png;base64,' + 'A'.repeat(1200), checklist: { work_complete: true, site_clean: true } }, custToken)).status, 201);
+  // 3) an open dispute freezes it
+  const dsp = await api('POST', '/api/disputes', { project_id: pid, reason: 'quality', description: 'There is a crack in the finished wall.' }, custToken);
+  const frozen = await api('POST', '/api/payments/final-intent', { project_id: pid }, custToken);
+  assert.equal(frozen.status, 409);
+  assert.equal(frozen.data.code, 'DISPUTE_HOLD');
+  const fin = await makeStaff('finance', 'strp-fin@test.local');
+  assert.equal((await api('POST', `/api/disputes/${dsp.data.id}/resolve`, { resolution: 'no_action', notes: 'The wall is fine.' }, fin.token)).status, 200);
+
+  // 4) now it opens, for exactly the balance (price - deposit)
+  const f1 = await api('POST', '/api/payments/final-intent', { project_id: pid }, custToken);
+  assert.equal(f1.status, 201);
+  assert.equal(f1.data.amount_cents, 35000);
+  assert.equal(fake.intents.get(f1.data.payment_intent_id).metadata.kind, 'final');
+  const f2 = await api('POST', '/api/payments/final-intent', { project_id: pid }, custToken); // a retry supersedes the first
+  assert.equal(fake.intents.get(f1.data.payment_intent_id).status, 'canceled');
+  fake.pay(f2.data.payment_intent_id);
+  assert.equal((await stripeWebhook('payment_intent.succeeded', { id: f2.data.payment_intent_id, amount_received: 35000, metadata: { project_id: String(pid), kind: 'final' } })).status, 200);
+  assert.equal((await api('POST', '/api/payments/final-intent', { project_id: pid }, custToken)).status, 409, 'nothing left to collect');
+  // a final payment does not touch the job status
+  assert.notEqual((await db.prepare('SELECT j.status FROM projects p JOIN job_requests j ON j.id = p.job_request_id WHERE p.id = ?').get(pid)).status, 'deposit_paid');
+
+  // 5) refunds: finance only; capped at what Stripe says is refundable
+  const finalPay = (await api('GET', `/api/payments?project_id=${pid}`, undefined, adminToken)).data.find(r => r.provider_ref === f2.data.payment_intent_id);
+  assert.equal(finalPay.status, 'paid');
+  const sup = await makeStaff('support', 'strp-sup@test.local');
+  assert.equal((await api('POST', `/api/payments/${finalPay.id}/refund`, { amount_cents: 1000 }, sup.token)).status, 403);
+  assert.equal((await api('POST', `/api/payments/${finalPay.id}/refund`, { amount_cents: 99999 }, fin.token)).status, 400, 'cannot refund more than was charged');
+  const rf = await api('POST', `/api/payments/${finalPay.id}/refund`, { amount_cents: 5000 }, fin.token);
+  assert.equal(rf.status, 201);
+  assert.equal(fake.refundLog.length, 1);
+  assert.equal(fake.refundLog[0].amount, 5000);
+  const rest = await api('POST', `/api/payments/${finalPay.id}/refund`, {}, fin.token); // omit amount = everything still refundable
+  assert.equal(rest.status, 201);
+  assert.equal(rest.data.amount_cents, 30000);
+  assert.equal((await api('POST', `/api/payments/${finalPay.id}/refund`, {}, fin.token)).status, 400, 'fully refunded already');
+  const manual = (await api('GET', `/api/payments?project_id=${pid}`, undefined, adminToken)).data.find(r => r.provider === 'manual' || r.kind === 'deposit' && r.provider !== 'stripe');
+  if (manual) assert.equal((await api('POST', `/api/payments/${manual.id}/refund`, {}, fin.token)).status, 400, 'only Stripe charges are refunded here');
+}));
+
+test('REGRESSION: dispute refund through Stripe — newest charge first, and a retry after a partial failure never refunds twice', withFakeStripe(async (fake) => {
+  const pid = await acceptWithStripe();
+  const dep = await api('POST', '/api/payments/deposit-intent', { project_id: pid }, custToken);
+  fake.pay(dep.data.payment_intent_id);
+  await stripeWebhook('payment_intent.succeeded', { id: dep.data.payment_intent_id, amount_received: 15000, metadata: { project_id: String(pid), kind: 'deposit' } });
+  // a second Stripe charge on the same project (e.g. the final balance), recorded directly
+  const fin2 = await fake.paymentIntents.create({ amount: 35000, metadata: { project_id: String(pid), kind: 'final' } });
+  fake.pay(fin2.id);
+  await db.prepare(`INSERT INTO payments (project_id, kind, amount_cents, status, provider, provider_ref, notes) VALUES (?, 'final', 35000, 'paid', 'stripe', ?, 'test')`).run(pid, fin2.id);
+  assert.equal((await api('POST', `/api/projects/${pid}/assign`, { contractor_id: contractorId }, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/projects/${pid}/contractor-respond`, { accept: true, terms_accepted: true }, contToken)).status, 200);
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'in_progress' }, contToken)).status, 200);
+
+  const dsp = await api('POST', '/api/disputes', { project_id: pid, reason: 'no_show', description: 'Nobody came to do the work at all.' }, custToken);
+  const fin = await makeStaff('finance', 'strp-fin2@test.local');
+  // Stripe goes down after the FIRST refund of a two-charge full refund
+  fake.state.failRefundAfter = 1;
+  const broken = await api('POST', `/api/disputes/${dsp.data.id}/resolve`, { resolution: 'full_refund', notes: 'Nothing was done.' }, fin.token);
+  assert.equal(broken.status, 502);
+  assert.equal(fake.refundLog.length, 1);
+  assert.equal(fake.refundLog[0].payment_intent, fin2.id, 'the newest charge is refunded first');
+  assert.equal(fake.refundLog[0].amount, 35000);
+  assert.equal((await db.prepare('SELECT status FROM disputes WHERE id = ?').get(dsp.data.id)).status, 'open', 'nothing was closed');
+
+  // Stripe is back: the retry sends ONLY the difference
+  fake.state.failRefundAfter = Infinity;
+  const done = await api('POST', `/api/disputes/${dsp.data.id}/resolve`, { resolution: 'full_refund', notes: 'Nothing was done.' }, fin.token);
+  assert.equal(done.status, 200);
+  assert.equal(done.data.refund.total_cents, 50000);
+  assert.equal(fake.refundLog.length, 2, 'exactly one more refund');
+  assert.equal(fake.refundLog[1].amount, 15000);
+  assert.equal(fake.refundLog.reduce((a, r) => a + r.amount, 0), 50000, 'never more than the customer paid');
+  const refundRows = (await api('GET', `/api/payments?project_id=${pid}`, undefined, adminToken)).data.filter(r => r.kind === 'refund');
+  assert.equal(refundRows.length, 2);
+  assert.ok(refundRows.every(r => /^Dispute #\d+ /.test(r.notes)));
+  assert.equal(Number((await db.prepare("SELECT COUNT(*) c FROM payments WHERE project_id = ? AND kind = 'refund' AND provider = 'manual'").get(pid)).c), 0, 'all of it went back through Stripe');
+}));
+
+test('REGRESSION: reviews — only for the owner of a completed project, once, rating validated, lists scoped by role', async () => {
+  const pid = await activeProject();
+  const body = { project_id: pid, rating: 5, comment: 'Great work, very tidy.' };
+  assert.equal((await api('POST', '/api/reviews', body)).status, 401);
+  assert.equal((await api('POST', '/api/reviews', { ...body, rating: 6 }, custToken)).status, 422);
+  assert.equal((await api('POST', '/api/reviews', { ...body, rating: 0 }, custToken)).status, 422);
+  assert.equal((await api('POST', '/api/reviews', { ...body, project_id: 999999 }, custToken)).status, 404);
+  assert.equal((await api('POST', '/api/reviews', body, custToken)).status, 400, 'not completed yet');
+  await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'completed', force: true }, adminToken);
+  const stranger = await api('POST', '/api/auth/signup/customer', { name: 'Rev Stranger', email: 'revstranger@test.local', phone: '555-606-7070', password: 'Customer123!' });
+  assert.equal((await api('POST', '/api/reviews', body, stranger.data.token)).status, 403, 'only the project\'s own customer');
+  assert.equal((await api('POST', '/api/reviews', body, contToken)).status, 403, 'a contractor cannot review themselves');
+
+  const rv = await api('POST', '/api/reviews', body, custToken);
+  assert.equal(rv.status, 201);
+  assert.equal(rv.data.rating, 5);
+  assert.equal((await api('POST', '/api/reviews', { ...body, rating: 1 }, custToken)).status, 409, 'one review per project');
+  const avg = (await db.prepare('SELECT rating_avg FROM contractors WHERE id = ?').get(contractorId)).rating_avg;
+  assert.ok(avg >= 1 && avg <= 5, 'the contractor rating is recalculated');
+
+  // lists are scoped
+  assert.equal((await api('GET', '/api/reviews')).status, 401, 'no longer public');
+  const mine = await api('GET', '/api/reviews', undefined, custToken);
+  assert.ok(mine.data.some(r => r.project_id === pid));
+  assert.ok(mine.data.every(r => r.customer_id === custId), 'a customer only sees their own reviews');
+  assert.equal((await api('GET', '/api/reviews', undefined, stranger.data.token)).data.length, 0);
+  const cs = await api('GET', '/api/reviews', undefined, contToken);
+  assert.ok(cs.data.some(r => r.project_id === pid));
+  assert.ok(cs.data.every(r => r.customer_id === undefined), 'a contractor never learns who wrote the review');
+  const all = await api('GET', '/api/reviews', undefined, adminToken);
+  assert.ok(all.data.some(r => r.project_id === pid && r.customer_id === custId));
+});
+
+test('REGRESSION: referrals — customers create codes, redeeming is validated and one-shot', async () => {
+  assert.equal((await api('POST', '/api/referrals', {}, contToken)).status, 403, 'customers only');
+  const code = await api('POST', '/api/referrals', {}, custToken);
+  assert.equal(code.status, 201);
+  assert.match(code.data.code, /^HP-[0-9A-F]{10}$/, 'codes are 40 bits');
+  assert.equal(code.data.discount_pct, 10);
+  const mine = await api('GET', '/api/referrals/mine', undefined, custToken);
+  assert.ok(mine.data.some(r => r.code === code.data.code));
+  assert.equal((await api('GET', '/api/referrals/mine', undefined, contToken)).status, 403);
+
+  assert.equal((await api('POST', '/api/referrals/redeem', { code: code.data.code, email: 'not-an-email' })).status, 422);
+  assert.equal((await api('POST', '/api/referrals/redeem', { email: 'friend@test.local' })).status, 422);
+  assert.equal((await api('POST', '/api/referrals/redeem', { code: 'HP-0000000000', email: 'friend@test.local' })).status, 404);
+  const ok = await api('POST', '/api/referrals/redeem', { code: code.data.code.toLowerCase(), email: 'Friend@Test.local' });
+  assert.equal(ok.status, 200, 'codes are case-insensitive');
+  assert.equal(ok.data.discount_pct, 10);
+  assert.equal((await api('POST', '/api/referrals/redeem', { code: code.data.code, email: 'other@test.local' })).status, 409, 'one use only');
+  const row = await db.prepare('SELECT status, referred_email FROM referrals WHERE code = ?').get(code.data.code);
+  assert.equal(row.status, 'redeemed');
+  assert.equal(row.referred_email, 'friend@test.local', 'email is normalized');
+});
+
+const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+async function uploadPhoto(path, token, { mime = 'image/png', name = 'wall.png', extra = {}, query = '' } = {}) {
+  const form = new FormData();
+  form.append('photos', new Blob([PNG_1PX], { type: mime }), name);
+  for (const [k, v] of Object.entries(extra)) form.append(k, v);
+  const res = await fetch(`${BASE}${path}${query}`, { method: 'POST', headers: token ? { Authorization: 'Bearer ' + token } : {}, body: form });
+  return { status: res.status, data: await res.json().catch(() => ({})) };
+}
+
+test('REGRESSION: project photos — only the project\'s contractor/staff upload, files are validated, stored once and served by an unguessable name', async () => {
+  const fs2 = require('fs'), path2 = require('path');
+  const dir = path2.join(__dirname, '..', 'uploads');
+  const count = () => (fs2.existsSync(dir) ? fs2.readdirSync(dir).length : 0);
+  const pid = await activeProject();
+
+  // who may upload: nobody anonymous, never the customer; nothing is written for a refused caller
+  const before = count();
+  assert.equal((await uploadPhoto(`/api/projects/${pid}/photos`, null)).status, 401);
+  assert.equal((await uploadPhoto(`/api/projects/${pid}/photos`, custToken)).status, 403, 'customers do not upload progress photos');
+  assert.equal(count(), before, 'refused uploads write nothing to disk');
+
+  // a real upload by the contractor
+  const up = await uploadPhoto(`/api/projects/${pid}/photos`, contToken, { extra: { kind: 'completion' } });
+  assert.equal(up.status, 201);
+  assert.equal(up.data.photos.length, 1);
+  assert.equal(up.data.photos[0].kind, 'completion');
+  assert.equal(up.data.photos[0].original_name, 'wall.png');
+  assert.equal(count(), before + 1, 'exactly one file stored');
+  const bad = await uploadPhoto(`/api/projects/${pid}/photos`, contToken, { extra: { kind: '<script>' } });
+  assert.equal(bad.data.photos[0].kind, 'progress', 'an unknown kind falls back to progress (never stored raw)');
+  const notImage = await uploadPhoto(`/api/projects/${pid}/photos`, contToken, { mime: 'text/html', name: 'x.html' });
+  assert.ok(notImage.status >= 400 && notImage.status < 500, 'non-image files are refused: ' + notImage.status);
+
+  // the customer sees the photo in the project, and it is served with the right type
+  const proj = await api('GET', `/api/projects/${pid}`, undefined, custToken);
+  const photo = proj.data.photos.find(p => p.kind === 'completion');
+  assert.ok(photo && /^[a-f0-9]{32}$/.test(photo.filename), 'the stored name is a 32-hex token');
+  const img = await fetch(`${BASE}/api/photos/${photo.filename}`);
+  assert.equal(img.status, 200);
+  assert.match(img.headers.get('content-type'), /image\/png/);
+  assert.match(img.headers.get('cache-control'), /private/);
+  assert.equal(Buffer.from(await img.arrayBuffer()).length > 0, true);
+
+  // delivery is strict about names: only tokens that exist
+  assert.equal((await fetch(`${BASE}/api/photos/${'0'.repeat(32)}`)).status, 404, 'unknown token');
+  assert.equal((await fetch(`${BASE}/api/photos/not-a-token`)).status, 404);
+  assert.equal((await fetch(`${BASE}/api/photos/..%2F..%2Fserver.js`)).status, 404, 'no path traversal');
+  assert.equal((await fetch(`${BASE}/api/photos/%2e%2e%2fpackage.json`)).status, 404);
+  assert.equal((await fetch(`${BASE}/api/photos/photos%2F..%2F..%2Fpackage.json`)).status, 404, 'the S3-style prefix cannot be abused either');
+});
+
+test('REGRESSION: request photos — a guest uploads with the claim token only, and the request owner is authorized before anything is written', async () => {
+  const fs2 = require('fs'), path2 = require('path');
+  const dir = path2.join(__dirname, '..', 'uploads');
+  const count = () => (fs2.existsSync(dir) ? fs2.readdirSync(dir).length : 0);
+  const g = await api('POST', '/api/jobs', { name: 'Photo Guest', phone: '555-515-6161', email: 'photoguest@test.local', address: '3 Elm Ct', service_type: 'painting', description: 'Repaint the hallway, please.' });
+  assert.equal(g.status, 201);
+  const id = g.data.id, claim = g.data.claim_token;
+  const before = count();
+  assert.equal((await uploadPhoto(`/api/jobs/${id}/photos`, null)).status, 403, 'no claim token, no upload');
+  assert.equal((await uploadPhoto(`/api/jobs/${id}/photos`, null, { query: '?claim=' + 'f'.repeat(32) })).status, 403, 'wrong token');
+  assert.equal((await uploadPhoto(`/api/jobs/${id}/photos`, contToken)).status, 403, 'another user cannot add photos to someone else\'s request');
+  assert.equal(count(), before, 'nothing is written for a refused caller');
+  const ok = await uploadPhoto(`/api/jobs/${id}/photos`, null, { query: '?claim=' + claim });
+  assert.equal(ok.status, 201);
+  assert.equal(count(), before + 1);
+  assert.equal(ok.data.photos.length, 1);
+  const stored = await db.prepare('SELECT filename, kind, job_request_id, storage_provider FROM photos WHERE job_request_id = ?').get(id);
+  assert.equal(stored.kind, 'request');
+  assert.equal(stored.storage_provider, 'local');
+  assert.equal((await fetch(`${BASE}/api/photos/${stored.filename}`)).status, 200);
+  // the 6-photo cap per request
+  for (let i = 0; i < 5; i++) assert.equal((await uploadPhoto(`/api/jobs/${id}/photos`, null, { query: '?claim=' + claim })).status, 201);
+  const seventh = await uploadPhoto(`/api/jobs/${id}/photos`, null, { query: '?claim=' + claim });
+  assert.equal(seventh.status, 409, 'the 7th photo is refused');
+  assert.equal(Number((await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(id)).c), 6);
+  assert.equal(count(), before + 6, 'and nothing extra stays on disk');
+  // a batch that would cross the cap is refused as a whole and cleaned up (use a fresh request)
+  const g2 = await api('POST', '/api/jobs', { name: 'Batch Guest', phone: '555-515-6262', email: 'batchguest@test.local', address: '4 Elm Ct', service_type: 'painting', description: 'Repaint the hallway, please.' });
+  const form = new FormData();
+  for (let i = 0; i < 6; i++) form.append('photos', new Blob([PNG_1PX], { type: 'image/png' }), `p${i}.png`);
+  assert.equal((await fetch(`${BASE}/api/jobs/${g2.data.id}/photos?claim=${g2.data.claim_token}`, { method: 'POST', body: form })).status, 201, 'six at once fit exactly');
+  const c2 = count();
+  const extra = await uploadPhoto(`/api/jobs/${g2.data.id}/photos`, null, { query: '?claim=' + g2.data.claim_token });
+  assert.equal(extra.status, 409);
+  assert.equal(count(), c2, 'a refused upload leaves no file behind');
+});
+
+test('REGRESSION: contractor profile — editing license/insurance voids the verification; activation needs every check; admin workflow is audited', async () => {
+  const k = await api('POST', '/api/auth/signup/contractor', { name: 'Verify Me', email: 'verifyme@test.local', phone: '555-717-1818', password: 'Contractor123!', legal_name: 'VM LLC', city: 'Napa' });
+  assert.equal(k.status, 201);
+  const tok = k.data.token;
+  const me = await api('GET', '/api/contractors/me', undefined, tok);
+  assert.equal(me.status, 200);
+  const cid = me.data.id;
+  assert.equal((await api('GET', '/api/contractors/me', undefined, custToken)).status, 403);
+
+  // validation of the contractor's own edits
+  assert.equal((await api('PATCH', '/api/contractors/me', { service_radius_miles: 9999 }, tok)).status, 422);
+  assert.equal((await api('PATCH', '/api/contractors/me', {}, tok)).status, 400);
+  const dis = await makeStaff('dispatch', 'vm-dis@test.local');
+  const sup = await makeStaff('support', 'vm-sup@test.local');
+  await api('PATCH', '/api/contractors/me', { license_number: 'CSLB-111', insurance_info: 'Acme Insurance #1', city: 'Napa' }, tok);
+
+  // activation guardrail: needs license + insurance verified AND background passed
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { status: 'active' }, dis.token)).status, 422);
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { background_check: 'maybe' }, dis.token)).status, 422);
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { license_verified: true }, sup.token)).status, 403, 'support cannot verify');
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { license_verified: true, insurance_verified: true, background_check: 'passed' }, dis.token)).status, 200);
+  const act = await api('PATCH', `/api/contractors/${cid}/verify`, { status: 'active' }, dis.token);
+  assert.equal(act.status, 200);
+  assert.equal(act.data.status, 'active');
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'contractor.verified' AND entity_id = ?").get(cid));
+
+  // harmless edits keep the verification
+  const harmless = await api('PATCH', '/api/contractors/me', { city: 'Sonoma', license_number: 'CSLB-111' }, tok);
+  assert.equal(harmless.status, 200);
+  assert.ok(harmless.data.license_verified && harmless.data.status === 'active', 'same license number and a new city change nothing');
+
+  // swapping the license number voids it and takes the contractor out of rotation until re-checked
+  const swapped = await api('PATCH', '/api/contractors/me', { license_number: 'CSLB-999-SOMEONE-ELSES' }, tok);
+  assert.equal(swapped.status, 200);
+  assert.ok(!swapped.data.license_verified, 'the license badge is gone');
+  assert.ok(swapped.data.insurance_verified, 'the insurance badge is untouched');
+  assert.equal(swapped.data.status, 'pending', 'an active contractor goes back to pending');
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'contractor.reverification_required' AND entity_id = ?").get(cid));
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { status: 'active' }, dis.token)).status, 422, 'cannot be re-activated without re-verifying');
+  // insurance too
+  await api('PATCH', `/api/contractors/${cid}/verify`, { license_verified: true }, dis.token);
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { status: 'active' }, dis.token)).status, 200);
+  const ins = await api('PATCH', '/api/contractors/me', { insurance_info: 'Different Insurance Co #77' }, tok);
+  assert.ok(!ins.data.insurance_verified && ins.data.status === 'pending');
+
+  // admin reads
+  assert.equal((await api('GET', '/api/contractors', undefined, dis.token)).status, 200);
+  assert.equal((await api('GET', `/api/contractors/${cid}`, undefined, sup.token)).status, 200);
+  assert.equal((await api('GET', '/api/contractors', undefined, tok)).status, 403);
+  assert.equal((await api('GET', '/api/contractors/999999', undefined, adminToken)).status, 404);
+  assert.equal((await api('PATCH', '/api/contractors/999999/verify', { status: 'suspended' }, adminToken)).status, 404);
+});
+
+test('REGRESSION: CRM read endpoints all run; follow-up tasks can be completed; the CRM needs the support permission', async () => {
+  await api('POST', '/api/crm/tasks/generate', {}, adminToken);
+  for (const p of ['pipeline', 'tasks', 'contractors', 'recruitment-gaps', 'email-log']) {
+    const r = await api('GET', `/api/crm/${p}`, undefined, adminToken);
+    assert.equal(r.status, 200, `/api/crm/${p}`);
+    assert.ok(r.data !== null && typeof r.data === 'object');
+    assert.equal((await api('GET', `/api/crm/${p}`, undefined, custToken)).status, 403, `${p} is staff only`);
+  }
+  for (const seg of ['all_customers', 'past_customers', 'inactive_clients_90d', 'lost_leads', 'all_contractors', 'pending_contractors', 'top_contractors']) {
+    const r = await api('GET', `/api/crm/segments/${seg}`, undefined, adminToken);
+    assert.equal(r.status, 200, `segment ${seg}`);
+    assert.equal(r.data.segment, seg);
+    assert.equal(typeof r.data.count, 'number', `${seg} has a count`);
+    assert.ok(Array.isArray(r.data.sample) && r.data.sample.length <= 5, `${seg} returns a sample of at most 5`);
+  }
+  assert.ok([400, 404].includes((await api('GET', '/api/crm/segments/not_a_segment', undefined, adminToken)).status));
+  const fin = await makeStaff('finance', 'crm2-fin@test.local');
+  assert.equal((await api('GET', '/api/crm/pipeline', undefined, fin.token)).status, 403, 'finance has no CRM');
+
+  const tasks = (await api('GET', '/api/crm/tasks', undefined, adminToken)).data;
+  const list = Array.isArray(tasks) ? tasks : tasks.tasks;
+  if (list && list.length) {
+    const open = list.find(x => x.status === 'open');
+    if (open) {
+      assert.equal((await api('PATCH', `/api/crm/tasks/${open.id}/done`, {}, adminToken)).status, 200);
+      assert.equal((await db.prepare('SELECT status FROM followup_tasks WHERE id = ?').get(open.id)).status, 'done');
+    }
+  }
+  assert.equal((await api('PATCH', '/api/crm/tasks/999999/done', {}, adminToken)).status, 404);
+});
+
+test('REGRESSION: quotes — a customer can decline, lists/reads are owner-or-staff only, and a quote is answered once', async () => {
+  const job = await api('POST', '/api/jobs', { name: 'Decliner', phone: '555-111-2222', email: 'cust@test.local', address: '8 Pine St', service_type: 'painting', description: 'Paint the fence, both sides please.' }, custToken);
+  assert.equal(job.status, 201);
+  const jid = job.data.id;
+  const q = await api('POST', '/api/quotes', { job_request_id: jid, customer_price_cents: 80000, contractor_cost_cents: 50000, deposit_pct: 30 }, adminToken);
+  assert.equal(q.status, 201);
+  assert.equal((await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: false }, custToken)).status, 400, 'not sent yet: nothing to answer');
+  await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+
+  // visibility
+  const stranger = await api('POST', '/api/auth/signup/customer', { name: 'Quote Stranger', email: 'quotestranger@test.local', phone: '555-909-1010', password: 'Customer123!' });
+  assert.equal((await api('GET', `/api/quotes?job_request_id=${jid}`, undefined, custToken)).status, 200);
+  assert.equal((await api('GET', `/api/quotes?job_request_id=${jid}`, undefined, adminToken)).status, 200);
+  assert.equal((await api('GET', `/api/quotes?job_request_id=${jid}`, undefined, stranger.data.token)).status, 403);
+  assert.equal((await api('GET', '/api/quotes', undefined, custToken)).status, 400, 'job_request_id is required');
+  assert.equal((await api('GET', '/api/quotes?job_request_id=999999', undefined, adminToken)).status, 404);
+  assert.equal((await api('GET', `/api/quotes/${q.data.id}`, undefined, custToken)).status, 200);
+  assert.equal((await api('GET', `/api/quotes/${q.data.id}`, undefined, stranger.data.token)).status, 403);
+  assert.equal((await api('GET', '/api/quotes/999999', undefined, adminToken)).status, 404);
+  assert.equal((await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: false }, stranger.data.token)).status, 403, 'only the owner answers');
+
+  // decline: the quote is closed and the job is marked lost
+  const no = await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: false }, custToken);
+  assert.equal(no.status, 200);
+  assert.equal(no.data.accepted, false);
+  assert.equal((await db.prepare('SELECT status FROM quotes WHERE id = ?').get(q.data.id)).status, 'rejected');
+  assert.equal((await db.prepare('SELECT status FROM job_requests WHERE id = ?').get(jid)).status, 'lost');
+  assert.equal((await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: false }, custToken)).status, 400, 'answered once');
+  assert.equal((await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: true, terms_accepted: true }, custToken)).status, 400, 'a declined quote cannot be accepted afterwards');
+  assert.equal((await db.prepare('SELECT COUNT(*) c FROM projects WHERE quote_id = ?').get(q.data.id)).c, 0, 'no project was created');
+  // accepting needs the terms
+  const q2 = await api('POST', '/api/quotes', { job_request_id: jid, customer_price_cents: 60000, contractor_cost_cents: 40000, deposit_pct: 30 }, adminToken);
+  await api('POST', `/api/quotes/${q2.data.id}/send`, {}, adminToken);
+  assert.equal((await api('POST', `/api/quotes/${q2.data.id}/respond`, { accept: true }, custToken)).status, 400, 'terms must be accepted explicitly');
+  assert.equal((await db.prepare('SELECT COUNT(*) c FROM projects WHERE quote_id = ?').get(q2.data.id)).c, 0, 'nothing is created without the terms');
+});
+
 test('REGRESSION: every report endpoint runs and returns JSON (admin/finance only)', async () => {
   for (const p of ['overview', 'funnel', 'contractor-funnel', 'margins', 'ticket', 'contractors', 'calibration', 'kpis']) {
     const r = await api('GET', `/api/reports/${p}`, undefined, adminToken);

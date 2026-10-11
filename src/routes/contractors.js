@@ -57,8 +57,20 @@ router.patch('/me', authRequired, requireRole('contractor'), ah(async (req, res)
     if (b[f] !== undefined) { sets.push(`${f} = ?`); vals.push(typeof b[f] === 'string' ? b[f].trim() : b[f]); }
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update.' });
+
+  // A verification belongs to the DOCUMENT that was checked. Changing the license number or the
+  // insurance details voids it (otherwise a verified contractor could swap in any text and keep the
+  // badge), and an active contractor who loses a verification goes back to "pending" until re-checked.
+  const cur = await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id);
+  const changed = (f) => b[f] !== undefined && String(b[f]).trim() !== String(cur[f] == null ? '' : cur[f]).trim();
+  let reverify = false;
+  if (changed('license_number') && cur.license_verified) { sets.push('license_verified = 0'); reverify = true; }
+  if (changed('insurance_info') && cur.insurance_verified) { sets.push('insurance_verified = 0'); reverify = true; }
+  if (reverify && cur.status === 'active') sets.push(`status = 'pending'`);
+
   vals.push(req.user.id);
   await db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE user_id = ?`).run(...vals);
+  if (reverify) await auditLog(req.user.id, 'contractor.reverification_required', 'contractors', cur.id, 'License/insurance details changed by the contractor');
   res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id)));
 }));
 

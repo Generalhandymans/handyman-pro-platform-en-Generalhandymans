@@ -131,6 +131,7 @@ const intakeLimiter = rateLimit({
 });
 app.use('/api/auth', authLimiter);
 app.post('/api/jobs', intakeLimiter);
+app.post('/api/referrals/redeem', intakeLimiter); // public + guessable codes: cap attempts per IP
 
 // ---- Photo delivery ----
 // Multer stores files under random names with no extension, so we resolve the

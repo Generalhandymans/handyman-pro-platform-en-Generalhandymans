@@ -7,7 +7,7 @@ const { ah, authRequired, requireRole, isEmail, failIfErrors } = require('../mid
 const router = express.Router();
 
 function makeCode() {
-  return 'HP-' + crypto.randomBytes(3).toString('hex').toUpperCase();
+  return 'HP-' + crypto.randomBytes(5).toString('hex').toUpperCase(); // 40 bits (was 24: guessable by brute force)
 }
 
 router.post('/', authRequired, requireRole('customer'), ah(async (req, res) => {

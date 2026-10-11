@@ -41,7 +41,8 @@ router.post('/tasks/generate', ah(async (req, res) => {
 }));
 
 router.patch('/tasks/:id/done', ah(async (req, res) => {
-  await db.prepare(`UPDATE followup_tasks SET status = 'done' WHERE id = ?`).run(req.params.id);
+  const r = await db.prepare(`UPDATE followup_tasks SET status = 'done' WHERE id = ?`).run(req.params.id);
+  if (r.changes !== 1) return res.status(404).json({ error: 'Task not found.' }); // used to answer {ok:true} for ids that do not exist
   res.json({ ok: true });
 }));
 

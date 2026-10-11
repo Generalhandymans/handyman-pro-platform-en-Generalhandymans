@@ -556,10 +556,14 @@ async function preflightProject(req, res, next) {
     const p = await loadProject(req, res);
     if (!p) return;
     if (!['admin', 'contractor'].includes(req.user.role)) return res.status(403).json({ error: 'Not allowed.' });
+    // A generous cap per project (progress photos are legitimate and numerous), but never unbounded.
+    const have = Number((await db.prepare('SELECT COUNT(*) c FROM photos WHERE project_id = ?').get(p.id)).c);
+    if (have >= MAX_PROJECT_PHOTOS) return res.status(409).json({ error: `A project can have up to ${MAX_PROJECT_PHOTOS} photos.` });
     req.project = p;
     next();
   } catch (e) { next(e); }
 }
+const MAX_PROJECT_PHOTOS = 60;
 router.post('/:id/photos', authRequired, preflightProject, upload.array('photos', 6), ah(async (req, res) => {
   const p = req.project;
   const kind = ['progress', 'completion'].includes((req.body || {}).kind) ? req.body.kind : 'progress';
