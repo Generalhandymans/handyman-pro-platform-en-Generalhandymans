@@ -116,13 +116,24 @@ async function preflightJob(req, res, next) {
   try {
     const job = await loadJob(req, res);
     if (!job) return;
+    // Cap per REQUEST (not just per upload): multer's limit alone lets anyone with the claim token
+    // fill the disk by repeating the upload. Refuse BEFORE a byte is written when it is already full.
+    const have = Number((await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id)).c);
+    if (have >= MAX_REQUEST_PHOTOS) return res.status(409).json({ error: `A request can have up to ${MAX_REQUEST_PHOTOS} photos.` });
     req.job = job;
+    req.photosHave = have;
     next();
   } catch (e) { next(e); }
 }
+const MAX_REQUEST_PHOTOS = 6;
 router.post('/:id/photos', preflightJob, upload.array('photos', 6), ah(async (req, res) => {
   const job = req.job;
   if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No photos received.' });
+  if (req.photosHave + req.files.length > MAX_REQUEST_PHOTOS) {
+    // This upload would cross the cap: discard what multer just wrote and refuse the whole batch.
+    for (const f of req.files) { try { require('fs').unlinkSync(f.path); } catch (e) { /* already gone */ } }
+    return res.status(409).json({ error: `A request can have up to ${MAX_REQUEST_PHOTOS} photos (${req.photosHave} already attached).` });
+  }
 
   const analyzed = await vision.analyzePhotos(req.files.map(f => ({
     path: f.path, mime: f.mimetype, filename: f.filename, originalName: f.originalname,

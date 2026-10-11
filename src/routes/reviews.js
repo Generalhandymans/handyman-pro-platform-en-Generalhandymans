@@ -34,11 +34,23 @@ router.post('/', authRequired, ah(async (req, res) => {
   res.status(201).json(await db.prepare('SELECT * FROM reviews WHERE id = ?').get(id));
 }));
 
-router.get('/', ah(async (req, res) => {
+// Scoped by role (it used to be PUBLIC and return everyone's reviews with customer and project ids):
+//  - customer: only THEIR reviews (the portal uses this to know which projects are already reviewed)
+//  - contractor: reviews of their own jobs, without who wrote them
+//  - staff: everything (optionally ?contractor_id=)
+router.get('/', authRequired, ah(async (req, res) => {
+  if (req.user.role === 'customer') {
+    return res.json(await db.prepare('SELECT * FROM reviews WHERE customer_id = ? ORDER BY id DESC LIMIT 500').all(req.user.id));
+  }
+  if (req.user.role === 'contractor') {
+    const c = await db.prepare('SELECT id FROM contractors WHERE user_id = ?').get(req.user.id);
+    if (!c) return res.json([]);
+    return res.json(await db.prepare('SELECT id, project_id, rating, comment, created_at FROM reviews WHERE contractor_id = ? ORDER BY id DESC LIMIT 500').all(c.id));
+  }
   const { contractor_id } = req.query;
   const rows = contractor_id
     ? await db.prepare('SELECT * FROM reviews WHERE contractor_id = ? ORDER BY id DESC').all(contractor_id)
-    : await db.prepare('SELECT * FROM reviews ORDER BY id DESC LIMIT 100').all();
+    : await db.prepare('SELECT * FROM reviews ORDER BY id DESC LIMIT 200').all();
   res.json(rows);
 }));
 
