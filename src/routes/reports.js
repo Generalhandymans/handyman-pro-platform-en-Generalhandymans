@@ -16,7 +16,7 @@ router.get('/kpis', ah(async (req, res) => {
   const n = Number(req.query.days);
   const days = Number.isInteger(n) && n >= 7 && n <= 730 ? n : 30;
   const LIM = 20000;
-  const [jobs, quotes, projects, payments, sheets, payables, reviews, ms, disputes] = await Promise.all([
+  const [jobs, quotes, projects, payments, sheets, payables, reviews, ms, disputes, visits] = await Promise.all([
     db.prepare(`SELECT id, customer_id, source, created_at FROM job_requests ORDER BY id DESC LIMIT ${LIM}`).all(),
     db.prepare(`SELECT id, job_request_id, status, customer_price_cents, sent_at, responded_at FROM quotes ORDER BY id DESC LIMIT ${LIM}`).all(),
     db.prepare(`SELECT id, job_request_id, contractor_id, stage, customer_price_cents, contractor_cost_cents, created_at, scheduled_start, scheduled_end FROM projects ORDER BY id DESC LIMIT ${LIM}`).all(),
@@ -26,10 +26,11 @@ router.get('/kpis', ah(async (req, res) => {
     db.prepare(`SELECT rating, created_at FROM reviews`).all(),
     db.prepare(`SELECT customer_approval AS k, COUNT(*) AS c FROM milestones GROUP BY customer_approval`).all(),
     db.prepare(`SELECT status, refund_cents, created_at, resolved_at FROM disputes`).all(),
+    db.prepare(`SELECT outcome, created_at FROM visit_events`).all(),
   ]);
   const milestoneCounts = Object.fromEntries(ms.map(r => [r.k, Number(r.c)]));
   res.json(require('../services/kpis').computeKpis(
-    { jobs, quotes, projects, payments, sheets, payables, reviews, milestoneCounts, disputes }, { days }));
+    { jobs, quotes, projects, payments, sheets, payables, reviews, milestoneCounts, disputes, visits }, { days }));
 }));
 
 router.get('/overview', ah(async (req, res) => {
@@ -112,8 +113,10 @@ router.get('/ticket', ah(async (req, res) => {
      FROM projects p JOIN job_requests j ON j.id = p.job_request_id
      GROUP BY j.service_type ORDER BY jobs DESC`
   ).all();
+  // PostgreSQL's created_at is a TIMESTAMPTZ (substr() does not accept it); SQLite stores text.
+  const monthExpr = db._isPg ? `to_char(p.created_at, 'YYYY-MM')` : `substr(p.created_at,1,7)`;
   const byMonth = await db.prepare(
-    `SELECT substr(p.created_at,1,7) AS month, COUNT(*) AS jobs, ROUND(AVG(p.customer_price_cents)) AS avg_cents
+    `SELECT ${monthExpr} AS month, COUNT(*) AS jobs, ROUND(AVG(p.customer_price_cents)) AS avg_cents
      FROM projects p GROUP BY month ORDER BY month`
   ).all();
   res.json({ by_service_type: byTrade, by_month: byMonth });

@@ -137,6 +137,12 @@
         <p class="small muted">Active projects without scheduled dates. Pick the dates and save; you will be warned if the contractor is already booked.</p>
         <div id="agenda-unscheduled"></div>
       </div>
+      <div class="section">
+        <div class="section-head"><h2>Text messages</h2>
+          <button class="btn btn-outline btn-sm" id="ag-remind" type="button">Send tomorrow's reminders now</button></div>
+        <p class="small muted">Reminders go out automatically the day before, between 9:00 and 19:00 business time, only to customers who opted in. Customers can reply STOP at any time.</p>
+        <div id="agenda-sms"></div>
+      </div>
     </section>
 
     <section class="tab-panel" id="panel-disputes" role="tabpanel">
@@ -296,8 +302,28 @@
         document.getElementById('ag-prev').addEventListener('click', () => { agendaFrom = addDaysIso(agendaFrom, -7); renderAgenda(); });
         document.getElementById('ag-next').addEventListener('click', () => { agendaFrom = addDaysIso(agendaFrom, 7); renderAgenda(); });
         document.getElementById('ag-today').addEventListener('click', () => { agendaFrom = mondayOf(isoToday()); renderAgenda(); });
+        document.getElementById('ag-remind').addEventListener('click', async (ev) => {
+          HP.busy(ev.target, true, 'Sending…');
+          try {
+            const r = await HP.api('POST', '/sms/run-reminders', { force: true });
+            HP.toast(`Reminders: ${r.sent} sent of ${r.checked} visit(s) tomorrow.`, 'ok'); renderSmsLog();
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); } finally { HP.busy(ev.target, false); }
+        });
       }
       await renderAgenda();
+      renderSmsLog();
+    }
+
+    async function renderSmsLog() {
+      const box = document.getElementById('agenda-sms');
+      try {
+        const rows = await HP.api('GET', '/sms/log');
+        if (!rows.length) { box.innerHTML = '<p class="muted">No texts yet.</p>'; return; }
+        const kind = { sent: 'ok', failed: 'err', skipped_no_consent: 'muted', skipped_bad_number: 'warn' };
+        box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>When</th><th>Type</th><th>Project</th><th>Status</th><th>Message</th></tr></thead><tbody>
+          ${rows.slice(0, 30).map((r) => `<tr><td class="small">${HP.fmtDateTime(r.created_at)}</td><td>${HP.esc(r.kind || '')}</td><td>${r.project_id ? '#' + r.project_id : ''}</td>
+            <td>${HP.badge(String(r.status).replace(/_/g, ' '), kind[r.status] || 'muted')}</td><td class="small">${HP.esc(r.body)}</td></tr>`).join('')}</tbody></table></div>`;
+      } catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; }
     }
 
     function agendaCard(i) {
@@ -386,6 +412,9 @@
       out.innerHTML = `<div class="card" style="margin-top:1rem"><h3 style="margin-top:0">Dispute #${d.id} — project #${d.project_id} ${HP.badge(d.status, DP_KIND[d.status] || 'muted')}</h3>
         <p class="small"><strong>${HP.esc(d.opened_by_role)}</strong> reported <strong>${HP.esc(d.reason)}</strong>:<br>${HP.esc(d.description)}</p>
         ${d.status === 'resolved' ? `<p class="small">${HP.badge('Resolved', 'ok')} <strong>${HP.esc(String(d.resolution).replace('_', ' '))}</strong>${d.refund_cents ? ' · refund ' + HP.fmtMoney(d.refund_cents) : ''}<br>${HP.esc(d.resolution_notes || '')}</p>` : ''}
+        <div class="btn-row"><button class="btn btn-outline btn-sm" id="dpd-sum" type="button">Case summary</button></div>
+        <pre id="dpd-sum-out" class="small" style="white-space:pre-wrap;background:#f8fafc;padding:.6rem;border-radius:8px;margin-top:.4rem" hidden></pre>
+        <p class="small muted" id="dpd-ai-note" hidden></p>
         <h4>Conversation</h4>
         ${d.events.length ? d.events.map((e) => `<div class="small" style="margin:.3rem 0;padding:.4rem .6rem;border-radius:8px;background:${e.visibility === 'staff' ? '#fef9c3' : e.visibility === 'customer' ? '#eff6ff' : '#f0fdf4'}">
           <strong>${HP.esc(e.author_name || e.author_role)}</strong> → ${chan[e.visibility]} · ${HP.fmtDateTime(e.created_at)}<br>${HP.esc(e.body)}</div>`).join('') : '<p class="small muted">No messages yet.</p>'}
@@ -393,6 +422,7 @@
         <div style="margin-top:.75rem"><textarea id="dpd-body" rows="2" style="width:100%" aria-label="Message"></textarea>
           <div class="btn-row" style="margin-top:.4rem"><select id="dpd-vis" aria-label="Who sees this"><option value="customer">To the customer</option><option value="contractor">To the contractor</option><option value="staff">Internal note</option></select>
           <button class="btn btn-primary btn-sm" id="dpd-send" type="button">Send</button>
+          <button class="btn btn-outline btn-sm" id="dpd-ai" type="button">✨ Suggest reply</button>
           ${d.status === 'open' ? '<button class="btn btn-outline btn-sm" id="dpd-inv" type="button">Start investigating</button>' : ''}</div></div>
         <h4 style="margin-top:1rem">Resolve</h4>
         <div class="field"><label for="dpd-res">Decision</label><select id="dpd-res">
@@ -412,11 +442,35 @@
       };
       sel('dpd-res').addEventListener('change', syncUi);
       if (sel('dpd-pay')) sel('dpd-pay').addEventListener('change', syncUi);
+      let dpDraft = null; // suggestion being edited; reported back once it is actually sent
+      const aiBtn = sel('dpd-ai');
+      if (aiBtn) aiBtn.addEventListener('click', async () => {
+        const vis = sel('dpd-vis').value;
+        if (vis === 'staff') { HP.toast('Suggestions are for replies to the customer or the contractor. Pick one of them.', 'info'); return; }
+        HP.busy(aiBtn, true, 'Thinking…');
+        try {
+          const r = await HP.api('POST', '/ai/drafts', { dispute_id: Number(id), audience: vis });
+          sel('dpd-body').value = r.body; dpDraft = r.id;
+          const warn = r.flags.filter((f) => f !== 'ai_unavailable_used_template');
+          const n = sel('dpd-ai-note'); n.hidden = false;
+          n.textContent = r.note + (warn.length ? ' ⚠ Check: ' + warn.map((f) => f.replace(/_/g, ' ')).join(', ') + '.' : '');
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(aiBtn, false); }
+      });
+      sel('dpd-sum').addEventListener('click', async (ev) => {
+        HP.busy(ev.target, true, 'Loading…');
+        try { const r = await HP.api('POST', '/ai/summary', { project_id: d.project_id }); const o = sel('dpd-sum-out'); o.textContent = r.text; o.hidden = false; }
+        catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(ev.target, false); }
+      });
       sel('dpd-send').addEventListener('click', async (ev) => {
         const text = sel('dpd-body').value.trim();
         if (!text) return;
         HP.busy(ev.target, true, 'Sending…');
-        try { await HP.api('POST', `/disputes/${id}/comments`, { body: text, visibility: sel('dpd-vis').value }); showDispute(id); }
+        try {
+          await HP.api('POST', `/disputes/${id}/comments`, { body: text, visibility: sel('dpd-vis').value });
+          if (dpDraft) { HP.api('POST', `/ai/drafts/${dpDraft}/mark`, { status: 'sent', final_body: text }).catch(() => {}); dpDraft = null; }
+          showDispute(id); }
         catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); HP.busy(ev.target, false); }
       });
       const inv = sel('dpd-inv');
@@ -510,6 +564,12 @@
           finally { HP.busy(btn, false); }
         });
       }
+      try {
+        const u = await HP.api('GET', '/ai/usage');
+        let el = document.getElementById('ai-usage');
+        if (!el) { el = document.createElement('p'); el.id = 'ai-usage'; el.className = 'small muted'; document.getElementById('team-list').parentNode.appendChild(el); }
+        el.textContent = `Reply assistant: ${u.provider === 'openai' ? 'AI is on' : 'template mode (no AI key)'} · last ${u.window_days} days: ${u.drafts} draft(s), ${u.sent} sent (${u.sent_unedited} without edits), ${u.discarded} discarded · ${u.tokens.prompt + u.tokens.completion} tokens.`;
+      } catch (e) { /* owner-only: other roles never reach this tab */ }
       const box = document.getElementById('team-list');
       let rows;
       try { rows = await HP.api('GET', '/staff'); }
@@ -595,6 +655,8 @@
           ${card('Repeat customers', P(q.repeat_rate_pct), q.repeat_customers + ' of ' + q.customers_with_completed)}
           ${card('Active projects', c.active_projects, c.unscheduled + ' without dates')}
           ${card('Double-booked', c.double_booked, 'see the Agenda tab')}
+          ${card('No-shows', k.visits.no_show_rate_pct == null ? '—' : k.visits.no_show_rate_pct + '%', k.visits.customer_no_show + ' customer · ' + k.visits.contractor_no_show + ' contractor · ' + k.visits.logged + ' logged')}
+          ${card('Reschedules', k.visits.rescheduled, 'dates moved in this window')}
           ${card('Disputes opened', q.disputes_opened, q.disputes_open_now + ' open now · ' + P(q.dispute_rate_pct) + ' of projects')}
           ${card('Refunded via disputes', HP.fmtMoney(q.refunded_by_disputes_cents), 'in this window')}
         </div>
@@ -686,6 +748,7 @@
       loaded.messages = true;
       HPMsg.mountMessages(document.getElementById('admin-messages'), {
         allowKindSwitch: true,
+        aiSuggest: (window.__perms || []).includes('support'),
         fetchProjects: async () => {
           const ps = await HP.api('GET', '/projects');
           return ps.map((p) => ({ id: p.id, label: `#${p.id} · ${HP.fmtMoney(p.customer_price_cents)} · ${HP.PROJECT_STAGE[p.stage] || p.stage}` }));

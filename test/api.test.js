@@ -16,8 +16,10 @@ for (const f of [TEST_DB, TEST_DB + '-shm', TEST_DB + '-wal']) {
 }
 process.env.DB_PATH = TEST_DB;
 process.env.PORT = '3457';
-process.env.AUTH_RATE_LIMIT_MAX = '1000'; // suite makes >20 auth calls from one IP
 process.env.JWT_SECRET = 'test-secret-for-automated-tests-only';
+// The suite signs in far more than 20 times from one IP: raise the limiter (it stays ON, so its headers are still tested).
+process.env.AUTH_RATE_LIMIT_MAX = '5000';
+process.env.INTAKE_RATE_LIMIT_MAX = '5000';
 
 const db = require('../src/db');
 
@@ -366,8 +368,7 @@ test('rate limiting headers present on auth endpoints', async () => {
   const r = await api('POST', '/api/auth/login', { email: 'admin@test.local', password: 'wrong' });
   assert.equal(r.status, 401);
   const rl = r.headers.get('ratelimit'); // draft-7 combined header
-  const expectedLimit = process.env.AUTH_RATE_LIMIT_MAX || '20';
-  assert.ok(rl && rl.includes('limit=' + expectedLimit), 'rate-limit headers present');
+  assert.ok(rl && rl.includes(`limit=${process.env.AUTH_RATE_LIMIT_MAX}`), 'rate-limit headers present');
 });
 
 test('project completion notifies customer', async () => {
@@ -586,8 +587,8 @@ test('REGRESSION: customer can export their data (no margin, no secrets)', async
 });
 
 test('REGRESSION: account deletion anonymizes, needs the password, and is blocked mid-project', async () => {
-  // blocked: custToken has an active project (note: password recovery test changed it to NewPass123!)
-  const blocked = await api('POST', '/api/me/delete', { password: 'NewPass123!' }, custToken);
+  // blocked: custToken has an active project
+  const blocked = await api('POST', '/api/me/delete', { password: 'NewPass123!' }, custToken); // the password set in the recovery test
   assert.equal(blocked.status, 409);
   // fresh customer with a request but no project
   const k = await api('POST', '/api/auth/signup/customer', { name: 'Delete Me', email: 'todelete@test.local', phone: '555-101-2020', password: 'Customer123!' });
@@ -787,6 +788,83 @@ test('REGRESSION: contractor payouts are created on completion, guarded by the c
   assert.equal(typeof gen.data.created, 'number');
 });
 
+test('REGRESSION: campaigns — queue skips opt-outs, escapes names in the HTML, adds the unsubscribe footer, sends once', async () => {
+  const unsub = require('../src/services/unsubscribe');
+  // The 'all_customers' segment is built from people who SUBMITTED A REQUEST (job_requests), so create those.
+  const request = (name, email, phone) => api('POST', '/api/jobs', { name, email, phone, address: '9 Test Rd', service_type: 'painting', description: 'Paint a bedroom, two coats please.' });
+  const evil = await request('<b onmouseover=x>Mallory</b>', 'mallory@test.local', '555-808-9090'); // a name that tries to inject markup
+  assert.equal(evil.status, 201);
+  assert.equal((await request('Quiet Qa', 'quietqa@test.local', '555-808-9191')).status, 201);
+  await unsub.suppress('quietqa@test.local', 'test opt-out');
+
+  const tpl = await api('POST', '/api/campaigns/templates', { name: 'Spring promo', subject: 'Hello {{name}}', body_html: '<p>Hi {{name}}, 10% off in {{city}}!</p>' }, adminToken);
+  assert.equal(tpl.status, 201);
+  const camp = await api('POST', '/api/campaigns', { name: 'Spring', segment: 'all_customers', template_id: tpl.data.id }, adminToken);
+  assert.equal(camp.status, 201);
+  const q = await api('POST', `/api/campaigns/${camp.data.id}/queue`, {}, adminToken);
+  assert.equal(q.status, 200);
+  assert.ok(q.data.queued >= 1);
+  assert.ok(q.data.skipped_unsubscribed >= 1, 'the opted-out address is skipped');
+
+  const rows = await db.prepare('SELECT * FROM email_outbox WHERE campaign_id = ?').all(camp.data.id);
+  const mal = rows.find(r => r.to_email === 'mallory@test.local');
+  assert.ok(mal, 'the customer is queued');
+  assert.ok(!/<b onmouseover/.test(mal.body_html), 'a name can never inject markup into the email');
+  assert.match(mal.body_html, /&lt;b onmouseover=x&gt;Mallory&lt;\/b&gt;/);
+  assert.match(mal.body_html, /\/api\/unsubscribe\?e=/, 'every promotional email carries the unsubscribe link');
+  assert.ok(!rows.some(r => r.to_email === 'quietqa@test.local'), 'opted-out people are never queued');
+  assert.ok(!/&lt;/.test(mal.subject), 'subjects are plain text, not HTML-escaped');
+
+  // re-queue is idempotent
+  const again = await api('POST', `/api/campaigns/${camp.data.id}/queue`, {}, adminToken);
+  assert.equal(Number((await db.prepare('SELECT COUNT(*) c FROM email_outbox WHERE campaign_id = ?').get(camp.data.id)).c), rows.length, 'queueing twice does not duplicate');
+
+  // send: console provider, each row delivered once; roles
+  assert.equal((await api('POST', `/api/campaigns/${camp.data.id}/send`, {}, custToken)).status, 403);
+  const sent = await api('POST', `/api/campaigns/${camp.data.id}/send`, {}, adminToken);
+  assert.equal(sent.status, 200);
+  const done = await db.prepare("SELECT COUNT(*) c FROM email_outbox WHERE campaign_id = ? AND status = 'sent'").get(camp.data.id);
+  assert.ok(Number(done.c) >= 1, 'rows are marked sent');
+  const list = await api('GET', '/api/campaigns', undefined, adminToken);
+  assert.ok(list.data.find(c => c.id === camp.data.id).sent >= 1);
+  // an opt-out that arrives AFTER queueing still blocks the send
+  assert.equal((await request('Late Larry', 'larry@test.local', '555-808-9292')).status, 201);
+  const camp2 = await api('POST', '/api/campaigns', { name: 'Second', segment: 'all_customers', template_id: tpl.data.id }, adminToken);
+  await api('POST', `/api/campaigns/${camp2.data.id}/queue`, {}, adminToken);
+  await unsub.suppress('larry@test.local', 'opted out after queueing');
+  await api('POST', `/api/campaigns/${camp2.data.id}/send`, {}, adminToken);
+  const larry = await db.prepare("SELECT status FROM email_outbox WHERE campaign_id = ? AND to_email = 'larry@test.local'").get(camp2.data.id);
+  assert.notEqual(larry.status, 'sent', 'a late opt-out is honored at send time');
+  // support may run campaigns (marketing), finance may not
+  const fin = await makeStaff('finance', 'camp-fin@test.local');
+  assert.equal((await api('GET', '/api/campaigns', undefined, fin.token)).status, 403);
+});
+
+test('REGRESSION: every report endpoint runs and returns JSON (admin/finance only)', async () => {
+  for (const p of ['overview', 'funnel', 'contractor-funnel', 'margins', 'ticket', 'contractors', 'calibration', 'kpis']) {
+    const r = await api('GET', `/api/reports/${p}`, undefined, adminToken);
+    assert.equal(r.status, 200, `/api/reports/${p}`);
+    assert.ok(r.data && typeof r.data === 'object', `${p} returns data`);
+    assert.equal((await api('GET', `/api/reports/${p}`, undefined, custToken)).status, 403, `${p} is not for customers`);
+  }
+  const t = await api('GET', '/api/reports/ticket', undefined, adminToken);
+  assert.ok(Array.isArray(t.data.by_month) && t.data.by_month.every(m => /^\d{4}-\d{2}$/.test(m.month)), 'months look like YYYY-MM');
+  const fin = await makeStaff('support', 'rep-sup@test.local');
+  assert.equal((await api('GET', '/api/reports/ticket', undefined, fin.token)).status, 403, 'support has no finance reports');
+});
+
+test('REGRESSION: CRM follow-up task generator runs and never duplicates an open task', async () => {
+  const g1 = await api('POST', '/api/crm/tasks/generate', {}, adminToken);
+  assert.equal(g1.status, 200);
+  const n1 = Number((await db.prepare("SELECT COUNT(*) c FROM followup_tasks WHERE status = 'open'").get()).c);
+  const g2 = await api('POST', '/api/crm/tasks/generate', {}, adminToken);
+  assert.equal(g2.status, 200);
+  const n2 = Number((await db.prepare("SELECT COUNT(*) c FROM followup_tasks WHERE status = 'open'").get()).c);
+  assert.equal(n2, n1, 'a second run creates no duplicates');
+  const sup = await makeStaff('finance', 'crm-fin@test.local');
+  assert.equal((await api('POST', '/api/crm/tasks/generate', {}, sup.token)).status, 403, 'CRM needs the support permission');
+});
+
 test('REGRESSION: KPI dashboard endpoint returns every block with real numbers; admin only', async () => {
   assert.equal((await api('GET', '/api/reports/kpis', undefined, custToken)).status, 403);
   assert.equal((await api('GET', '/api/reports/kpis', undefined, contToken)).status, 403);
@@ -914,27 +992,16 @@ test('REGRESSION: two-step verification — password alone is not enough, codes 
   // step 2
   assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l1.data.challenge, code: '123456' })).status, 401);
   assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: 'garbage', code: '123456' })).status, 401);
-  // NOTE (integrator): enable() consumed the current 30 s TOTP step, and the
-  // server's anti-replay correctly rejects any further code from that step.
-  // Wait for the next step so every code below is deterministic instead of
-  // racing the 30 s clock (the auditor's version assumed a boundary would
-  // fall in a ~140 ms window and failed deterministically).
-  const STEP_MS = 30000;
-  const enabledStep = (await db.prepare('SELECT totp_last_step FROM users WHERE id = ?').get(st.id)).totp_last_step;
-  const waitMs = (enabledStep + 1) * STEP_MS - Date.now() + 100;
-  if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
-
-  const code = totp.codeAt(setup.data.secret, Date.now());
+  // The code used to ENABLE 2FA is spent for its 30 s window (anti-replay), so the first sign-in uses the next one.
+  const code = totp.codeAt(setup.data.secret, Date.now() + 30000);
+  assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l1.data.challenge, code: totp.codeAt(setup.data.secret, Date.now()) })).status, 401, 'the enrolment code cannot be reused to sign in');
   const v1 = await api('POST', '/api/auth/2fa/verify', { challenge: l1.data.challenge, code });
   assert.equal(v1.status, 200);
   assert.equal((await api('GET', '/api/auth/me', undefined, v1.data.token)).data.totp_enabled, true);
   // the same code cannot open a second session (anti-replay)
   const l2 = await login();
   assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l2.data.challenge, code })).status, 401, 'a used code is dead');
-  // a code from the following step works (server allows ±1 step of clock drift,
-  // and it is beyond the consumed step, so this is deterministic)
-  const next = totp.codeAt(setup.data.secret, (enabledStep + 2) * STEP_MS);
-  assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l2.data.challenge, code: next })).status, 200);
+  // (Only one TOTP sign-in fits in each 30 s window: a second one needs a code from a LATER step.)
 
   // recovery code: works once
   const l3 = await login();
@@ -1126,7 +1193,284 @@ test('REGRESSION: KPI dashboard counts disputes', async () => {
   assert.ok(k.data.quality.refunded_by_disputes_cents >= 20000, 'refunds from the resolved disputes are counted');
 });
 
+test('REGRESSION: SMS only goes to customers who opted in; "on my way", visit outcomes and the STOP reply work', async () => {
+  const sms = require('../src/services/sms');
+  const pid = await activeProject();
+  const logFor = (kind) => db.prepare('SELECT * FROM sms_log WHERE project_id = ? AND kind = ? ORDER BY id DESC').all(pid, kind);
+  assert.equal((await api('POST', `/api/projects/${pid}/on-my-way`, {}, custToken)).status, 403, 'customers cannot trigger it');
+
+  // 1) no consent -> nothing is sent, and it is logged as skipped
+  const none = await api('POST', `/api/projects/${pid}/on-my-way`, {}, contToken);
+  assert.equal(none.status, 200);
+  assert.equal(none.data.sent, false);
+  assert.equal(none.data.reason, 'no_consent');
+  assert.equal((await logFor('on_my_way'))[0].status, 'skipped_no_consent');
+
+  // 2) the customer opts in from the portal
+  const st = await api('GET', '/api/sms/status', undefined, custToken);
+  assert.ok(st.data.phone && st.data.phone.startsWith('+'), 'phone is normalized to E.164');
+  assert.equal((await api('POST', '/api/sms/opt-in', { opt_in: true }, custToken)).data.opted_in, true);
+  // the request form also records consent when the box is ticked
+  const g = await api('POST', '/api/jobs', { name: 'Texty', phone: '(707) 555-0199', email: 'texty@test.local', address: '5 Oak St',
+    service_type: 'painting', description: 'Paint one room, please.', sms_consent: true });
+  assert.equal(g.status, 201);
+  assert.equal(await sms.hasConsent('+17075550199'), true);
+  const g2 = await api('POST', '/api/jobs', { name: 'Quiet', phone: '(707) 555-0188', email: 'quiet@test.local', address: '6 Oak St',
+    service_type: 'painting', description: 'Paint one room, please.' });
+  assert.equal(await sms.hasConsent('+17075550188'), false, 'consent is never assumed');
+
+  // 3) on my way: sent once, throttled, and the technician's number is never in the text
+  const ok = await api('POST', `/api/projects/${pid}/on-my-way`, {}, contToken);
+  assert.equal(ok.data.sent, true);
+  const row = (await logFor('on_my_way'))[0];
+  assert.equal(row.status, 'sent');
+  assert.equal(row.provider, 'console');
+  assert.match(row.body, /on the way/);
+  assert.match(row.body, /Reply STOP/);
+  assert.ok(!/\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/.test(row.body), 'no phone number in the text');
+  assert.equal((await api('POST', `/api/projects/${pid}/on-my-way`, {}, contToken)).status, 409, 'throttled: 1 text per 30 minutes');
+
+  // 4) visit outcomes
+  assert.equal((await api('POST', `/api/projects/${pid}/visit-outcome`, { outcome: 'banana' }, contToken)).status, 422);
+  assert.equal((await api('POST', `/api/projects/${pid}/visit-outcome`, { outcome: 'completed' }, custToken)).status, 403);
+  assert.equal((await api('POST', `/api/projects/${pid}/visit-outcome`, { outcome: 'completed' }, contToken)).status, 201);
+  assert.equal((await api('POST', `/api/projects/${pid}/visit-outcome`, { outcome: 'customer_no_show', note: 'Nobody home' }, contToken)).status, 201);
+  assert.equal((await logFor('missed_visit'))[0].status, 'sent', 'a missed visit texts the customer');
+
+  // 5) scheduling confirms by text; moving the date counts as a reschedule
+  assert.equal((await api('PATCH', `/api/projects/${pid}/schedule`, { scheduled_start: '2027-05-10', scheduled_end: '2027-05-10' }, adminToken)).status, 200);
+  assert.equal((await logFor('scheduled'))[0].status, 'sent');
+  assert.match((await logFor('scheduled'))[0].body, /Monday, May 10/);
+  assert.equal((await api('PATCH', `/api/projects/${pid}/schedule`, { scheduled_start: '2027-05-12', scheduled_end: '2027-05-12' }, adminToken)).status, 200);
+  const resched = await db.prepare("SELECT COUNT(*) c FROM visit_events WHERE project_id = ? AND outcome = 'rescheduled'").get(pid);
+  assert.equal(Number(resched.c), 1);
+
+  // 6) Twilio inbound: needs configuration and a valid signature; STOP turns texts off
+  delete process.env.TWILIO_AUTH_TOKEN;
+  const form = (b) => new URLSearchParams(b);
+  const post = (b, sig) => fetch(`${BASE}/api/sms/inbound`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(sig ? { 'X-Twilio-Signature': sig } : {}) }, body: form(b) });
+  assert.equal((await post({ Body: 'STOP', From: st.data.phone })).status, 503, 'refuses when not configured');
+  process.env.TWILIO_AUTH_TOKEN = 'test-token-123';
+  const prevUrl = process.env.PUBLIC_URL;
+  process.env.PUBLIC_URL = 'http://sms.test';
+  try {
+    const params = { Body: 'STOP', From: st.data.phone };
+    assert.equal((await post(params, 'forged')).status, 403);
+    assert.equal((await post(params)).status, 403, 'unsigned requests are refused');
+    const sig = sms.twilioSignature('http://sms.test/api/sms/inbound', params, 'test-token-123');
+    assert.equal((await post(params, sig)).status, 200);
+    assert.equal((await api('GET', '/api/sms/status', undefined, custToken)).data.opted_in, false, 'STOP opts out immediately');
+    const start = { Body: 'start', From: st.data.phone };
+    assert.equal((await post(start, sms.twilioSignature('http://sms.test/api/sms/inbound', start, 'test-token-123'))).status, 200);
+    assert.equal((await api('GET', '/api/sms/status', undefined, custToken)).data.opted_in, true, 'START opts back in (case-insensitive)');
+  } finally {
+    delete process.env.TWILIO_AUTH_TOKEN;
+    if (prevUrl === undefined) delete process.env.PUBLIC_URL; else process.env.PUBLIC_URL = prevUrl;
+  }
+});
+
+test('REGRESSION: day-before reminders go once, only in the daytime window, only for staff with dispatch', async () => {
+  const sms = require('../src/services/sms');
+  await api('POST', '/api/sms/opt-in', { opt_in: true }, custToken);
+  // A visit that has not started yet: assigned/scheduled (reminders are for upcoming visits, not work in progress).
+  const fp = await freshProject();
+  const pid = fp.projectId;
+  assert.equal((await api('POST', `/api/projects/${pid}/assign`, { contractor_id: contractorId }, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/projects/${pid}/contractor-respond`, { accept: true, terms_accepted: true }, contToken)).status, 200);
+  assert.ok(['assigned', 'scheduled'].includes((await db.prepare('SELECT stage FROM projects WHERE id = ?').get(pid)).stage));
+  const tomorrow = sms.tomorrowIn(process.env.BUSINESS_TZ || 'America/Los_Angeles', new Date());
+  assert.equal((await api('PATCH', `/api/projects/${pid}/schedule`, { scheduled_start: tomorrow, scheduled_end: tomorrow }, adminToken)).status, 200);
+  const sup = await makeStaff('support', 'smssup@test.local');
+  assert.equal((await api('POST', '/api/sms/run-reminders', { force: true }, sup.token)).status, 403, 'dispatch is required');
+  assert.equal((await api('POST', '/api/sms/run-reminders', { force: true }, custToken)).status, 403);
+
+  const r1 = await api('POST', '/api/sms/run-reminders', { force: true }, adminToken);
+  assert.equal(r1.status, 200);
+  assert.equal(r1.data.for_date, tomorrow);
+  const sent = () => db.prepare("SELECT COUNT(*) c FROM sms_log WHERE project_id = ? AND kind = 'reminder' AND status = 'sent'").get(pid);
+  assert.equal(Number((await sent()).c), 1, 'reminder sent');
+  assert.ok((await db.prepare('SELECT reminder_sent_at FROM projects WHERE id = ?').get(pid)).reminder_sent_at);
+  await api('POST', '/api/sms/run-reminders', { force: true }, adminToken);
+  assert.equal(Number((await sent()).c), 1, 'running again never reminds twice');
+  assert.match((await db.prepare("SELECT body FROM sms_log WHERE project_id = ? AND kind = 'reminder'").get(pid)).body, /tomorrow/);
+
+  // moving the date re-arms the reminder
+  const later = sms.tomorrowIn('UTC', new Date(Date.now() + 5 * 86400000));
+  await api('PATCH', `/api/projects/${pid}/schedule`, { scheduled_start: later, scheduled_end: later }, adminToken);
+  assert.equal((await db.prepare('SELECT reminder_sent_at FROM projects WHERE id = ?').get(pid)).reminder_sent_at, null);
+
+  // outside 9:00-19:00 business time nothing is sent (03:00 in Los Angeles)
+  const night = await sms.runReminders({ now: new Date('2026-10-11T10:00:00Z') });
+  assert.ok(night.skipped, 'night window is respected');
+  assert.equal(night.sent, 0);
+
+  // log is visible to staff, hidden from customers
+  const lg = await api('GET', '/api/sms/log', undefined, adminToken);
+  assert.equal(lg.status, 200);
+  assert.ok(lg.data.length >= 1);
+  assert.equal((await api('GET', '/api/sms/log', undefined, custToken)).status, 403);
+});
+
+test('REGRESSION: KPIs count visit outcomes; deleting an account stops its texts', async () => {
+  const k = await api('GET', '/api/reports/kpis?days=365', undefined, adminToken);
+  assert.ok(k.data.visits.logged >= 3);
+  assert.ok(k.data.visits.customer_no_show >= 1 && k.data.visits.rescheduled >= 1);
+  assert.equal(typeof k.data.visits.no_show_rate_pct, 'number');
+
+  const sms = require('../src/services/sms');
+  const c = await api('POST', '/api/auth/signup/customer', { name: 'Bye Texts', email: 'byetexts@test.local', phone: '(707) 555-0155', password: 'Customer123!' });
+  assert.equal((await api('POST', '/api/sms/opt-in', { opt_in: true }, c.data.token)).status, 200);
+  assert.equal(await sms.hasConsent('+17075550155'), true);
+  await sms.send({ phone: '+17075550155', body: 'hello', kind: 'test' });
+  const exp = await api('GET', '/api/me/export', undefined, c.data.token);
+  assert.equal(exp.data.sms_consent.opted_in, true, 'export includes the text consent');
+  assert.equal((await api('POST', '/api/me/delete', { password: 'Customer123!' }, c.data.token)).status, 200);
+  assert.equal(await sms.hasConsent('+17075550155'), false, 'no more texts after deletion');
+  assert.equal(Number((await db.prepare("SELECT COUNT(*) c FROM sms_log WHERE to_phone = '+17075550155'").get()).c), 0, 'their message history is erased');
+});
+
+test('REGRESSION: AI reply drafts — staff only, never auto-sent, rate-limited, human decision recorded', async () => {
+  const keep = { k: process.env.OPENAI_API_KEY, e: process.env.AI_ENABLED, l: process.env.AI_DRAFTS_PER_HOUR };
+  process.env.AI_ENABLED = 'false'; // never reach a real provider from the test suite
+  try {
+    const sup = await makeStaff('support', 'ai1@test.local');
+    const fin = await makeStaff('finance', 'ai-fin@test.local');
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: csThread })).status, 401);
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: csThread }, custToken)).status, 403);
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: csThread }, contToken)).status, 403);
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: csThread }, fin.token)).status, 403, 'finance has no support permission');
+    assert.equal((await api('POST', '/api/ai/drafts', {}, sup.token)).status, 422);
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: 999999 }, sup.token)).status, 404);
+
+    const before = Number((await db.prepare('SELECT COUNT(*) c FROM messages WHERE thread_id = ?').get(csThread)).c);
+    const d = await api('POST', '/api/ai/drafts', { thread_id: csThread }, sup.token);
+    assert.equal(d.status, 201);
+    assert.equal(d.data.provider, 'heuristic', 'no AI configured: it says it is a template');
+    assert.equal(d.data.audience, 'customer');
+    assert.ok(d.data.body.length > 20);
+    assert.match(d.data.note, /Template draft/);
+    assert.ok(!/\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|@/.test(d.data.body), 'no contact details in a draft');
+    const after = Number((await db.prepare('SELECT COUNT(*) c FROM messages WHERE thread_id = ?').get(csThread)).c);
+    assert.equal(after, before, 'creating a draft sends NOTHING');
+
+    // the human's decision is recorded
+    assert.equal((await api('POST', `/api/ai/drafts/${d.data.id}/mark`, { status: 'sent', final_body: 'x' }, fin.token)).status, 403);
+    assert.equal((await api('POST', `/api/ai/drafts/${d.data.id}/mark`, { status: 'banana' }, sup.token)).status, 422);
+    assert.equal((await api('POST', `/api/ai/drafts/${d.data.id}/mark`, { status: 'sent' }, sup.token)).status, 422, 'must say what was actually sent');
+    const other = await makeStaff('support', 'ai-other@test.local');
+    assert.equal((await api('POST', `/api/ai/drafts/${d.data.id}/mark`, { status: 'discarded' }, other.token)).status, 404, 'only the author');
+    const edited = await api('POST', `/api/ai/drafts/${d.data.id}/mark`, { status: 'sent', final_body: d.data.body + ' Thank you for your patience.' }, sup.token);
+    assert.equal(edited.status, 200);
+    assert.equal(edited.data.edited, true);
+    assert.ok(edited.data.similarity > 0 && edited.data.similarity < 1);
+    assert.equal((await api('POST', `/api/ai/drafts/${d.data.id}/mark`, { status: 'discarded' }, sup.token)).status, 409, 'decided once');
+    const d2 = await api('POST', '/api/ai/drafts', { thread_id: csThread }, sup.token);
+    assert.equal((await api('POST', `/api/ai/drafts/${d2.data.id}/mark`, { status: 'sent', final_body: d2.data.body }, sup.token)).data.edited, false, 'sent as suggested');
+    const d3 = await api('POST', '/api/ai/drafts', { thread_id: csThread }, sup.token);
+    assert.equal((await api('POST', `/api/ai/drafts/${d3.data.id}/mark`, { status: 'discarded' }, sup.token)).data.status, 'discarded');
+
+    // usage is an owner view
+    assert.equal((await api('GET', '/api/ai/usage', undefined, sup.token)).status, 403);
+    const u = await api('GET', '/api/ai/usage', undefined, adminToken);
+    assert.equal(u.status, 200);
+    assert.ok(u.data.drafts >= 3 && u.data.sent >= 2 && u.data.sent_unedited >= 1 && u.data.discarded >= 1);
+    assert.equal(u.data.provider, 'heuristic');
+
+    // per-person hourly limit
+    process.env.AI_DRAFTS_PER_HOUR = '2';
+    const lim = await makeStaff('support', 'ai-limit@test.local');
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: csThread }, lim.token)).status, 201);
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: csThread }, lim.token)).status, 201);
+    assert.equal((await api('POST', '/api/ai/drafts', { thread_id: csThread }, lim.token)).status, 429);
+  } finally {
+    for (const [k, v] of [['OPENAI_API_KEY', keep.k], ['AI_ENABLED', keep.e], ['AI_DRAFTS_PER_HOUR', keep.l]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('REGRESSION: dispute drafts only see the channel they reply to; the provider request leaks no contact details', async () => {
+  const keep = { k: process.env.OPENAI_API_KEY, e: process.env.AI_ENABLED };
+  const realFetch = global.fetch;
+  let captured = null;
+  try {
+    const pid = await activeProject();
+    const desc = 'The grout is cracking already. Call me at 707-555-0123 about it.';
+    const dsp = await api('POST', '/api/disputes', { project_id: pid, reason: 'quality', description: desc }, custToken);
+    assert.equal(dsp.status, 201);
+    const did = dsp.data.id;
+    const sup = await makeStaff('support', 'ai-disp@test.local');
+    await api('POST', `/api/disputes/${did}/comments`, { body: 'CONTRACTOR-CHANNEL-SECRET: the wall was not level', visibility: 'contractor' }, sup.token);
+    await api('POST', `/api/disputes/${did}/comments`, { body: 'CUSTOMER-CHANNEL-NOTE: we are reviewing your photos', visibility: 'customer' }, sup.token);
+    await api('POST', `/api/disputes/${did}/comments`, { body: 'Here are more details from me.' }, custToken);
+    await api('POST', `/api/disputes/${did}/comments`, { body: 'CONTRACTOR-STATEMENT: I followed the plan.' }, contToken);
+
+    // provider ON, but only our fake answers (everything else still reaches the real test server)
+    process.env.OPENAI_API_KEY = 'sk-test'; process.env.AI_ENABLED = 'true';
+    global.fetch = async (url, opts) => {
+      if (String(url).startsWith('https://api.openai.com')) {
+        captured = JSON.parse(opts.body);
+        return { ok: true, json: async () => ({ choices: [{ message: { content: 'Thanks for the details. We are reviewing it and will update you here. Reach us at help@evil.test' } }], usage: { prompt_tokens: 111, completion_tokens: 22 } }) };
+      }
+      return realFetch(url, opts);
+    };
+    const toCust = await api('POST', '/api/ai/drafts', { dispute_id: did, audience: 'customer' }, sup.token);
+    assert.equal(toCust.status, 201);
+    assert.equal(toCust.data.provider, 'openai');
+    const sentUser = captured.messages[1].content;
+    assert.match(sentUser, /grout is cracking/, 'their own complaint is the context');
+    assert.match(sentUser, /CUSTOMER-CHANNEL-NOTE/);
+    assert.ok(!/CONTRACTOR-CHANNEL-SECRET|CONTRACTOR-STATEMENT/.test(sentUser), 'the contractor side never reaches a customer draft');
+    assert.ok(!/707-555-0123/.test(JSON.stringify(captured)), 'phone numbers never leave the server');
+    assert.match(captured.messages[0].content, /untrusted/);
+    assert.ok(!/help@evil/.test(toCust.data.body), 'contact details in the model output are stripped');
+    assert.ok(toCust.data.flags.includes('removed_contact_details'));
+
+    const toCont = await api('POST', '/api/ai/drafts', { dispute_id: did, audience: 'contractor' }, sup.token);
+    const contUser = captured.messages[1].content;
+    assert.match(contUser, /CONTRACTOR-CHANNEL-SECRET/);
+    assert.match(contUser, /CONTRACTOR-STATEMENT/);
+    assert.ok(!/grout is cracking|CUSTOMER-CHANNEL-NOTE|more details from me/.test(contUser), 'the customer side never reaches a contractor draft');
+    assert.equal(toCont.data.audience, 'contractor');
+    const usage = await api('GET', '/api/ai/usage', undefined, adminToken);
+    assert.ok(usage.data.tokens.prompt >= 222 && usage.data.by_provider.openai >= 2, 'tokens and provider are tracked');
+
+    // provider outage: falls back to the template and says so
+    global.fetch = async (url, opts) => (String(url).startsWith('https://api.openai.com') ? { ok: false, status: 503, json: async () => ({}) } : realFetch(url, opts));
+    const down = await api('POST', '/api/ai/drafts', { dispute_id: did, audience: 'customer' }, sup.token);
+    assert.equal(down.status, 201);
+    assert.equal(down.data.provider, 'heuristic');
+    assert.ok(down.data.flags.includes('ai_unavailable_used_template'));
+
+    // closed disputes get no drafts
+    const fin = await makeStaff('finance', 'ai-closer@test.local');
+    await api('POST', `/api/disputes/${did}/resolve`, { resolution: 'no_action', notes: 'The work is fine.' }, fin.token);
+    assert.equal((await api('POST', '/api/ai/drafts', { dispute_id: did, audience: 'customer' }, sup.token)).status, 409);
+  } finally {
+    global.fetch = realFetch;
+    for (const [k, v] of [['OPENAI_API_KEY', keep.k], ['AI_ENABLED', keep.e]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
+test('REGRESSION: case summary is built from the database (no AI) and respects who may see costs', async () => {
+  const pid = await activeProject();
+  await api('POST', '/api/disputes', { project_id: pid, reason: 'incomplete', description: 'Half of the work is still missing.' }, custToken);
+  const sup = await makeStaff('support', 'sum-sup@test.local');
+  const dis = await makeStaff('dispatch', 'sum-dis@test.local');
+  const s = await api('POST', '/api/ai/summary', { project_id: pid }, sup.token);
+  assert.equal(s.status, 200);
+  assert.match(s.data.generated, /no AI/);
+  assert.match(s.data.text, /stage: in progress/);
+  assert.match(s.data.text, /OPEN DISPUTE/);
+  assert.match(s.data.text, /Milestones: 0 of \d+ approved/);
+  assert.ok(!/Contractor budget/.test(s.data.text), 'support does not see what the contractor is paid');
+  assert.match((await api('POST', '/api/ai/summary', { project_id: pid }, dis.token)).data.text, /Contractor budget: \$300\.00/);
+  assert.equal((await api('POST', '/api/ai/summary', { project_id: pid }, custToken)).status, 403);
+  assert.equal((await api('POST', '/api/ai/summary', {}, sup.token)).status, 422);
+  assert.equal((await api('POST', '/api/ai/summary', { project_id: 999999 }, sup.token)).status, 404);
+});
+
 after(async () => {
-  // leave the server running for manual QA; tests used an isolated DB file.
+  // The server keeps the process alive, so exit explicitly — but give the reporter a moment first:
+  // exiting immediately dropped the result of the LAST test from the report.
+  await new Promise((r) => setTimeout(r, 500));
   process.exit(0);
 });

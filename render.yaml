@@ -59,6 +59,15 @@ services:
       # it encrypts the 2FA secrets (changing it makes them unreadable).
       - key: TOTP_ENC_KEY
         sync: false
+      # SMS (optional). In Twilio set the inbound webhook to https://YOUR-DOMAIN/api/sms/inbound
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM
+        sync: false
+      - key: BUSINESS_TZ
+        value: America/Los_Angeles
       # Photos: S3-compatible bucket (AWS S3, Cloudflare R2...). Keep the bucket PRIVATE.
       - key: S3_BUCKET
         sync: false

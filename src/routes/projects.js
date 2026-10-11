@@ -300,8 +300,19 @@ router.patch('/:id/schedule', authRequired, requireStaff('dispatch'), ah(async (
     errors.scheduled_end = 'End date cannot be before the start date.';
   }
   if (failIfErrors(res, errors)) return;
-  await db.prepare(`UPDATE projects SET scheduled_start = ?, scheduled_end = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+  const prevStart = p.scheduled_start ? String(p.scheduled_start).slice(0, 10) : null;
+  const startChanged = start !== prevStart;
+  await db.prepare(`UPDATE projects SET scheduled_start = ?, scheduled_end = ?, updated_at = CURRENT_TIMESTAMP${startChanged ? ', reminder_sent_at = NULL' : ''} WHERE id = ?`)
     .run(start, end, p.id);
+  if (startChanged) {
+    // A moved date is a reschedule (KPI) and the customer gets a fresh confirmation (if they opted in).
+    if (prevStart && start) await db.prepare(`INSERT INTO visit_events (project_id, outcome, by_user, note) VALUES (?,?,?,?)`).run(p.id, 'rescheduled', req.user.id, `${prevStart} → ${start}`);
+    if (start) {
+      const j = await db.prepare('SELECT service_type FROM job_requests WHERE id = ?').get(p.job_request_id);
+      const sms = require('../services/sms');
+      await sms.textCustomer(p.id, 'scheduled', sms.T.scheduled(j ? j.service_type : 'service', start)).catch(() => {});
+    }
+  }
   await auditLog(req.user.id, 'project.scheduled', 'projects', p.id, `Scheduled ${start || '—'} → ${end || '—'}`);
   const updated = await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id);
   // Warn (never block) when the same contractor is already booked on those dates.
@@ -376,6 +387,49 @@ router.patch('/:id/stage', authRequired, ah(async (req, res) => {
   }
   await auditLog(req.user.id, 'project.stage', 'projects', p.id, `Stage → ${stage}`);
   res.json(await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
+}));
+
+// ---- Visit day: "technician is on the way" text + visit outcomes (feeds the no-show KPI) ----
+// Allowed for the assigned contractor or dispatch staff. The technician's own phone number is
+// never shared: the customer gets a text from the company number.
+function canRunVisit(req) {
+  return req.user.role === 'contractor' || (req.user.role === 'admin' && can(req.user, 'dispatch'));
+}
+router.post('/:id/on-my-way', authRequired, ah(async (req, res) => {
+  const p = await loadProject(req, res);
+  if (!p) return;
+  if (!canRunVisit(req)) return res.status(403).json({ error: 'Not allowed.' });
+  if (!['assigned', 'scheduled', 'in_progress'].includes(p.stage)) return res.status(409).json({ error: 'This project is not in a visit stage.' });
+  // One text per 30 minutes per project: a double tap must not spam the customer.
+  const last = await db.prepare(`SELECT created_at FROM sms_log WHERE project_id = ? AND kind = 'on_my_way' AND status = 'sent' ORDER BY id DESC LIMIT 1`).get(p.id);
+  if (last && Date.now() - require('../services/kpis').toDate(last.created_at).getTime() < 30 * 60 * 1000) {
+    return res.status(409).json({ error: 'We already told the customer you are on the way.' });
+  }
+  const con = p.contractor_id ? await db.prepare('SELECT u.name FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id) : null;
+  const job = await db.prepare('SELECT service_type FROM job_requests WHERE id = ?').get(p.job_request_id);
+  const sms = require('../services/sms');
+  const out = await sms.textCustomer(p.id, 'on_my_way', sms.T.onTheWay(con ? String(con.name).split(' ')[0] : 'Your technician', job ? job.service_type : 'service'));
+  res.json(out);
+}));
+
+const VISIT_OUTCOMES = ['completed', 'customer_no_show', 'contractor_no_show', 'rescheduled'];
+router.post('/:id/visit-outcome', authRequired, ah(async (req, res) => {
+  const p = await loadProject(req, res);
+  if (!p) return;
+  if (!canRunVisit(req)) return res.status(403).json({ error: 'Not allowed.' });
+  const b = req.body || {};
+  const errors = {};
+  if (!VISIT_OUTCOMES.includes(b.outcome)) errors.outcome = 'Choose one of: ' + VISIT_OUTCOMES.join(', ') + '.';
+  if (b.note && !isNonEmpty(b.note, 500)) errors.note = 'Note is too long.';
+  if (failIfErrors(res, errors)) return;
+  if (!['assigned', 'scheduled', 'in_progress', 'review'].includes(p.stage)) return res.status(409).json({ error: 'This project is not in a visit stage.' });
+  await db.prepare('INSERT INTO visit_events (project_id, outcome, by_user, note) VALUES (?,?,?,?)').run(p.id, b.outcome, req.user.id, (b.note || '').trim() || null);
+  await auditLog(req.user.id, 'visit.' + b.outcome, 'projects', p.id, (b.note || '').trim().slice(0, 200));
+  if (b.outcome === 'customer_no_show') {
+    const sms = require('../services/sms');
+    await sms.textCustomer(p.id, 'missed_visit', sms.T.missed()).catch(() => {});
+  }
+  res.status(201).json({ recorded: true, outcome: b.outcome });
 }));
 
 // ---- Completion sheet: the customer signs off on the finished work ----

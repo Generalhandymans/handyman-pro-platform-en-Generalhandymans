@@ -79,6 +79,8 @@ router.post('/', ah(async (req, res) => {
   const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(info.lastInsertRowid);
   await refreshLeadScore(job.id);
   geocodeJob(job); // fire-and-forget; no-op unless GEOCODE_API_KEY is set
+  // Text consent is an explicit, unticked-by-default checkbox on the request form.
+  if (b.sms_consent === true) await require('../services/sms').setConsent(b.phone, true, 'request_form');
   res.status(201).json({ ...publicJob(await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id)), claim_token: claimToken });
 }));
 

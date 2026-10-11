@@ -338,6 +338,54 @@ if (!columnExists('photos', 'storage_provider')) {
 if (!columnExists('users', 'token_version')) {
   db.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`);
 }
+db.exec(`CREATE TABLE IF NOT EXISTS ai_drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL CHECK (kind IN ('message_reply','dispute_reply')),
+  thread_id INTEGER REFERENCES message_threads(id) ON DELETE SET NULL,
+  dispute_id INTEGER REFERENCES disputes(id) ON DELETE SET NULL,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  audience TEXT NOT NULL CHECK (audience IN ('customer','contractor')),
+  provider TEXT NOT NULL,
+  model TEXT,
+  body TEXT NOT NULL,
+  flags TEXT,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','discarded')),
+  final_body TEXT,
+  edited INTEGER NOT NULL DEFAULT 0,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+if (!columnExists('projects', 'reminder_sent_at')) {
+  db.exec(`ALTER TABLE projects ADD COLUMN reminder_sent_at TEXT`);
+}
+db.exec(`CREATE TABLE IF NOT EXISTS sms_consents (
+  phone TEXT PRIMARY KEY,
+  opted_in INTEGER NOT NULL DEFAULT 0,
+  source TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS sms_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  to_phone TEXT NOT NULL,
+  body TEXT NOT NULL,
+  kind TEXT,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  status TEXT NOT NULL,
+  provider TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+db.exec(`CREATE TABLE IF NOT EXISTS visit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  outcome TEXT NOT NULL CHECK (outcome IN ('completed','customer_no_show','contractor_no_show','rescheduled')),
+  by_user INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
 if (!columnExists('users', 'totp_enabled')) {
   db.exec(`ALTER TABLE users ADD COLUMN totp_secret TEXT`);
   db.exec(`ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0`);

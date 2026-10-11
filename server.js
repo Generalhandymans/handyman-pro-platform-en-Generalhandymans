@@ -118,12 +118,14 @@ app.use(express.urlencoded({ extended: true }));
 // ---- Rate limiting (PRO 100%): abuse protection on public endpoints ----
 // Auth endpoints: 20 attempts / 15 min per IP. Job intake: 30 / hour per IP.
 const authLimiter = rateLimit({
+  // Default 20 attempts / 15 min / IP. Configurable so automated tests (which sign in dozens of
+  // times from one IP) do not trip it; never raise it in production.
   windowMs: 15 * 60 * 1000, max: Number(process.env.AUTH_RATE_LIMIT_MAX) || 20,
   standardHeaders: 'draft-7', legacyHeaders: false,
   message: { error: 'Too many attempts. Please wait a few minutes and try again.' },
 });
 const intakeLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, max: 30,
+  windowMs: 60 * 60 * 1000, max: Number(process.env.INTAKE_RATE_LIMIT_MAX) || 30,
   standardHeaders: 'draft-7', legacyHeaders: false,
   message: { error: 'Too many requests. Please wait a bit and try again.' },
 });
@@ -212,6 +214,8 @@ app.use('/api/reviews', require('./src/routes/reviews'));
 app.use('/api/referrals', require('./src/routes/referrals'));
 app.use('/api/payments', require('./src/routes/payments'));
 app.use('/api/payables', require('./src/routes/payables'));
+app.use('/api/sms', require('./src/routes/sms'));
+app.use('/api/ai', require('./src/routes/ai'));
 app.use('/api/disputes', require('./src/routes/disputes'));
 app.use('/api/staff', require('./src/routes/staff'));
 app.use('/api/me', require('./src/routes/privacy'));
@@ -226,6 +230,12 @@ const { processOutbox } = require('./src/routes/campaigns');
 setInterval(() => {
   processOutbox(50).catch(e => console.error('[outbox]', e.message));
 }, 30 * 1000);
+
+// ---- Background: day-before visit reminders (every 10 min; only sends inside the daytime window) ----
+const smsSvc = require('./src/services/sms');
+setInterval(() => {
+  smsSvc.runReminders().catch(e => console.error('[reminders]', e.message));
+}, 10 * 60 * 1000).unref();
 
 // ---- 404 for unknown API routes ----
 app.use('/api', (req, res) => res.status(404).json({ error: 'Unknown API endpoint.' }));

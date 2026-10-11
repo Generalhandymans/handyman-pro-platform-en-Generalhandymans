@@ -169,11 +169,25 @@ function computeKpis(d, opts = {}) {
     double_booked: activeRows.filter(p => sched.conflictsFor(p, activeRows).length).length,
   };
 
+  // ---------- visits: no-shows and reschedules (logged by contractors/dispatch, and automatically on a moved date) ----------
+  const ve = (d.visits || []).filter(v => inWin(v.created_at));
+  const cnt = (o) => ve.filter(v => v.outcome === o).length;
+  const visits = {
+    logged: ve.length,
+    completed: cnt('completed'),
+    customer_no_show: cnt('customer_no_show'),
+    contractor_no_show: cnt('contractor_no_show'),
+    rescheduled: cnt('rescheduled'),
+    // share of ATTENDED-or-missed visits that were missed (reschedules are tracked separately)
+    no_show_rate_pct: pct(cnt('customer_no_show') + cnt('contractor_no_show'), cnt('completed') + cnt('customer_no_show') + cnt('contractor_no_show')),
+    note: 'Only visits that someone logged are counted; a low "logged" number means the team is not recording outcomes yet.',
+  };
+
   return {
     window: { days, from: from.toISOString(), to: now.toISOString() },
-    funnel, speed: speedOut, sources, money, receivables: ar, payables, quality, capacity,
+    funnel, speed: speedOut, sources, money, receivables: ar, payables, quality, capacity, visits,
     not_tracked: [
-      'NPS (only a 1–5 review rating exists)', 'No-shows and reschedules (no field records them)',
+      'NPS (only a 1–5 review rating exists)',
       'Customer acquisition cost (marketing spend is not stored)', 'Contractor utilization (no availability data)',
     ],
   };

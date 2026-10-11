@@ -76,8 +76,10 @@ router.post('/:id/queue', ah(async (req, res) => {
   const have = new Set(haveRows.map(r => r.to_email));
   let queued = 0;
   let skippedUnsubscribed = 0;
-  await db.transaction(async (t) => {
-    const ins = t.prepare(
+  // NOTE: the transaction handle is `tx`, NOT `t`: an inner `t` used to shadow the template `t`, so every
+  // queued email got the subject and body "undefined".
+  await db.transaction(async (tx) => {
+    const ins = tx.prepare(
       `INSERT INTO email_outbox (campaign_id, to_email, to_name, subject, body_html, provider)
        VALUES (?,?,?,?,?,?)`
     );
@@ -86,10 +88,10 @@ router.post('/:id/queue', ah(async (req, res) => {
       if (await unsub.isSuppressed(m.email)) { skippedUnsubscribed++; continue; }
       const vars = { name: m.name || 'there', company: 'General Handyman Solutions', ...(m.context || {}) };
       await ins.run(c.id, m.email, m.name, crm.renderTemplate(t.subject, vars),
-        crm.renderTemplate(t.body_html, vars) + unsub.footerHtml(m.email), mailer.activeProvider());
+        crm.renderTemplate(t.body_html, vars, { escape: true }) + unsub.footerHtml(m.email), mailer.activeProvider());
       queued++;
     }
-    await t.prepare(`UPDATE campaigns SET status = 'queued' WHERE id = ?`).run(c.id);
+    await tx.prepare(`UPDATE campaigns SET status = 'queued' WHERE id = ?`).run(c.id);
   });
   res.json({ queued, skipped_unsubscribed: skippedUnsubscribed, campaign_id: c.id });
 }));

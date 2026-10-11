@@ -268,6 +268,9 @@
               <input type="tel" id="wz-phone" name="phone" value="${HP.esc(c.phone || '')}" autocomplete="tel" placeholder="(555) 123-4567">
               <span class="field-error" data-error-for="phone"></span></div>
           </div>
+          <div class="field"><label class="checkbox" style="display:flex;gap:.5rem;align-items:flex-start;font-weight:400">
+            <input type="checkbox" id="wz-sms" name="sms_consent" style="margin-top:.2rem">
+            <span class="small">Text me about my visit (confirmation, reminder and "technician on the way"). Optional. Message and data rates may apply; reply STOP to opt out at any time.</span></label></div>
           <div class="field"><label for="wz-email">Email <span class="muted">(optional — for updates)</span></label>
             <input type="email" id="wz-email" name="email" value="${HP.esc(c.email || '')}" autocomplete="email">
             <span class="field-error" data-error-for="email"></span></div>
@@ -314,6 +317,7 @@
         address: val('address'), city: val('city'), state: val('state').toUpperCase(),
         zip: val('zip'), urgency: fd.get('urgency') === 'urgent' ? 'urgent' : 'standard',
         description: val('description'),
+        sms_consent: fd.get('sms_consent') === 'on',
       };
       if (Object.keys(errors).length) {
         HP.applyFieldErrors(f, errors);
@@ -486,6 +490,7 @@
           address: c.address, city: c.city || undefined, state: c.state || undefined, zip: c.zip || undefined,
           service_type: W.service_type, urgency: c.urgency,
           description: c.description, scope: W.scope,
+          sms_consent: c.sms_consent === true ? true : undefined,
         });
         HP.saveClaim(job.id, job.claim_token);
 

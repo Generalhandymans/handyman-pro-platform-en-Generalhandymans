@@ -38,7 +38,9 @@ const HPMsg = (() => {
               placeholder="Type your message… (max 2000 characters)" disabled></textarea>
             <span class="field-error" data-error-for="body"></span>
           </div>
+          <div class="msg-ai-note small muted" hidden></div>
           <button class="btn btn-primary btn-sm" type="submit" disabled>Send</button>
+          <button class="btn btn-outline btn-sm msg-ai" type="button" hidden>✨ Suggest reply</button>
         </form>
       </div>`;
 
@@ -51,6 +53,28 @@ const HPMsg = (() => {
     const body = container.querySelector('.msg-body');
     const sendBtn = form.querySelector('button[type="submit"]');
     if (o.allowKindSwitch) kindField.hidden = false;
+    const aiBtn = container.querySelector('.msg-ai');
+    const aiNote = container.querySelector('.msg-ai-note');
+    let draftId = null; // a suggestion the agent is editing; reported back after sending
+
+    // Support-only: a DRAFT is placed in the box for the agent to read, edit and send. Nothing is sent automatically.
+    if (o.aiSuggest) {
+      aiBtn.hidden = false;
+      aiBtn.addEventListener('click', async () => {
+        if (!threadId) return;
+        HP.busy(aiBtn, true, 'Thinking…');
+        try {
+          const d = await HP.api('POST', '/ai/drafts', { thread_id: threadId });
+          body.value = d.body; draftId = d.id;
+          const warn = d.flags.filter((f) => f !== 'ai_unavailable_used_template');
+          aiNote.hidden = false;
+          aiNote.textContent = d.note + (d.flags.includes('ai_unavailable_used_template') ? ' (The AI was unavailable, so this is the template.)' : '') +
+            (warn.length ? ' ⚠ Check: ' + warn.map((f) => f.replace(/_/g, ' ')).join(', ') + '.' : '');
+          body.focus();
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(aiBtn, false); }
+      });
+    }
 
     let threadId = null;
     let timer = null;
@@ -81,7 +105,7 @@ const HPMsg = (() => {
     async function openThread() {
       const pid = sel.value;
       clearInterval(timer); timer = null;
-      threadId = null;
+      threadId = null; draftId = null; aiNote.hidden = true;
       if (!pid) {
         list.innerHTML = '<p class="muted">Select a project to view messages.</p>';
         body.disabled = true; sendBtn.disabled = true;
@@ -132,7 +156,9 @@ const HPMsg = (() => {
       HP.clearFieldErrors(form);
       HP.busy(sendBtn, true, 'Sending…');
       try {
-        await HP.api('POST', `/threads/${threadId}/messages`, { body: body.value.trim() });
+        const text = body.value.trim();
+        await HP.api('POST', `/threads/${threadId}/messages`, { body: text });
+        if (draftId) { HP.api('POST', `/ai/drafts/${draftId}/mark`, { status: 'sent', final_body: text }).catch(() => {}); draftId = null; aiNote.hidden = true; }
         body.value = '';
         await refresh();
       } catch (err) {

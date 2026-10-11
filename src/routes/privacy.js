@@ -52,6 +52,8 @@ router.get('/export', ah(async (req, res) => {
        JOIN projects p ON p.id = t.project_id
        WHERE t.kind = 'support_contractor' AND p.contractor_id = ?`).all(cid);
   }
+  const smsPhone = require('../services/sms').normalizePhone(profile && (await db.prepare('SELECT phone FROM users WHERE id = ?').get(u.id)).phone);
+  out.sms_consent = smsPhone ? { phone: smsPhone, opted_in: await require('../services/sms').hasConsent(smsPhone) } : null;
   out.terms_acceptances = await db.prepare('SELECT kind, reference_id, terms_version, accepted_at FROM terms_acceptances WHERE user_id = ?').all(u.id);
   res.setHeader('Content-Disposition', 'attachment; filename="my-data.json"');
   res.json(out);
@@ -62,7 +64,7 @@ router.post('/delete', ah(async (req, res) => {
   const u = req.user;
   if (u.role === 'admin') return res.status(403).json({ error: 'Administrator accounts cannot be deleted here.' });
   const password = (req.body || {}).password;
-  const row = await db.prepare('SELECT password_hash, email FROM users WHERE id = ?').get(u.id);
+  const row = await db.prepare('SELECT password_hash, email, phone FROM users WHERE id = ?').get(u.id);
   if (typeof password !== 'string' || !row || !bcrypt.compareSync(password, row.password_hash)) {
     return res.status(403).json({ error: 'Password is incorrect.' });
   }
@@ -89,6 +91,14 @@ router.post('/delete', ah(async (req, res) => {
     : [];
 
   const oldEmail = row.email;
+  // Phones to stop texting and whose message history is erased (the opt-out itself is kept).
+  const smsSvc = require('../services/sms');
+  const phones = new Set([smsSvc.normalizePhone(row.phone)].filter(Boolean));
+  if (u.role === 'customer') {
+    for (const j of await db.prepare('SELECT phone FROM job_requests WHERE customer_id = ?').all(u.id)) {
+      const ph = smsSvc.normalizePhone(j.phone); if (ph) phones.add(ph);
+    }
+  }
   await db.transaction(async (t) => {
     const randomHash = bcrypt.hashSync(crypto.randomBytes(24).toString('hex'), 10);
     await t.prepare(
@@ -120,6 +130,10 @@ router.post('/delete', ah(async (req, res) => {
     } catch (e) { /* already gone */ }
   }
   await unsub.suppress(oldEmail, 'account deleted'); // never market to a deleted account
+  for (const ph of phones) {
+    await smsSvc.setConsent(ph, false, 'account deleted');
+    await db.prepare('DELETE FROM sms_log WHERE to_phone = ?').run(ph);
+  }
   res.json({ deleted: true });
 }));
 

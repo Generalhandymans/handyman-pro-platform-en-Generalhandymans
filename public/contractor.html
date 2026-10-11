@@ -346,6 +346,13 @@
           <dt>Your payout</dt><dd><strong>${HP.fmtMoney(p.contractor_cost_cents)}</strong></dd>
           <dt>Current stage</dt><dd>${HP.esc(HP.PROJECT_STAGE[p.stage] || p.stage)}</dd>
         </dl>
+        ${(!offered && ['scheduled', 'in_progress'].includes(p.stage)) ? `<h4>Visit day</h4>
+        <div class="btn-row" style="margin-top:.4rem">
+          <button class="btn btn-primary btn-sm" data-otw="${p.id}" type="button">🚗 I'm on my way</button>
+          <button class="btn btn-outline btn-sm" data-outcome="completed" data-pid="${p.id}" type="button">Visit done</button>
+          <button class="btn btn-outline btn-sm" data-outcome="customer_no_show" data-pid="${p.id}" type="button">Customer wasn't there</button>
+        </div>
+        <p class="small muted">"On my way" texts the customer (only if they opted in). They never see your phone number.</p>` : ''}
         <h4>Move this job</h4>
         <div class="btn-row" style="margin-top:.4rem">${stageBtns || '<span class="small muted">No further moves available for your role.</span>'}</div>
         <hr class="divider">
@@ -364,6 +371,21 @@
           </div>
           <button class="btn btn-dark btn-sm" type="submit">Upload photos</button>
         </form>`;
+      body.querySelectorAll('[data-otw]').forEach((b) => b.addEventListener('click', async () => {
+        HP.busy(b, true, 'Sending…');
+        try {
+          const r = await HP.api('POST', `/projects/${b.dataset.otw}/on-my-way`, {});
+          HP.toast(r.sent ? 'The customer was told you are on the way.' : (r.reason === 'no_consent' ? 'Customer has not opted in to texts; nothing was sent.' : 'Could not send the text.'), r.sent ? 'ok' : 'info');
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(b, false); }
+      }));
+      body.querySelectorAll('[data-outcome]').forEach((b) => b.addEventListener('click', async () => {
+        if (b.dataset.outcome === 'customer_no_show' && !confirm('Record that the customer was not there? We will text them to reschedule.')) return;
+        try {
+          await HP.api('POST', `/projects/${b.dataset.pid}/visit-outcome`, { outcome: b.dataset.outcome });
+          HP.toast('Visit recorded.', 'ok');
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      }));
       body.querySelectorAll('[data-stage]').forEach((b) => b.addEventListener('click', async () => {
         if (!confirm(`Move this job to “${HP.PROJECT_STAGE[b.dataset.stage]}”?`)) return;
         try {

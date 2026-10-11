@@ -114,6 +114,22 @@
       // Requests created as a guest become part of this account (needs the saved claim token).
       const linked = await HP.claimPendingJobs();
       if (linked) HP.toast(`${linked} earlier request${linked > 1 ? 's were' : ' was'} added to your account.`, 'ok');
+      // Text messages about visits: opt in/out for the phone on this account.
+      try {
+        const st = await HP.api('GET', '/sms/status');
+        if (st.phone) {
+          const row = document.createElement('label');
+          row.className = 'small';
+          row.style.cssText = 'display:flex;gap:.5rem;align-items:center;margin:0 0 1rem;';
+          row.innerHTML = `<input type="checkbox" id="sms-optin"${st.opted_in ? ' checked' : ''}> <span>Text me about my visits at ${HP.esc(st.phone)} (reply STOP anytime).</span>`;
+          const g = document.getElementById('greeting');
+          g.parentNode.insertBefore(row, g.nextSibling);
+          row.querySelector('input').addEventListener('change', async (ev) => {
+            try { await HP.api('POST', '/sms/opt-in', { opt_in: ev.target.checked }); HP.toast(ev.target.checked ? 'Text messages are on.' : 'Text messages are off.', 'ok'); }
+            catch (e) { ev.target.checked = !ev.target.checked; HP.toast(HP.friendlyMessage(e), 'error'); }
+          });
+        }
+      } catch (e) { /* SMS is optional: the portal works without it */ }
       // Accepting a quote and paying need a verified email: tell the user up front.
       if (!me.email_verified) {
         const bar = document.createElement('div');

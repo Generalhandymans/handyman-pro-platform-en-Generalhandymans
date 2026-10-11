@@ -64,13 +64,14 @@ async function touchInteraction(jobId, kind, detail) {
 async function generateFollowupTasks() {
   const created = [];
   const addTask = async (jobId, quoteId, kind, title) => {
-    const dup = await db.prepare(
-      'SELECT id FROM followup_tasks WHERE kind = ? AND status = \'open\' AND ' +
-      '(job_request_id = ? OR (job_request_id IS NULL AND ? IS NULL))'
-    ).get(kind, jobId, jobId);
+    // Two explicit branches: PostgreSQL cannot infer the type of a bare "? IS NULL" parameter.
+    const dup = jobId == null
+      ? await db.prepare(`SELECT id FROM followup_tasks WHERE kind = ? AND status = 'open' AND job_request_id IS NULL`).get(kind)
+      : await db.prepare(`SELECT id FROM followup_tasks WHERE kind = ? AND status = 'open' AND job_request_id = ?`).get(kind, jobId);
     if (dup) return;
+    // dt() picks datetime() on SQLite and an INTERVAL on PostgreSQL (the old literal datetime() does not exist there).
     const info = await db.prepare(
-      'INSERT INTO followup_tasks (job_request_id, quote_id, kind, title, due_at) VALUES (?,?,?,?,datetime(CURRENT_TIMESTAMP,\'+1 day\'))'
+      `INSERT INTO followup_tasks (job_request_id, quote_id, kind, title, due_at) VALUES (?,?,?,?,${dt('+1 day')})`
     ).run(jobId, quoteId, kind, title);
     created.push({ id: info.lastInsertRowid, kind, title, job_request_id: jobId });
   };
@@ -225,9 +226,14 @@ async function recruitmentGaps() {
 }
 
 // Tiny template engine: {{name}}, {{service_type}}, {{company}}, {{amount}} ...
-function renderTemplate(str, vars) {
-  return String(str).replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) =>
-    vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : '');
+// { escape: true } for HTML bodies: a customer's name (or any variable) must never inject markup
+// into an email that carries your brand. Subjects are plain text, so they are NOT escaped.
+const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+function renderTemplate(str, vars, { escape = false } = {}) {
+  return String(str).replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => {
+    if (vars[k] === undefined || vars[k] === null) return '';
+    return escape ? escapeHtml(vars[k]) : String(vars[k]);
+  });
 }
 
 module.exports = {
