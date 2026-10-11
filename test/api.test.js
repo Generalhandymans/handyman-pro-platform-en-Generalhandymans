@@ -193,6 +193,10 @@ test('quote create → send (customer notified) → accept requires terms (admin
   const n2 = await db.prepare("SELECT * FROM email_log WHERE to_email='admin@test.local' AND subject LIKE '%accepted%' ORDER BY id DESC").get();
   assert.ok(n2, 'quote-accepted notification logged');
 
+  // the customer got their own "you've accepted your proposal" email
+  const n3 = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%accepted your proposal%' ORDER BY id DESC").get();
+  assert.ok(n3, 'customer quote-accepted email logged');
+
   assert.ok(await emailLogCount() > before, 'notifications were logged');
 });
 
@@ -204,6 +208,13 @@ test('contractor offer → accept requires terms; decline releases the project',
   }, adminToken);
   assert.equal(v.status, 200);
   assert.equal(v.data.status, 'active');
+
+  // Profile photo first: no contractor can be offered a job without one.
+  const pform = new FormData();
+  pform.append('photo', new Blob([Buffer.from('fake profile bytes')], { type: 'image/jpeg' }), 'me.jpg');
+  const ph = await api('POST', '/api/contractors/me/photo', undefined, contToken, pform);
+  assert.equal(ph.status, 201);
+  assert.ok(ph.data.photo_url && ph.data.photo_url.includes('/api/contractor-photos/'), 'photo url returned');
 
   // Admin offers (not force-assigns) the project.
   const a = await api('POST', `/api/projects/${projectId}/assign`, { contractor_id: contractorId }, adminToken);
@@ -233,6 +244,14 @@ test('contractor offer → accept requires terms; decline releases the project',
     "SELECT * FROM terms_acceptances WHERE kind='contractor_job' AND reference_id=? AND user_id=?"
   ).get(projectId, contUserId);
   assert.ok(acc, 'contractor terms acceptance recorded');
+
+  // Accepting triggered the new lifecycle emails: the contractor gets
+  // "waiting for day confirmation"; the customer meets their technician
+  // (photo + name, never the phone).
+  const nWait = await db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%waiting for day%' ORDER BY id DESC").get();
+  assert.ok(nWait, 'contractor "waiting for day confirmation" email logged');
+  const nTech = await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%technician has been assigned%' ORDER BY id DESC").get();
+  assert.ok(nTech, 'customer "technician assigned" email logged');
 
   // Second project: decline path releases it back to the pool.
   const q2 = await api('POST', '/api/quotes', {
@@ -1466,6 +1485,188 @@ test('REGRESSION: case summary is built from the database (no AI) and respects w
   assert.equal((await api('POST', '/api/ai/summary', { project_id: pid }, custToken)).status, 403);
   assert.equal((await api('POST', '/api/ai/summary', {}, sup.token)).status, 422);
   assert.equal((await api('POST', '/api/ai/summary', { project_id: 999999 }, sup.token)).status, 404);
+});
+
+// ---------- Technician photo + magic-link offer/schedule flow ----------
+
+test('welcome + photo-reminder emails on signup', async () => {
+  const c = await api('POST', '/api/auth/signup/customer',
+    { name: 'Welcome Cust', email: 'welc@test.local', password: 'Customer123!' });
+  assert.equal(c.status, 201);
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='welc@test.local' AND subject='Welcome to Helpman!'").get(),
+    'customer welcome logged');
+
+  const k = await api('POST', '/api/auth/signup/contractor',
+    { name: 'Welcome Cont', email: 'welc-cont@test.local', password: 'Contractor123!', legal_name: 'WC LLC', city: 'Fairfield' });
+  assert.equal(k.status, 201);
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='welc-cont@test.local' AND subject LIKE '%Welcome to Helpman — contractor%'").get(),
+    'contractor welcome logged');
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='welc-cont@test.local' AND subject LIKE '%upload your profile photo%'").get(),
+    'contractor photo reminder logged');
+});
+
+test('contractor photo upload: validation, storage, serving', async () => {
+  // unauthenticated -> 401
+  const f0 = new FormData();
+  f0.append('photo', new Blob([Buffer.from('x')], { type: 'image/jpeg' }), 'x.jpg');
+  assert.equal((await api('POST', '/api/contractors/me/photo', undefined, undefined, f0)).status, 401);
+
+  // non-image rejected
+  const f1 = new FormData();
+  f1.append('photo', new Blob(['not an image'], { type: 'text/plain' }), 'x.txt');
+  assert.equal((await api('POST', '/api/contractors/me/photo', undefined, contToken, f1)).status, 400);
+
+  // missing file
+  assert.equal((await api('POST', '/api/contractors/me/photo', {}, contToken)).status, 400);
+
+  // valid upload (replace works too)
+  const f2 = new FormData();
+  f2.append('photo', new Blob([Buffer.from('fake profile bytes 2')], { type: 'image/jpeg' }), 'me2.jpg');
+  const up = await api('POST', '/api/contractors/me/photo', undefined, contToken, f2);
+  assert.equal(up.status, 201);
+  const fname = up.data.photo_url.split('/').pop();
+  assert.match(fname, /^[a-f0-9]{32}$/);
+
+  // served publicly (assignment emails link here)
+  const got = await fetch(`${BASE}/api/contractor-photos/${fname}`);
+  assert.equal(got.status, 200);
+  assert.match(got.headers.get('content-type') || '', /image/);
+  assert.equal((await fetch(`${BASE}/api/contractor-photos/${'0'.repeat(32)}`)).status, 404);
+  assert.equal((await fetch(`${BASE}/api/contractor-photos/nope`)).status, 404);
+
+  // profile exposes the photo url
+  const me = await api('GET', '/api/contractors/me', undefined, contToken);
+  assert.ok(me.data.photo_url && me.data.photo_url.endsWith(fname), 'photo_url on profile');
+});
+
+test('photo gate: a contractor without a photo cannot be offered a job', async () => {
+  const k = await api('POST', '/api/auth/signup/contractor',
+    { name: 'No Photo Pro', email: 'nophoto@test.local', password: 'Contractor123!', legal_name: 'NP LLC', city: 'Fairfield' });
+  const crow = await db.prepare('SELECT id FROM contractors WHERE user_id=?').get(k.data.user.id);
+  await api('PATCH', `/api/contractors/${crow.id}/verify`,
+    { license_verified: true, insurance_verified: true, background_check: 'passed', status: 'active' }, adminToken);
+
+  const q = await api('POST', '/api/quotes', { job_request_id: jobId, customer_price_cents: 50000, contractor_cost_cents: 30000, deposit_pct: 30 }, adminToken);
+  await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+  const r = await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: true, terms_accepted: true }, custToken);
+  const pid = r.data.project_id;
+
+  const a = await api('POST', `/api/projects/${pid}/assign`, { contractor_id: crow.id }, adminToken);
+  assert.equal(a.status, 409);
+  assert.match(a.data.error, /profile photo/);
+
+  // dispatch can re-send the reminder
+  const rem = await api('POST', `/api/contractors/${crow.id}/remind-photo`, {}, adminToken);
+  assert.equal(rem.status, 200);
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='nophoto@test.local' AND subject LIKE '%upload your profile photo%' ORDER BY id DESC").get(),
+    'reminder re-sent and logged');
+
+  // once the photo is up, offering works and the offer carries an expiry
+  const login = await api('POST', '/api/auth/login', { email: 'nophoto@test.local', password: 'Contractor123!' });
+  const f = new FormData();
+  f.append('photo', new Blob([Buffer.from('np photo')], { type: 'image/jpeg' }), 'np.jpg');
+  assert.equal((await api('POST', '/api/contractors/me/photo', undefined, login.data.token, f)).status, 201);
+  const a2 = await api('POST', `/api/projects/${pid}/assign`, { contractor_id: crow.id }, adminToken);
+  assert.equal(a2.status, 200);
+  assert.ok(a2.data.offer_expires_at, 'offer carries an expiry');
+});
+
+test('magic-link offer: summary, accept with terms, tamper-proof, expiry', async () => {
+  const offersSvc = require('../src/services/offers');
+  const mkProject = async (price, cost) => {
+    const q = await api('POST', '/api/quotes', { job_request_id: jobId, customer_price_cents: price, contractor_cost_cents: cost, deposit_pct: 30 }, adminToken);
+    await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+    const r = await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: true, terms_accepted: true }, custToken);
+    await api('POST', `/api/projects/${r.data.project_id}/assign`, { contractor_id: contractorId }, adminToken);
+    return r.data.project_id;
+  };
+
+  const pid = await mkProject(60000, 40000);
+  const { token } = offersSvc.offerLinks(pid, contractorId);
+  const sum = await api('GET', `/api/offers/${token}`);
+  assert.equal(sum.status, 200);
+  assert.equal(sum.data.project_id, pid);
+  assert.ok(sum.data.expires_at, 'expiry shown');
+
+  assert.equal((await api('GET', `/api/offers/${token.slice(0, -2)}xx`)).status, 403, 'tampered token rejected');
+  assert.equal((await api('POST', `/api/offers/${token}/respond`, { accept: true })).status, 400, 'terms required');
+
+  const ok = await api('POST', `/api/offers/${token}/respond`, { accept: true, terms_accepted: true });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.data.accepted, true);
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%technician has been assigned%' ORDER BY id DESC").get(),
+    'technician email after magic-link accept');
+  assert.equal((await api('GET', `/api/offers/${token}`)).status, 410, 'answered offer is closed');
+
+  // expiry path
+  const pid2 = await mkProject(61000, 41000);
+  await db.prepare('UPDATE projects SET offer_expires_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', pid2);
+  const { token: t2 } = offersSvc.offerLinks(pid2, contractorId);
+  assert.equal((await api('GET', `/api/offers/${t2}`)).status, 410, 'expired offer closed');
+  const rel = await db.prepare('SELECT contractor_id, contractor_status FROM projects WHERE id=?').get(pid2);
+  assert.equal(rel.contractor_id, null, 'expired offer released');
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='admin@test.local' AND subject LIKE '%Offer expired%' ORDER BY id DESC").get(),
+    'dispatch notified of expiry');
+});
+
+test('schedule confirmation: arrival window, contractor accept/decline', async () => {
+  const mkAccepted = async (price, cost) => {
+    const q = await api('POST', '/api/quotes', { job_request_id: jobId, customer_price_cents: price, contractor_cost_cents: cost, deposit_pct: 30 }, adminToken);
+    await api('POST', `/api/quotes/${q.data.id}/send`, {}, adminToken);
+    const r = await api('POST', `/api/quotes/${q.data.id}/respond`, { accept: true, terms_accepted: true }, custToken);
+    await api('POST', `/api/projects/${r.data.project_id}/assign`, { contractor_id: contractorId }, adminToken);
+    await api('POST', `/api/projects/${r.data.project_id}/contractor-respond`, { accept: true, terms_accepted: true }, contToken);
+    return r.data.project_id;
+  };
+
+  const pid = await mkAccepted(70000, 45000);
+  const s = await api('PATCH', `/api/projects/${pid}/schedule`,
+    { scheduled_start: '2026-11-20', scheduled_end: '2026-11-20', arrival_window: '2:00 PM – 4:00 PM' }, adminToken);
+  assert.equal(s.status, 200);
+  assert.equal(s.data.arrival_window, '2:00 PM – 4:00 PM');
+
+  const prow = await db.prepare('SELECT schedule_token, schedule_status FROM projects WHERE id=?').get(pid);
+  assert.equal(prow.schedule_status, 'pending');
+  assert.ok(prow.schedule_token, 'schedule magic token stored');
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='cont@test.local' AND subject LIKE '%Appointment confirmed%' ORDER BY id DESC").get(),
+    'contractor day-confirmation email logged');
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='cust@test.local' AND subject LIKE '%visit is scheduled%' ORDER BY id DESC").get(),
+    'customer visit-scheduled email logged');
+
+  const g = await api('GET', `/api/schedule-confirm/${prow.schedule_token}`);
+  assert.equal(g.status, 200);
+  assert.equal(g.data.day, '2026-11-20');
+  assert.equal(g.data.arrival_window, '2:00 PM – 4:00 PM');
+
+  const c1 = await api('POST', `/api/schedule-confirm/${prow.schedule_token}/respond`, { accept: true });
+  assert.equal(c1.status, 200);
+  assert.equal(c1.data.confirmed, true);
+  assert.equal((await db.prepare('SELECT schedule_status FROM projects WHERE id=?').get(pid)).schedule_status, 'confirmed');
+  assert.equal((await api('POST', `/api/schedule-confirm/${prow.schedule_token}/respond`, { accept: true })).status, 410,
+    'answered schedule is closed');
+
+  // decline path
+  const pid2 = await mkAccepted(71000, 46000);
+  await api('PATCH', `/api/projects/${pid2}/schedule`,
+    { scheduled_start: '2026-11-21', scheduled_end: '2026-11-21', arrival_window: '9:00 AM – 11:00 AM' }, adminToken);
+  const tok2 = (await db.prepare('SELECT schedule_token FROM projects WHERE id=?').get(pid2)).schedule_token;
+  const d = await api('POST', `/api/schedule-confirm/${tok2}/respond`, { accept: false });
+  assert.equal(d.status, 200);
+  assert.equal(d.data.confirmed, false);
+  assert.equal((await db.prepare('SELECT schedule_status FROM projects WHERE id=?').get(pid2)).schedule_status, 'declined');
+  assert.ok(await db.prepare("SELECT * FROM email_log WHERE to_email='admin@test.local' AND subject LIKE '%declined the schedule%' ORDER BY id DESC").get(),
+    'dispatch notified of schedule decline');
+});
+
+test('customer project view: technician photo shown, phone and cost never', async () => {
+  const pr = await api('GET', `/api/projects/${projectId}`, undefined, custToken);
+  assert.equal(pr.status, 200);
+  assert.ok(pr.data.contractor, 'contractor block present');
+  assert.ok(pr.data.contractor.photo_url && pr.data.contractor.photo_url.includes('/api/contractor-photos/'),
+    'photo url exposed to the assigned customer');
+  assert.equal(pr.data.contractor.phone, undefined, 'no phone leaks');
+  assert.equal(pr.data.contractor.email, undefined, 'no email leaks');
+  assert.equal(pr.data.contractor_cost_cents, undefined, 'no cost leaks');
 });
 
 after(async () => {

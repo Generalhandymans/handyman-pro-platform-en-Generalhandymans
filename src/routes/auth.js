@@ -49,6 +49,11 @@ router.post('/signup/customer', ah(async (req, res) => {
   ).run(name.trim(), email.trim().toLowerCase(), (phone || '').trim(), hashPassword(password), 'customer', token, verifyExpires);
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
   await sendVerificationEmail(user, token);
+  // Branded welcome on top of the verification email.
+  try {
+    const { notify, welcomeCustomer } = require('../services/notify');
+    await notify({ to: user.email, subject: 'Welcome to Helpman!', html: welcomeCustomer(user.name.split(' ')[0]) });
+  } catch (_) { /* welcome must never break signup */ }
   res.status(201).json({ token: signToken(user), user: publicUser(user), verify_sent: true });
 }));
 
@@ -87,6 +92,14 @@ router.post('/signup/contractor', ah(async (req, res) => {
   const vexp = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24 hours
   await db.prepare('UPDATE users SET verify_token = ?, verify_expires = ? WHERE id = ?').run(vtoken, vexp, userId);
   await sendVerificationEmail(user, vtoken);
+  // Branded welcome + the photo reminder: no contractor is offered work
+  // until their profile photo is on file.
+  try {
+    const { notify, welcomeContractor, photoReminder } = require('../services/notify');
+    const first = user.name.split(' ')[0];
+    await notify({ to: user.email, subject: 'Welcome to Helpman — contractor', html: welcomeContractor(first) });
+    await notify({ to: user.email, subject: 'Action needed: upload your profile photo', html: photoReminder(first) });
+  } catch (_) { /* welcome must never break signup */ }
   res.status(201).json({
     token: signToken(user),
     user: publicUser(user),

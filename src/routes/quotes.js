@@ -207,6 +207,19 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
       ]),
     }).catch(() => {});
   }
+
+  // The customer gets their own confirmation: proposal accepted, pro coming next.
+  const custEmail = job.customer_id
+    ? (await db.prepare('SELECT email, name FROM users WHERE id = ?').get(job.customer_id) || {})
+    : { email: job.email, name: job.name };
+  if (custEmail && custEmail.email) {
+    const { quoteAcceptedCustomer } = require('../services/notify');
+    await notify({
+      to: custEmail.email,
+      subject: `You've accepted your proposal — project #${projectId}`,
+      html: quoteAcceptedCustomer(String(custEmail.name || job.name || 'there').split(' ')[0], projectId, job.service_type),
+    }).catch(() => {});
+  }
   res.json({ accepted: true, project_id: projectId, stripe: { enabled: stripeOn } });
 }));
 

@@ -25,6 +25,7 @@
 
     <section class="tab-panel active" id="panel-profile" role="tabpanel">
       <div class="card" id="profile-card"><p class="muted">Loading your profile…</p></div>
+      <div class="card" id="photo-card"><p class="muted">Loading photo…</p></div>
       <div class="card">
         <h2 style="margin-top:0">Edit profile</h2>
         <form id="profile-form" novalidate>
@@ -191,6 +192,7 @@
       if (!me) return;
       document.getElementById('greeting').textContent = `Hi, ${me.name.split(' ')[0]} — contractor portal`;
       loadProfile();
+      loadPhotoCard();
       loadJobs();
       HPMsg.mountMessages(document.getElementById('messages-box'), {
         fetchProjects: async () => {
@@ -198,6 +200,52 @@
           return ps.map((p) => ({ id: p.id, label: `Job — ${HP.fmtMoney(p.contractor_cost_cents)} budget · ${HP.PROJECT_STAGE[p.stage] || p.stage}` }));
         },
       });
+    }
+
+    // ---------------- profile photo ----------------
+    // Required before any job can be offered: the assigned customer gets it by email.
+    async function loadPhotoCard() {
+      const box = document.getElementById('photo-card');
+      try {
+        const c = await HP.api('GET', '/contractors/me');
+        const img = c.photo_url
+          ? `<img src="${HP.esc(c.photo_url)}" alt="Your profile photo" style="width:120px;height:120px;object-fit:cover;border-radius:50%;border:3px solid #e2e8f0;">`
+          : `<div style="width:120px;height:120px;border-radius:50%;background:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:40px;" aria-hidden="true">📷</div>`;
+        box.innerHTML = `
+          <h2 style="margin-top:0">Profile photo</h2>
+          <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
+            ${img}
+            <div style="flex:1;min-width:220px;">
+              ${c.photo_url ? '' : '<div class="banner banner-warn" style="margin-bottom:8px;"><strong>Upload your photo to receive jobs.</strong><br>Customers see the photo of their assigned technician — without it we cannot offer you any work.</div>'}
+              <p class="small muted">This photo is shown to customers when you are assigned to their job. Use a clear, recent photo of your face.</p>
+              <form id="photo-form" novalidate>
+                <div class="field"><label for="photo-file">${c.photo_url ? 'Replace photo' : 'Upload photo'}</label>
+                <input type="file" id="photo-file" name="photo" accept="image/*"></div>
+                <button class="btn btn-primary btn-sm" type="submit" id="photo-save">${c.photo_url ? 'Replace' : 'Upload'}</button>
+              </form>
+            </div>
+          </div>
+          <p class="small" id="photo-msg" role="status"></p>`;
+        document.getElementById('photo-form').addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const file = document.getElementById('photo-file').files[0];
+          const msg = document.getElementById('photo-msg');
+          if (!file) { msg.textContent = 'Choose a photo first.'; return; }
+          const btn = document.getElementById('photo-save');
+          HP.busy(btn, true, 'Uploading…');
+          try {
+            const fd = new FormData();
+            fd.append('photo', file);
+            const r = await fetch('/api/contractors/me/photo', { method: 'POST', body: fd, headers: { Authorization: 'Bearer ' + HP.token() } });
+            if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error || 'Upload failed.'); }
+            msg.textContent = 'Photo saved.';
+            loadPhotoCard();
+          } catch (err) { msg.textContent = HP.friendlyMessage(err); }
+          finally { HP.busy(btn, false); }
+        });
+      } catch (e) {
+        box.innerHTML = `<div class="banner banner-warn">Could not load photo status: ${HP.esc(HP.friendlyMessage(e))}</div>`;
+      }
     }
 
     // ---------------- profile ----------------

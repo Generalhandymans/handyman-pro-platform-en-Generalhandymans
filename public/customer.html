@@ -543,7 +543,21 @@
           </tbody></table></div>${pendingDepositBtn(p)}`
         : '<p class="small muted">No payments recorded yet.</p>';
       const review = renderReview(p);
+      const tech = p.contractor ? `
+        <h4>Your technician</h4>
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px;">
+          ${p.contractor.photo_url
+            ? `<img src="${HP.esc(p.contractor.photo_url)}" alt="Your technician" style="width:72px;height:72px;object-fit:cover;border-radius:50%;border:2px solid #e2e8f0;">`
+            : ''}
+          <div><strong>${HP.esc(p.contractor.first_name || 'Assigned pro')}</strong><br>
+          <span class="small muted">★ ${Number(p.contractor.rating_avg || 0).toFixed(1)} · ${p.contractor.jobs_completed || 0} jobs done</span></div>
+        </div>` : '';
+      const sched = (p.scheduled_start || p.arrival_window) ? `
+        <h4>Scheduled visit</h4>
+        <p><strong>${HP.esc((p.scheduled_start || '').slice(0, 10))}</strong>${p.arrival_window ? ` · arrival window <strong>${HP.esc(p.arrival_window)}</strong>` : ''}</p>
+        <p class="small" style="background:#f8fafc;border-left:4px solid #2563eb;padding:8px 12px;">⏰ Arrival times are approximate: your pro arrives within the window shown and confirms the day before. Thanks for keeping the schedule a little flexible.</p>` : '';
       body.innerHTML = `
+        ${tech}${sched}
         <h4>Milestones</h4>
         <div class="ms">${ms || '<p class="small muted">No milestones yet.</p>'}</div>
         <hr class="divider">${photos}

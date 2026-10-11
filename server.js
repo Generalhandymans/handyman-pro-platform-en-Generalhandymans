@@ -162,6 +162,33 @@ app.get('/api/photos/:filename', async (req, res) => {
   }
 });
 
+// Contractor profile photos: same token-capability model as job photos — the
+// 32-char hex filename is effectively unguessable. Public on purpose: the
+// assigned customer receives this URL by email.
+app.get('/api/contractor-photos/:filename', async (req, res) => {
+  try {
+    const fname = String(req.params.filename || '');
+    if (!/^[a-f0-9]{32}$/.test(fname) && !fname.startsWith('photos/')) {
+      return res.status(404).json({ error: 'Photo not found.' });
+    }
+    const row = await db.prepare('SELECT photo_filename FROM contractors WHERE photo_filename = ?').get(fname);
+    if (!row) return res.status(404).json({ error: 'Photo not found.' });
+    const storage = require('./src/services/storage');
+    if (fname.startsWith('photos/') && storage.isConfigured()) {
+      const url = await storage.signedReadUrl(fname, 300);
+      return res.redirect(302, url);
+    }
+    const abs = path.join(__dirname, 'uploads', path.basename(fname));
+    if (!fs.existsSync(abs)) return res.status(404).json({ error: 'Photo file missing.' });
+    res.type('image/jpeg');
+    res.set('Cache-Control', 'private, max-age=3600');
+    res.set('X-Robots-Tag', 'noindex');
+    res.sendFile(abs);
+  } catch (e) {
+    res.status(500).json({ error: 'Could not load photo.' });
+  }
+});
+
 app.get('/api/health', async (req, res) => {
   try {
     await db.prepare('SELECT 1 AS ok').get();
@@ -219,6 +246,7 @@ app.use('/api/ai', require('./src/routes/ai'));
 app.use('/api/disputes', require('./src/routes/disputes'));
 app.use('/api/staff', require('./src/routes/staff'));
 app.use('/api/me', require('./src/routes/privacy'));
+app.use('/api', require('./src/routes/offers'));
 app.use('/api/email', require('./src/routes/emailEvents'));
 app.use('/api', require('./src/routes/messages'));
 

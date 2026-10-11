@@ -10,6 +10,7 @@ const { notify, shell } = require('../services/notify');
 const { auditLog } = require('../services/audit');
 const { touchInteraction } = require('../services/crm');
 const photoSvc = require('../services/photos');
+const offers = require('../services/offers');
 
 const router = express.Router();
 
@@ -58,8 +59,12 @@ async function withDetails(p, role, user) {
   if (role === 'customer') {
     const { contractor_cost_cents, ...proj } = full;
     const c = full.contractor;
+    const { contractorPhotoUrl } = require('../services/notify');
     proj.contractor = c ? {
       first_name: String(c.name || '').split(' ')[0],
+      // The assigned customer sees the technician's photo (token URL) — never
+      // the phone, email, or cost.
+      photo_url: contractorPhotoUrl(c),
       rating_avg: c.rating_avg,
       jobs_completed: c.jobs_completed,
       license_verified: !!c.license_verified,
@@ -180,33 +185,42 @@ router.get('/:id/recommendations', authRequired, requireStaff('dispatch'), ah(as
 
 // ---- Admin: offer a project to a contractor (contractor must accept + agree to terms) ----
 router.post('/:id/assign', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
+  // Lazy sweep: release offers nobody answered in time before offering anew.
+  await offers.releaseExpiredOffers().catch(() => {});
   const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found.' });
   const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get((req.body || {}).contractor_id);
   if (!c) return res.status(400).json({ error: 'Contractor not found.' });
   if (c.status !== 'active') return res.status(400).json({ error: 'Contractor is not active.' });
+  // Gate: the customer sees the technician's photo — no photo, no offer.
+  if (!c.photo_filename) {
+    return res.status(409).json({ error: 'This contractor has no profile photo. Ask them to upload one from their portal before offering jobs.' });
+  }
   // Gate: no contractor is offered a job until the deposit is in.
   const jobRow = await db.prepare('SELECT status FROM job_requests WHERE id = ?').get(p.job_request_id);
   if (!jobRow || !['deposit_paid', 'assigned', 'scheduled', 'in_progress', 'review'].includes(jobRow.status)) {
     return res.status(409).json({ error: 'The deposit has not been paid yet. Offer the job after the deposit is recorded.' });
   }
-  await db.prepare(`UPDATE projects SET contractor_id = ?, contractor_status = 'offered', updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-    .run(c.id, p.id);
+  const expiresAt = new Date(Date.now() + offers.OFFER_TTL_MS).toISOString();
+  await db.prepare(`UPDATE projects SET contractor_id = ?, contractor_status = 'offered', offer_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .run(c.id, expiresAt, p.id);
   await auditLog(req.user.id, 'project.contractor_offered', 'projects', p.id, `Project offered to contractor #${c.id}`);
 
-  // Notify the contractor: review the offer and accept it from their portal.
+  // Notify the contractor with one-click accept / decline (magic link, 24 h).
   const cu = await db.prepare('SELECT name, email FROM users WHERE id = ?').get(c.user_id);
   const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
   if (cu && cu.email) {
+    const { jobOfferContractor } = require('../services/notify');
+    const links = offers.offerLinks(p.id, c.id);
     await notify({
       to: cu.email,
       subject: `New job offer — ${job.service_type} (#${p.id})`,
-      html: shell('You have a new job offer', `Hi ${cu.name.split(' ')[0]}, General Handyman Solutions is offering you a project. Review the details and accept it from your portal — accepting means you agree to the Independent Contractor Terms:`, [
-        ['Project', `#${p.id} — ${job.service_type}`],
-        ['Address', job.address],
-        ['Your budget', '$' + (p.contractor_cost_cents / 100).toFixed(2)],
-        ['Customer notes', (job.description || '').slice(0, 200)],
-      ]),
+      html: jobOfferContractor({
+        name: cu.name.split(' ')[0], projectId: p.id, serviceType: job.service_type,
+        address: job.address, budget: '$' + (p.contractor_cost_cents / 100).toFixed(2),
+        acceptUrl: links.acceptUrl, declineUrl: links.declineUrl,
+        expiresNote: 'The offer expires in 24 hours.',
+      }),
     }).catch(() => {});
   }
   res.json(await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
@@ -232,21 +246,7 @@ router.post('/:id/contractor-respond', authRequired, ah(async (req, res) => {
   const termsAccepted = (req.body || {}).terms_accepted === true;
 
   if (!accept) {
-    await db.prepare(`UPDATE projects SET contractor_id = NULL, contractor_status = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.id);
-    await auditLog(req.user.id, 'project.contractor_declined', 'projects', p.id, 'Contractor declined the offer');
-    const admins = await db.prepare("SELECT email FROM users WHERE role = 'admin'").all();
-    const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
-    for (const a of admins) {
-      await notify({
-        to: a.email,
-        subject: `Contractor declined project #${p.id}`,
-        html: shell('Offer declined', 'The contractor declined the job offer. Please assign another professional:', [
-          ['Project', `#${p.id} — ${job.service_type}`],
-        ]),
-      }).catch(() => {});
-    }
-    await touchInteraction(p.job_request_id, 'contractor_reply', 'offer declined');
-    return res.json({ accepted: false });
+    return res.json(await offers.declineOffer(p, { userId: req.user.id }));
   }
 
   // Legal gate: accepting the job requires explicit acceptance of the
@@ -254,39 +254,15 @@ router.post('/:id/contractor-respond', authRequired, ah(async (req, res) => {
   if (!termsAccepted) {
     return res.status(400).json({ error: 'You must accept the Independent Contractor Terms to take this job.' });
   }
-  const { CONTRACTOR_TERMS_VERSION, recordAcceptance } = require('../services/terms');
-  const ip = req.ip || null;
-
-  await db.prepare(`UPDATE projects SET contractor_status = 'accepted', stage = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.id);
-  await db.prepare(`UPDATE job_requests SET status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.job_request_id);
-  await recordAcceptance({ userId: req.user.id, kind: 'contractor_job', referenceId: p.id, version: CONTRACTOR_TERMS_VERSION, ip });
-  await auditLog(req.user.id, 'project.contractor_accepted', 'projects', p.id, `Contractor accepted under terms v${CONTRACTOR_TERMS_VERSION}`);
-  await touchInteraction(p.job_request_id, 'contractor_reply', 'offer accepted');
-
-  // Notify the customer that a pro accepted and the job is scheduled.
-  const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
-  const custEmail = job.customer_id
-    ? (await db.prepare('SELECT email FROM users WHERE id = ?').get(job.customer_id) || {}).email
-    : job.email;
-  const pro = await db.prepare('SELECT u.name FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?').get(p.contractor_id);
-  if (custEmail) {
-    await notify({
-      to: custEmail,
-      subject: `A professional accepted your project (#${p.id})`,
-      html: shell('Professional confirmed', 'Good news — a verified professional accepted your project and it is now scheduled:', [
-        ['Project', `#${p.id} — ${job.service_type}`],
-        ['Professional', pro ? pro.name : 'Assigned pro'],
-      ]),
-    }).catch(() => {});
-  }
-  res.json({ accepted: true, project: await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id) });
+  const project = await offers.acceptOffer(p, { userId: req.user.id, ip: req.ip || null });
+  res.json({ accepted: true, project });
 }));
 
 // ---- Admin: set scheduled dates (end must be >= start) ----
 router.patch('/:id/schedule', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
   const p = await db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Project not found.' });
-  const { scheduled_start, scheduled_end } = req.body || {};
+  const { scheduled_start, scheduled_end, arrival_window } = req.body || {};
   const errors = {};
   const parse = (v, field) => {
     if (v === null || v === undefined || v === '') return null;
@@ -299,11 +275,19 @@ router.patch('/:id/schedule', authRequired, requireStaff('dispatch'), ah(async (
   if (!errors.scheduled_start && !errors.scheduled_end && start && end && end < start) {
     errors.scheduled_end = 'End date cannot be before the start date.';
   }
+  // Arrival window: free text like "2:00 PM – 4:00 PM" (kept flexible on purpose).
+  let window = p.arrival_window || null;
+  if (arrival_window !== undefined && arrival_window !== null && arrival_window !== '') {
+    window = String(arrival_window).trim().slice(0, 80);
+    if (!window) errors.arrival_window = 'Arrival window is invalid.';
+  } else if (arrival_window === '') {
+    window = null;
+  }
   if (failIfErrors(res, errors)) return;
   const prevStart = p.scheduled_start ? String(p.scheduled_start).slice(0, 10) : null;
   const startChanged = start !== prevStart;
-  await db.prepare(`UPDATE projects SET scheduled_start = ?, scheduled_end = ?, updated_at = CURRENT_TIMESTAMP${startChanged ? ', reminder_sent_at = NULL' : ''} WHERE id = ?`)
-    .run(start, end, p.id);
+  await db.prepare(`UPDATE projects SET scheduled_start = ?, scheduled_end = ?, arrival_window = ?, updated_at = CURRENT_TIMESTAMP${startChanged ? ', reminder_sent_at = NULL' : ''} WHERE id = ?`)
+    .run(start, end, window, p.id);
   if (startChanged) {
     // A moved date is a reschedule (KPI) and the customer gets a fresh confirmation (if they opted in).
     if (prevStart && start) await db.prepare(`INSERT INTO visit_events (project_id, outcome, by_user, note) VALUES (?,?,?,?)`).run(p.id, 'rescheduled', req.user.id, `${prevStart} → ${start}`);
@@ -311,6 +295,12 @@ router.patch('/:id/schedule', authRequired, requireStaff('dispatch'), ah(async (
       const j = await db.prepare('SELECT service_type FROM job_requests WHERE id = ?').get(p.job_request_id);
       const sms = require('../services/sms');
       await sms.textCustomer(p.id, 'scheduled', sms.T.scheduled(j ? j.service_type : 'service', start)).catch(() => {});
+    }
+    // Day (re)confirmed: the contractor gets "appointment confirmed — accept or
+    // decline" and the customer gets technician + day + arrival window.
+    const fresh = await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id);
+    if (fresh.contractor_id && start) {
+      await offers.sendScheduleConfirmation(fresh).catch(() => {});
     }
   }
   await auditLog(req.user.id, 'project.scheduled', 'projects', p.id, `Scheduled ${start || '—'} → ${end || '—'}`);

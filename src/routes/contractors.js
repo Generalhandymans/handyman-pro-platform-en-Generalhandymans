@@ -1,5 +1,7 @@
 // Contractors: profiles, verification workflow (admin), performance.
 const express = require('express');
+const multer = require('multer');
+const path = require('path');
 const { requireStaff, can } = require('../services/permissions');
 const db = require('../db');
 const { ah, authRequired, requireRole, isNonEmpty, failIfErrors } = require('../middleware');
@@ -8,10 +10,21 @@ const { auditLog } = require('../services/audit');
 
 const router = express.Router();
 
+const photoUpload = multer({
+  dest: path.join(__dirname, '..', '..', 'uploads'),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype && file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only image files are allowed (max 5 MB).'));
+  },
+});
+
 async function enriched(c) {
   const u = await db.prepare('SELECT name, email, phone FROM users WHERE id = ?').get(c.user_id);
+  const { contractorPhotoUrl } = require('../services/notify');
   return {
     ...c, user_name: u.name, email: u.email, phone: u.phone,
+    photo_url: contractorPhotoUrl(c),
     lifecycle: contractorLifecycle(c), score: contractorScore(c), retention_at_risk: await retentionAtRisk(c),
   };
 }
@@ -47,6 +60,31 @@ router.patch('/me', authRequired, requireRole('contractor'), ah(async (req, res)
   vals.push(req.user.id);
   await db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE user_id = ?`).run(...vals);
   res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id)));
+}));
+
+// ---- Contractor: upload / replace the profile photo ----
+// Shown to customers on assignment emails, so it is required before any job
+// can be offered. The contractor is told this in the portal and by email.
+router.post('/me/photo', authRequired, requireRole('contractor'), photoUpload.single('photo'), ah(async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Send the photo as the "photo" file field.' });
+  const { filename } = await require('../services/photostore').persist(req.file, 'profile');
+  await db.prepare('UPDATE contractors SET photo_filename = ? WHERE user_id = ?').run(filename, req.user.id);
+  await auditLog(req.user.id, 'contractor.photo_uploaded', 'contractors', req.user.id, 'Profile photo updated');
+  const { contractorPhotoUrl } = require('../services/notify');
+  res.status(201).json({ photo_url: `${require('../services/magiclink').baseUrl()}/api/contractor-photos/${filename}` });
+}));
+
+// ---- Dispatch: re-send the "upload your photo" reminder ----
+router.post('/:id/remind-photo', authRequired, requireStaff('dispatch'), ah(async (req, res) => {
+  const c = await db.prepare(
+    'SELECT c.*, u.name, u.email FROM contractors c JOIN users u ON u.id = c.user_id WHERE c.id = ?'
+  ).get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Contractor not found.' });
+  if (c.photo_filename) return res.status(400).json({ error: 'This contractor already has a profile photo.' });
+  const { notify, photoReminder } = require('../services/notify');
+  await notify({ to: c.email, subject: 'Action needed: upload your profile photo', html: photoReminder(c.name.split(' ')[0]) });
+  await auditLog(req.user.id, 'contractor.photo_reminded', 'contractors', c.id, 'Photo reminder re-sent');
+  res.json({ reminded: true });
 }));
 
 // Admin: verification workflow — license, insurance, background check, activation.
