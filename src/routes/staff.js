@@ -18,9 +18,9 @@ const ownersLeft = async (excludeId) => Number((await db.prepare(
 
 router.get('/', ah(async (req, res) => {
   const rows = await db.prepare(
-    `SELECT id, name, email, staff_role, created_at FROM users WHERE role = 'admin' ORDER BY id`
+    `SELECT id, name, email, staff_role, totp_enabled, created_at FROM users WHERE role = 'admin' ORDER BY id`
   ).all();
-  res.json(rows.map(r => ({ ...r, staff_role: r.staff_role || 'owner' })));
+  res.json(rows.map(r => ({ ...r, staff_role: r.staff_role || 'owner', totp_enabled: !!r.totp_enabled })));
 }));
 
 // Invite: creates the account with a random password and emails a set-password link.
@@ -64,6 +64,17 @@ router.patch('/:id', ah(async (req, res) => {
   await db.prepare('UPDATE users SET staff_role = ? WHERE id = ?').run(role, u.id);
   await auditLog(req.user.id, 'staff.role_changed', 'users', u.id, `${effectiveRole(u)} → ${role}`);
   res.json({ id: u.id, staff_role: role });
+}));
+
+// Lost phone: an owner clears a colleague's two-step setup (they sign in again and re-enrol).
+router.post('/:id/reset-2fa', ah(async (req, res) => {
+  const u = await db.prepare(`SELECT id FROM users WHERE id = ? AND role = 'admin'`).get(req.params.id);
+  if (!u) return res.status(404).json({ error: 'Team member not found.' });
+  if (u.id === req.user.id) return res.status(409).json({ error: 'Use "Turn off" in your own Security tab.' });
+  await db.prepare(`UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = 0, totp_recovery = NULL,
+                    token_version = COALESCE(token_version,0) + 1 WHERE id = ?`).run(u.id);
+  await auditLog(req.user.id, 'staff.2fa_reset', 'users', u.id, 'Two-step verification reset');
+  res.json({ id: u.id, totp_enabled: false });
 }));
 
 router.post('/:id/deactivate', ah(async (req, res) => {

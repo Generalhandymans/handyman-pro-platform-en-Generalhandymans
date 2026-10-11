@@ -4,7 +4,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const db = require('../db');
-const { ah, authRequired, isEmail, isPhone, isNonEmpty, failIfErrors, signToken } = require('../middleware');
+const { ah, authRequired, requireRole, isEmail, isPhone, isNonEmpty, failIfErrors, signToken, signChallenge, verifyChallenge } = require('../middleware');
+const totp = require('../services/totp');
 const { notify, shell } = require('../services/notify');
 
 const router = express.Router();
@@ -107,7 +108,81 @@ router.post('/login', ah(async (req, res) => {
   if (user.role === 'admin' && user.staff_role === 'disabled') {
     return res.status(403).json({ error: 'This account is disabled. Ask an owner.' });
   }
+  // Two-step verification: the password alone does NOT open a session.
+  if (user.totp_enabled) {
+    return res.json({ two_factor_required: true, challenge: signChallenge(user) });
+  }
   res.json({ token: signToken(user), user: publicUser(user) });
+}));
+
+// ---- Two-step verification ----
+// Step 2 of login: a 6-digit app code, or a one-time recovery code.
+router.post('/2fa/verify', ah(async (req, res) => {
+  const { challenge, code } = req.body || {};
+  const bad = () => res.status(401).json({ error: 'That code is not valid.' });
+  const payload = verifyChallenge(challenge);
+  if (!payload) return res.status(401).json({ error: 'Your sign-in expired. Please sign in again.' });
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(payload.id);
+  if (!user || !user.totp_enabled || (payload.tv || 0) !== (user.token_version || 0) ||
+      (user.role === 'admin' && user.staff_role === 'disabled')) {
+    return res.status(401).json({ error: 'Please sign in again.' });
+  }
+  const secret = totp.decrypt(user.totp_secret);
+  if (!secret) return res.status(500).json({ error: 'Two-step data could not be read. Ask an owner to reset it.' });
+
+  const step = totp.verify(secret, code, Date.now(), Number(user.totp_last_step) || 0);
+  if (step !== null) {
+    // Atomic anti-replay: a code can open a session only once.
+    const upd = await db.prepare('UPDATE users SET totp_last_step = ? WHERE id = ? AND totp_last_step < ?').run(step, user.id, step);
+    if (upd.changes !== 1) return bad();
+    return res.json({ token: signToken(user), user: publicUser(user) });
+  }
+  const left = totp.consumeRecovery(user.totp_recovery, code);
+  if (left) {
+    const upd = await db.prepare('UPDATE users SET totp_recovery = ? WHERE id = ? AND totp_recovery = ?').run(JSON.stringify(left), user.id, user.totp_recovery);
+    if (upd.changes !== 1) return bad();
+    return res.json({ token: signToken(user), user: publicUser(user), recovery_codes_left: left.length });
+  }
+  return bad();
+}));
+
+// Start setup: returns the key to type (or scan) into the authenticator app.
+router.post('/2fa/setup', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const row = await db.prepare('SELECT totp_enabled FROM users WHERE id = ?').get(req.user.id);
+  if (row.totp_enabled) return res.status(409).json({ error: 'Two-step verification is already on.' });
+  const secret = totp.newSecret();
+  await db.prepare('UPDATE users SET totp_secret = ?, totp_last_step = 0 WHERE id = ?').run(totp.encrypt(secret), req.user.id);
+  res.json({ secret, otpauth_url: totp.otpauthUrl(req.user.email, secret) });
+}));
+
+// Confirm with a code from the app. Returns the recovery codes ONCE.
+router.post('/2fa/enable', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const row = await db.prepare('SELECT totp_secret, totp_enabled FROM users WHERE id = ?').get(req.user.id);
+  if (row.totp_enabled) return res.status(409).json({ error: 'Two-step verification is already on.' });
+  const secret = row.totp_secret && totp.decrypt(row.totp_secret);
+  if (!secret) return res.status(409).json({ error: 'Start the setup first.' });
+  const step = totp.verify(secret, (req.body || {}).code, Date.now(), 0);
+  if (step === null) return res.status(422).json({ error: 'That code is not valid. Check the time on your phone and try again.' });
+  const rc = totp.newRecoveryCodes(8);
+  await db.prepare('UPDATE users SET totp_enabled = 1, totp_last_step = ?, totp_recovery = ? WHERE id = ?')
+    .run(step, JSON.stringify(rc.hashes), req.user.id);
+  res.json({ enabled: true, recovery_codes: rc.codes });
+}));
+
+// Turn it off: needs the password AND a current code (or a recovery code).
+router.post('/2fa/disable', authRequired, requireRole('admin'), ah(async (req, res) => {
+  const { password, code } = req.body || {};
+  const user = await db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!user.totp_enabled) return res.status(409).json({ error: 'Two-step verification is not on.' });
+  if (typeof password !== 'string' || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.status(403).json({ error: 'Password is incorrect.' });
+  }
+  const secret = totp.decrypt(user.totp_secret);
+  const okCode = (secret && totp.verify(secret, code, Date.now(), Number(user.totp_last_step) || 0) !== null) ||
+    totp.consumeRecovery(user.totp_recovery, code) !== null;
+  if (!okCode) return res.status(422).json({ error: 'That code is not valid.' });
+  await db.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = 0, totp_recovery = NULL WHERE id = ?').run(user.id);
+  res.json({ enabled: false });
 }));
 
 router.get('/me', authRequired, ah(async (req, res) => {
@@ -116,6 +191,8 @@ router.get('/me', authRequired, ah(async (req, res) => {
     const perms = require('../services/permissions');
     out.staff_role = perms.effectiveRole(req.user);
     out.permissions = perms.permissionsOf(req.user);
+    out.totp_enabled = !!req.user.totp_enabled;
+    out.mfa_required = perms.mfaRequired(req.user);
   }
   if (req.user.role === 'contractor') {
     out.contractor = await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id) || null;

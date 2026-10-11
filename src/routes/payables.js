@@ -84,6 +84,10 @@ router.post('/:id/pay', ah(async (req, res) => {
   if (!pb) return res.status(404).json({ error: 'Payable not found.' });
   if (!['pending', 'approved'].includes(pb.status)) return res.status(409).json({ error: 'This payable is already ' + pb.status + '.' });
 
+  // Hold: no payout while a dispute is open on the project (resolve it first).
+  if (await require('../services/disputes').openDisputeFor(pb.project_id)) {
+    return res.status(409).json({ error: 'This project has an open dispute. Resolve it before paying the contractor.', code: 'DISPUTE_HOLD' });
+  }
   // Guard: do not pay the contractor while the customer still owes money,
   // unless an admin overrides on purpose (audited).
   const balance = await customerBalanceCents(pb.project_id);

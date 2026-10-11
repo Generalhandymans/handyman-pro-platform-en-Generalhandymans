@@ -155,6 +155,10 @@ function computeKpis(d, opts = {}) {
     customers_with_completed: doneCust.size,
     repeat_customers: [...doneCust.values()].filter(n => n >= 2).length,
     repeat_rate_pct: pct([...doneCust.values()].filter(n => n >= 2).length, doneCust.size),
+    disputes_opened: (d.disputes || []).filter(x => inWin(x.created_at)).length,
+    disputes_open_now: (d.disputes || []).filter(x => ['open', 'investigating'].includes(x.status)).length,
+    dispute_rate_pct: pct((d.disputes || []).filter(x => inWin(x.created_at)).length, winProjects.length),
+    refunded_by_disputes_cents: (d.disputes || []).filter(x => x.status === 'resolved' && inWin(x.resolved_at)).reduce((a, x) => a + Number(x.refund_cents || 0), 0),
   };
 
   // ---------- capacity ----------

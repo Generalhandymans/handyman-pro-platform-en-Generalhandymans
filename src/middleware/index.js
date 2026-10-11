@@ -27,7 +27,7 @@ async function authRequiredAsync(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Authentication required' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    const user = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version, staff_role FROM users WHERE id = ?').get(payload.id);
+    const user = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version, staff_role, totp_enabled FROM users WHERE id = ?').get(payload.id);
     if (!user) return res.status(401).json({ error: 'User no longer exists' });
     if (user.role === 'admin' && user.staff_role === 'disabled') return res.status(401).json({ error: 'This account is disabled.' });
     // Tokens issued before a password reset carry an older version: reject them.
@@ -52,7 +52,7 @@ async function optionalAuthAsync(req, res, next) {
   if (h.startsWith('Bearer ')) {
     try {
       const payload = jwt.verify(h.slice(7), JWT_SECRET);
-      const u = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version, staff_role FROM users WHERE id = ?').get(payload.id);
+      const u = await db.prepare('SELECT id, name, email, phone, role, email_verified, token_version, staff_role, totp_enabled FROM users WHERE id = ?').get(payload.id);
       req.user = (u && (payload.tv || 0) === (u.token_version || 0) && u.staff_role !== 'disabled') ? u : undefined;
     } catch (e) { /* stay a guest */ }
   }
@@ -68,6 +68,19 @@ function requireRole(...roles) {
     }
     next();
   };
+}
+
+// Step-1 login token for accounts with two-step verification. Signed with a
+// DIFFERENT key than sessions, so it is useless as a bearer token.
+const CHALLENGE_KEY = () => JWT_SECRET + ':2fa';
+function signChallenge(user) {
+  return jwt.sign({ id: user.id, tv: user.token_version || 0, purpose: '2fa' }, CHALLENGE_KEY(), { expiresIn: '5m' });
+}
+function verifyChallenge(token) {
+  try {
+    const p = jwt.verify(String(token || ''), CHALLENGE_KEY());
+    return p && p.purpose === '2fa' ? p : null;
+  } catch (e) { return null; }
 }
 
 // Money-moving actions (accept a quote, pay) require a verified email.
@@ -105,4 +118,4 @@ function signToken(user) {
   return jwt.sign({ id: user.id, role: user.role, tv: user.token_version || 0 }, JWT_SECRET, { expiresIn: '7d' });
 }
 
-module.exports = { ah, authRequired, optionalAuth, requireRole, requireVerifiedEmail, isEmail, isPhone, isNonEmpty, isInt, failIfErrors, signToken };
+module.exports = { ah, authRequired, optionalAuth, requireRole, requireVerifiedEmail, signChallenge, verifyChallenge, isEmail, isPhone, isNonEmpty, isInt, failIfErrors, signToken };

@@ -338,6 +338,12 @@ if (!columnExists('photos', 'storage_provider')) {
 if (!columnExists('users', 'token_version')) {
   db.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`);
 }
+if (!columnExists('users', 'totp_enabled')) {
+  db.exec(`ALTER TABLE users ADD COLUMN totp_secret TEXT`);
+  db.exec(`ALTER TABLE users ADD COLUMN totp_enabled INTEGER NOT NULL DEFAULT 0`);
+  db.exec(`ALTER TABLE users ADD COLUMN totp_last_step INTEGER NOT NULL DEFAULT 0`);
+  db.exec(`ALTER TABLE users ADD COLUMN totp_recovery TEXT`);
+}
 if (!columnExists('users', 'staff_role')) {
   db.exec(`ALTER TABLE users ADD COLUMN staff_role TEXT`);
 }
@@ -387,6 +393,35 @@ db.exec(`CREATE TABLE IF NOT EXISTS contractor_payables (
   paid_reference TEXT,
   paid_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+
+// Disputes: a formal channel for "this work is not right" (customer) or "the customer will not
+// approve" (contractor). One open dispute per project, enforced by the partial unique index.
+db.exec(`CREATE TABLE IF NOT EXISTS disputes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  opened_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  opened_by_role TEXT NOT NULL CHECK (opened_by_role IN ('customer','contractor')),
+  reason TEXT NOT NULL CHECK (reason IN ('quality','incomplete','no_show','damage','billing','other')),
+  description TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','investigating','resolved','withdrawn')),
+  resolution TEXT CHECK (resolution IS NULL OR resolution IN ('no_action','rework','partial_refund','full_refund')),
+  resolution_notes TEXT,
+  refund_cents INTEGER NOT NULL DEFAULT 0,
+  resolved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  resolved_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_dispute_open_per_project ON disputes(project_id) WHERE status IN ('open','investigating')`);
+db.exec(`CREATE TABLE IF NOT EXISTS dispute_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dispute_id INTEGER NOT NULL REFERENCES disputes(id) ON DELETE CASCADE,
+  author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  author_role TEXT NOT NULL CHECK (author_role IN ('customer','contractor','admin')),
+  visibility TEXT NOT NULL CHECK (visibility IN ('customer','contractor','staff')),
+  body TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
 

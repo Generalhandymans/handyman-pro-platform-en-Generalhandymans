@@ -21,10 +21,12 @@
       <button class="tab" data-tab="projects" role="tab">Projects</button>
       <button class="tab" data-tab="agenda" role="tab">Agenda</button>
       <button class="tab" data-tab="payouts" role="tab">Payouts</button>
+      <button class="tab" data-tab="disputes" role="tab">Disputes</button>
       <button class="tab" data-tab="messages" role="tab">Messages</button>
       <button class="tab" data-tab="campaigns" role="tab">Campaigns</button>
       <button class="tab" data-tab="reports" role="tab">Reports</button>
       <button class="tab" data-tab="team" role="tab">Team</button>
+      <button class="tab" data-tab="security" role="tab">Security</button>
     </div>
 
     <section class="tab-panel active" id="panel-overview" role="tabpanel">
@@ -137,6 +139,21 @@
       </div>
     </section>
 
+    <section class="tab-panel" id="panel-disputes" role="tabpanel">
+      <div class="section">
+        <div class="section-head">
+          <h2>Disputes</h2>
+          <select id="dp-filter" aria-label="Filter disputes by status">
+            <option value="">All</option><option value="open">Open</option><option value="investigating">Investigating</option>
+            <option value="resolved">Resolved</option><option value="withdrawn">Withdrawn</option>
+          </select>
+        </div>
+        <p class="small muted">While a dispute is open, the contractor payout and the customer's final payment are on hold. Talk to each side separately; they never see each other's messages.</p>
+        <div id="dp-list"><p class="muted">Loading disputes…</p></div>
+        <div id="dp-detail"></div>
+      </div>
+    </section>
+
     <section class="tab-panel" id="panel-payouts" role="tabpanel">
       <div class="section">
         <div class="section-head">
@@ -153,6 +170,14 @@
         <p class="small muted">The platform records payouts; send the money by ACH, check, Zelle, etc., then mark it paid with the method and reference. A payout is blocked while the customer still owes money (you can override on purpose).</p>
         <div id="po-totals" style="margin:.5rem 0"></div>
         <div id="po-list"><p class="muted">Loading payouts…</p></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-security" role="tabpanel">
+      <div class="section">
+        <div class="section-head"><h2>Two-step verification</h2></div>
+        <p class="small muted">Adds a 6-digit code from an authenticator app (Google Authenticator, Authy, 1Password…) every time you sign in. It is <strong>required</strong> for owners and finance in production, because they can move money and manage the team.</p>
+        <div id="sec-body"><p class="muted">Loading…</p></div>
       </div>
     </section>
 
@@ -250,9 +275,9 @@
     document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
       t.addEventListener('click', () => {
         document.querySelectorAll('#admin-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
-        document.querySelectorAll('#panel-overview, #panel-kpis, #panel-clients, #panel-contractors, #panel-projects, #panel-agenda, #panel-payouts, #panel-messages, #panel-campaigns, #panel-reports, #panel-team')
+        document.querySelectorAll('#panel-overview, #panel-kpis, #panel-clients, #panel-contractors, #panel-projects, #panel-agenda, #panel-payouts, #panel-disputes, #panel-messages, #panel-campaigns, #panel-reports, #panel-team, #panel-security')
           .forEach((p) => p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
-        const fn = { overview: loadOverview, kpis: loadKpis, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, agenda: loadAgendaTab, payouts: loadPayoutsTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports, team: loadTeam }[t.dataset.tab];
+        const fn = { overview: loadOverview, kpis: loadKpis, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, agenda: loadAgendaTab, payouts: loadPayoutsTab, disputes: loadDisputesTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports, team: loadTeam, security: loadSecurity }[t.dataset.tab];
         if (fn) fn();
       });
     });
@@ -334,6 +359,137 @@
       });
     }
 
+    // ---------- disputes ----------
+    const DP_KIND = { open: 'err', investigating: 'warn', resolved: 'ok', withdrawn: 'muted' };
+    async function loadDisputesTab() {
+      if (!loaded.dpWired) { loaded.dpWired = true; document.getElementById('dp-filter').addEventListener('change', loadDisputesTab); }
+      const box = document.getElementById('dp-list');
+      const st = document.getElementById('dp-filter').value;
+      let rows;
+      try { rows = await HP.api('GET', '/disputes' + (st ? '?status=' + st : '')); }
+      catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      if (!rows.length) { box.innerHTML = '<p class="muted">No disputes here. 🎉</p>'; document.getElementById('dp-detail').innerHTML = ''; return; }
+      box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>#</th><th>Project</th><th>Opened by</th><th>Reason</th><th>Status</th><th>Opened</th><th></th></tr></thead><tbody>
+        ${rows.map((r) => `<tr><td>${r.id}</td><td>#${r.project_id}</td><td>${HP.esc(r.opened_by_role)}</td><td>${HP.esc(r.reason)}</td>
+          <td>${HP.badge(r.status, DP_KIND[r.status] || 'muted')}</td><td class="small">${HP.fmtDateTime(r.created_at)}</td>
+          <td><button class="btn btn-outline btn-sm dp-open" data-id="${r.id}" type="button">Open</button></td></tr>`).join('')}</tbody></table></div>`;
+      box.querySelectorAll('.dp-open').forEach((b) => b.addEventListener('click', () => showDispute(b.dataset.id)));
+    }
+
+    async function showDispute(id) {
+      const out = document.getElementById('dp-detail');
+      let d;
+      try { d = await HP.api('GET', '/disputes/' + id); } catch (e) { out.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      const closed = !['open', 'investigating'].includes(d.status);
+      const perms = window.__perms || [];
+      const chan = { customer: 'Customer', contractor: 'Contractor', staff: 'Internal' };
+      out.innerHTML = `<div class="card" style="margin-top:1rem"><h3 style="margin-top:0">Dispute #${d.id} — project #${d.project_id} ${HP.badge(d.status, DP_KIND[d.status] || 'muted')}</h3>
+        <p class="small"><strong>${HP.esc(d.opened_by_role)}</strong> reported <strong>${HP.esc(d.reason)}</strong>:<br>${HP.esc(d.description)}</p>
+        ${d.status === 'resolved' ? `<p class="small">${HP.badge('Resolved', 'ok')} <strong>${HP.esc(String(d.resolution).replace('_', ' '))}</strong>${d.refund_cents ? ' · refund ' + HP.fmtMoney(d.refund_cents) : ''}<br>${HP.esc(d.resolution_notes || '')}</p>` : ''}
+        <h4>Conversation</h4>
+        ${d.events.length ? d.events.map((e) => `<div class="small" style="margin:.3rem 0;padding:.4rem .6rem;border-radius:8px;background:${e.visibility === 'staff' ? '#fef9c3' : e.visibility === 'customer' ? '#eff6ff' : '#f0fdf4'}">
+          <strong>${HP.esc(e.author_name || e.author_role)}</strong> → ${chan[e.visibility]} · ${HP.fmtDateTime(e.created_at)}<br>${HP.esc(e.body)}</div>`).join('') : '<p class="small muted">No messages yet.</p>'}
+        ${closed ? '' : `
+        <div style="margin-top:.75rem"><textarea id="dpd-body" rows="2" style="width:100%" aria-label="Message"></textarea>
+          <div class="btn-row" style="margin-top:.4rem"><select id="dpd-vis" aria-label="Who sees this"><option value="customer">To the customer</option><option value="contractor">To the contractor</option><option value="staff">Internal note</option></select>
+          <button class="btn btn-primary btn-sm" id="dpd-send" type="button">Send</button>
+          ${d.status === 'open' ? '<button class="btn btn-outline btn-sm" id="dpd-inv" type="button">Start investigating</button>' : ''}</div></div>
+        <h4 style="margin-top:1rem">Resolve</h4>
+        <div class="field"><label for="dpd-res">Decision</label><select id="dpd-res">
+          <option value="no_action">No action (work is fine)</option><option value="rework">Rework (contractor fixes it)</option>
+          ${perms.includes('finance') ? '<option value="partial_refund">Partial refund</option><option value="full_refund">Full refund</option>' : ''}</select></div>
+        <div class="field" id="dpd-amt-wrap" hidden><label for="dpd-amt">Refund amount (USD)</label><input id="dpd-amt" type="number" min="0.01" step="0.01"></div>
+        ${perms.includes('finance') ? `<div class="field"><label for="dpd-pay">Contractor payout</label><select id="dpd-pay"><option value="keep">Keep as is</option><option value="reduce">Reduce</option><option value="cancel">Cancel</option></select></div>
+        <div class="field" id="dpd-pamt-wrap" hidden><label for="dpd-pamt">New payout (USD)</label><input id="dpd-pamt" type="number" min="0" step="0.01"></div>` : '<p class="small muted">Refunds and payout changes need the finance role.</p>'}
+        <div class="field"><label for="dpd-notes">Decision notes (the customer sees this)</label><textarea id="dpd-notes" rows="3" style="width:100%"></textarea></div>
+        <button class="btn btn-primary btn-sm" id="dpd-resolve" type="button">Resolve dispute</button>`}
+      </div>`;
+      if (closed) return;
+      const sel = (i) => document.getElementById(i);
+      const syncUi = () => {
+        sel('dpd-amt-wrap').hidden = sel('dpd-res').value !== 'partial_refund';
+        if (sel('dpd-pay')) sel('dpd-pamt-wrap').hidden = sel('dpd-pay').value !== 'reduce';
+      };
+      sel('dpd-res').addEventListener('change', syncUi);
+      if (sel('dpd-pay')) sel('dpd-pay').addEventListener('change', syncUi);
+      sel('dpd-send').addEventListener('click', async (ev) => {
+        const text = sel('dpd-body').value.trim();
+        if (!text) return;
+        HP.busy(ev.target, true, 'Sending…');
+        try { await HP.api('POST', `/disputes/${id}/comments`, { body: text, visibility: sel('dpd-vis').value }); showDispute(id); }
+        catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); HP.busy(ev.target, false); }
+      });
+      const inv = sel('dpd-inv');
+      if (inv) inv.addEventListener('click', async () => {
+        try { await HP.api('POST', `/disputes/${id}/status`, { status: 'investigating' }); loadDisputesTab(); showDispute(id); }
+        catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      });
+      sel('dpd-resolve').addEventListener('click', async (ev) => {
+        const body = { resolution: sel('dpd-res').value, notes: sel('dpd-notes').value.trim() };
+        if (body.resolution === 'partial_refund') body.refund_cents = toCents(sel('dpd-amt').value);
+        if (sel('dpd-pay') && sel('dpd-pay').value !== 'keep') {
+          body.payable_action = sel('dpd-pay').value;
+          if (body.payable_action === 'reduce') body.payable_cents = toCents(sel('dpd-pamt').value);
+        }
+        const money = body.resolution === 'full_refund' ? 'a FULL refund' : body.resolution === 'partial_refund' ? 'a partial refund of ' + HP.fmtMoney(body.refund_cents) : null;
+        if (money && !window.confirm('This sends ' + money + ' to the customer. Continue?')) return;
+        HP.busy(ev.target, true, 'Resolving…');
+        try {
+          const r = await HP.api('POST', `/disputes/${id}/resolve`, body);
+          const extra = r.refund && r.refund.manual_cents ? ` Send ${HP.fmtMoney(r.refund.manual_cents)} manually (recorded in Payments).` : '';
+          HP.toast('Dispute resolved.' + extra + (r.payable && r.payable.already_paid ? ' The contractor was already paid.' : ''), 'ok');
+          loadDisputesTab(); showDispute(id);
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); HP.busy(ev.target, false); }
+      });
+    }
+
+    // ---------- security: two-step verification ----------
+    async function loadSecurity() {
+      const body = document.getElementById('sec-body');
+      let me;
+      try { me = await HP.api('GET', '/auth/me'); } catch (e) { body.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      if (me.totp_enabled) {
+        body.innerHTML = `<p>${HP.badge('On', 'ok')} Two-step verification protects your account.</p>
+          <form id="sec-off" novalidate style="max-width:360px">
+            <div class="field"><label for="sec-pw">Password</label><input id="sec-pw" type="password" autocomplete="current-password"></div>
+            <div class="field"><label for="sec-code">Current code or a recovery code</label><input id="sec-code" type="text" autocomplete="one-time-code"></div>
+            <button class="btn btn-outline btn-sm" type="submit">Turn off</button>
+          </form>`;
+        document.getElementById('sec-off').addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          try {
+            await HP.api('POST', '/auth/2fa/disable', { password: document.getElementById('sec-pw').value, code: document.getElementById('sec-code').value.trim() });
+            HP.toast('Two-step verification is off.', 'ok'); loadSecurity();
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+        return;
+      }
+      body.innerHTML = `<p>${HP.badge('Off', 'warn')}</p><button class="btn btn-primary btn-sm" id="sec-start" type="button">Set up two-step verification</button>`;
+      document.getElementById('sec-start').addEventListener('click', async (ev) => {
+        HP.busy(ev.target, true, 'Preparing…');
+        try {
+          const s = await HP.api('POST', '/auth/2fa/setup');
+          body.innerHTML = `<ol class="small">
+              <li>In your authenticator app choose <em>Add account → Enter a setup key</em>.</li>
+              <li>Account: <strong>${HP.esc(me.email)}</strong> · Key (time-based):<br><code style="font-size:1.05rem;letter-spacing:.08em;user-select:all">${HP.esc(s.secret)}</code></li>
+              <li>Type the 6-digit code the app shows:</li></ol>
+            <form id="sec-on" novalidate style="max-width:260px"><div class="field"><label for="sec-c">Code</label><input id="sec-c" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7"></div>
+            <button class="btn btn-primary btn-sm" type="submit">Turn on</button></form>`;
+          document.getElementById('sec-on').addEventListener('submit', async (e2) => {
+            e2.preventDefault();
+            try {
+              const r = await HP.api('POST', '/auth/2fa/enable', { code: document.getElementById('sec-c').value.trim() });
+              body.innerHTML = `<p>${HP.badge('On', 'ok')} Done. <strong>Save these recovery codes now</strong> — each works once if you lose your phone, and they will not be shown again.</p>
+                <pre style="background:#f1f5f9;padding:.75rem;border-radius:8px;user-select:all">${r.recovery_codes.map(HP.esc).join('\n')}</pre>
+                <p class="small muted">Reload the page to unlock the areas that required it.</p>`;
+              HP.toast('Two-step verification is on.', 'ok');
+            } catch (er) { HP.toast(HP.friendlyMessage(er), 'error'); }
+          });
+        } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        finally { HP.busy(ev.target, false); }
+      });
+    }
+
     // ---------- team (owner only) ----------
     async function loadTeam() {
       if (!loaded.teamWired) {
@@ -359,11 +515,12 @@
       try { rows = await HP.api('GET', '/staff'); }
       catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
       const roles = ['owner', 'finance', 'dispatch', 'support'];
-      box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th></th></tr></thead><tbody>
+      box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>2-step</th><th></th></tr></thead><tbody>
         ${rows.map((r) => `<tr data-id="${r.id}"><td>${HP.esc(r.name)}</td><td class="small">${HP.esc(r.email)}</td>
           <td>${r.staff_role === 'disabled' ? HP.badge('deactivated', 'muted')
             : `<select class="tm-role" aria-label="Role of ${HP.esc(r.name)}">${roles.map((x) => `<option value="${x}"${x === r.staff_role ? ' selected' : ''}>${x}</option>`).join('')}</select>`}</td>
-          <td>${r.staff_role === 'disabled' ? '' : '<button class="btn btn-outline btn-sm tm-off" type="button">Deactivate</button>'}</td></tr>`).join('')}
+          <td>${r.totp_enabled ? HP.badge('on', 'ok') : HP.badge('off', 'muted')}</td>
+          <td>${r.staff_role === 'disabled' ? '' : `${r.totp_enabled ? '<button class="btn btn-outline btn-sm tm-2fa" type="button">Reset 2-step</button> ' : ''}<button class="btn btn-outline btn-sm tm-off" type="button">Deactivate</button>`}</td></tr>`).join('')}
         </tbody></table></div>`;
       box.querySelectorAll('tr[data-id]').forEach((tr) => {
         const id = tr.dataset.id;
@@ -371,6 +528,12 @@
         if (sel) sel.addEventListener('change', async () => {
           try { await HP.api('PATCH', `/staff/${id}`, { staff_role: sel.value }); HP.toast('Role updated.', 'ok'); }
           catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); loadTeam(); }
+        });
+        const rst = tr.querySelector('.tm-2fa');
+        if (rst) rst.addEventListener('click', async () => {
+          if (!window.confirm('Reset their two-step verification? They will sign in with the password and set it up again.')) return;
+          try { await HP.api('POST', `/staff/${id}/reset-2fa`, {}); HP.toast('Reset.', 'ok'); loadTeam(); }
+          catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
         });
         const off = tr.querySelector('.tm-off');
         if (off) off.addEventListener('click', async () => {
@@ -432,6 +595,8 @@
           ${card('Repeat customers', P(q.repeat_rate_pct), q.repeat_customers + ' of ' + q.customers_with_completed)}
           ${card('Active projects', c.active_projects, c.unscheduled + ' without dates')}
           ${card('Double-booked', c.double_booked, 'see the Agenda tab')}
+          ${card('Disputes opened', q.disputes_opened, q.disputes_open_now + ' open now · ' + P(q.dispute_rate_pct) + ' of projects')}
+          ${card('Refunded via disputes', HP.fmtMoney(q.refunded_by_disputes_cents), 'in this window')}
         </div>
         <h3>Lead sources</h3>
         ${k.sources.length ? `<div class="table-scroll"><table><thead><tr><th>Source</th><th>Requests</th><th>Accepted</th><th>Rate</th></tr></thead><tbody>
@@ -532,7 +697,7 @@
       const me = await HP.requireAuth('admin');
       if (!me) return;
       window.__perms = me.permissions || [];
-      const TAB_AREA = { overview: 'finance', kpis: 'finance', clients: 'support', contractors: 'dispatch', projects: 'read', agenda: 'read',
+      const TAB_AREA = { overview: 'finance', kpis: 'finance', clients: 'support', contractors: 'dispatch', projects: 'read', agenda: 'read', disputes: 'read',
         payouts: 'finance', messages: 'support', campaigns: 'marketing', reports: 'finance', team: 'staff' };
       let first = null;
       document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
@@ -542,7 +707,13 @@
       });
       const sub = document.querySelector('.page-sub');
       if (sub && me.staff_role) sub.textContent += ` You are signed in as ${me.staff_role}.`;
-      if (first && first.dataset.tab !== 'overview') first.click(); else loadOverview();
+      if (me.mfa_required && !me.totp_enabled) {
+        const bar = document.createElement('div');
+        bar.className = 'banner banner-warn'; bar.setAttribute('role', 'alert');
+        bar.innerHTML = '<strong>Action needed:</strong> turn on two-step verification in the Security tab. Money and team areas stay locked until you do.';
+        document.getElementById('admin-tabs').parentNode.insertBefore(bar, document.getElementById('admin-tabs'));
+        document.querySelector('#admin-tabs .tab[data-tab="security"]').click();
+      } else if (first && first.dataset.tab !== 'overview') first.click(); else loadOverview();
     }
 
     // =================================================================

@@ -533,6 +533,7 @@
         <hr class="divider">${photos}
         <hr class="divider">${payments}
         <div id="signoff-box-${p.id}"></div>
+        <div id="dispute-box-${p.id}"></div>
         ${review}`;
       body.querySelectorAll('[data-ms-approve]').forEach((btn) => {
         btn.addEventListener('click', async () => {
@@ -549,6 +550,7 @@
       const rf = body.querySelector('#review-form');
       if (rf) rf.addEventListener('submit', (e) => submitReview(e, p.id, body));
       mountSignOff(p, body);
+      mountDispute(p, body);
       body.querySelectorAll('[data-pay-retry]').forEach((btn) => {
         btn.addEventListener('click', () => {
           openStripePay({
@@ -558,6 +560,77 @@
           });
         });
       });
+    }
+
+    // ---- Disputes: report a problem; payments are on hold while one is open ----
+    const DISPUTE_REASONS = { quality: 'Quality of the work', incomplete: 'Work is incomplete', no_show: 'Contractor did not show up', damage: 'Damage to my property', billing: 'Billing / price', other: 'Something else' };
+    async function mountDispute(p, body) {
+      const box = body.querySelector('#dispute-box-' + p.id);
+      if (!box) return;
+      let mine;
+      try { mine = (await HP.api('GET', '/disputes')).filter((d) => d.project_id === p.id); } catch (e) { return; }
+      const open = mine.find((d) => ['open', 'investigating'].includes(d.status));
+      const last = mine.find((d) => d.status === 'resolved');
+      if (!open) {
+        const resolved = last ? `<p class="small">${HP.badge('Resolved', 'ok')} Decision: <strong>${HP.esc(String(last.resolution || '').replace('_', ' '))}</strong>${last.refund_cents ? ' · refund ' + HP.fmtMoney(last.refund_cents) : ''}<br><span class="muted">${HP.esc(last.resolution_notes || '')}</span></p>` : '';
+        const canOpen = ['in_progress', 'review', 'completed'].includes(p.stage);
+        box.innerHTML = `<hr class="divider"><h4>Something wrong?</h4>${resolved}${canOpen ? '<div class="btn-row"><button class="btn btn-outline btn-sm" id="dispute-open-btn" type="button">Report a problem</button></div>' : '<p class="small muted">You can report a problem once the work has started.</p>'}`;
+        const b = box.querySelector('#dispute-open-btn');
+        if (b) b.addEventListener('click', () => openDisputeModal(p, () => mountDispute(p, body)));
+        return;
+      }
+      let det;
+      try { det = await HP.api('GET', '/disputes/' + open.id); } catch (e) { return; }
+      box.innerHTML = `<hr class="divider"><h4>Your report ${HP.badge(open.status === 'open' ? 'Received' : 'Being reviewed', 'warn')}</h4>
+        <p class="small muted">Payments on this project are on hold until it is resolved. Our team will contact you here.</p>
+        <p class="small"><strong>${HP.esc(DISPUTE_REASONS[open.reason] || open.reason)}</strong><br>${HP.esc(open.description || '')}</p>
+        ${det.events.map((e) => `<div class="small" style="margin:.4rem 0;padding:.4rem .6rem;background:${e.author_role === 'admin' ? '#eff6ff' : '#f8fafc'};border-radius:8px;"><strong>${e.author_role === 'admin' ? 'Support' : 'You'}</strong> · ${HP.fmtDateTime(e.created_at)}<br>${HP.esc(e.body)}</div>`).join('')}
+        <textarea id="dispute-reply-${p.id}" rows="2" style="width:100%" aria-label="Add a message to your report" placeholder="Add details or reply to support…"></textarea>
+        <div class="btn-row" style="margin-top:.4rem"><button class="btn btn-primary btn-sm" id="dispute-send-${p.id}" type="button">Send</button>
+        <button class="btn btn-outline btn-sm" id="dispute-withdraw-${p.id}" type="button">Withdraw report</button></div>`;
+      box.querySelector('#dispute-send-' + p.id).addEventListener('click', async (ev) => {
+        const text = box.querySelector('#dispute-reply-' + p.id).value.trim();
+        if (!text) return;
+        HP.busy(ev.target, true, 'Sending…');
+        try { await HP.api('POST', `/disputes/${open.id}/comments`, { body: text }); mountDispute(p, body); }
+        catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); HP.busy(ev.target, false); }
+      });
+      box.querySelector('#dispute-withdraw-' + p.id).addEventListener('click', async () => {
+        if (!window.confirm('Withdraw your report? Payments on this project will resume.')) return;
+        try { await HP.api('POST', `/disputes/${open.id}/withdraw`, {}); HP.toast('Report withdrawn.', 'ok'); mountDispute(p, body); }
+        catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+      });
+    }
+
+    function openDisputeModal(p, onDone) {
+      const ov = document.createElement('div');
+      ov.setAttribute('role', 'dialog'); ov.setAttribute('aria-modal', 'true'); ov.setAttribute('aria-label', 'Report a problem');
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;z-index:1000;padding:1rem;';
+      ov.innerHTML = `<div style="background:#fff;border-radius:12px;max-width:440px;width:100%;padding:1.25rem;max-height:92vh;overflow:auto;">
+        <h3 style="margin-top:0">Report a problem — project #${p.id}</h3>
+        <p class="small muted">Payments on this project pause while we look into it. We will reply here.</p>
+        <label class="small" for="dp-reason">What is the problem?</label>
+        <select id="dp-reason" style="width:100%;margin-bottom:.5rem">${Object.entries(DISPUTE_REASONS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+        <label class="small" for="dp-desc">Tell us what happened</label>
+        <textarea id="dp-desc" rows="5" style="width:100%" placeholder="At least 10 characters. You can add photos by messaging support afterwards."></textarea>
+        <p class="small" id="dp-err" style="color:#dc2626" hidden></p>
+        <div class="btn-row" style="margin-top:.75rem"><button class="btn btn-outline btn-sm" id="dp-cancel" type="button">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="dp-send" type="button">Send report</button></div></div>`;
+      document.body.appendChild(ov);
+      const close = () => ov.remove();
+      ov.querySelector('#dp-cancel').addEventListener('click', close);
+      ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+      ov.querySelector('#dp-send').addEventListener('click', async (e) => {
+        const desc = ov.querySelector('#dp-desc').value.trim();
+        const err = ov.querySelector('#dp-err');
+        if (desc.length < 10) { err.textContent = 'Please describe the problem (at least 10 characters).'; err.hidden = false; return; }
+        HP.busy(e.target, true, 'Sending…');
+        try {
+          await HP.api('POST', '/disputes', { project_id: p.id, reason: ov.querySelector('#dp-reason').value, description: desc });
+          close(); HP.toast('Report sent. We will get back to you here.', 'ok'); if (onDone) onDone();
+        } catch (ex) { err.textContent = HP.friendlyMessage(ex); err.hidden = false; HP.busy(e.target, false); }
+      });
+      ov.querySelector('#dp-desc').focus();
     }
 
     // ---- Completion sheet (sign-off) → unlocks the final payment ----

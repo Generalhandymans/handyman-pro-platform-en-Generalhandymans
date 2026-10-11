@@ -885,6 +885,247 @@ test('REGRESSION: team roles — support, finance and dispatch each reach only t
   assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'staff.deactivated' AND entity_id = ?").get(dis.id));
 });
 
+test('REGRESSION: two-step verification — password alone is not enough, codes work once, recovery works once', async () => {
+  const totp = require('../src/services/totp');
+  const email = 'tfa@test.local';
+  const st = await makeStaff('support', email);
+  const login = () => api('POST', '/api/auth/login', { email, password: 'StaffPass123!' });
+  assert.ok((await login()).data.token, 'before enrolling, the password opens a session');
+
+  // enrol
+  assert.equal((await api('POST', '/api/auth/2fa/setup', undefined, custToken)).status, 403, 'staff only');
+  const setup = await api('POST', '/api/auth/2fa/setup', undefined, st.token);
+  assert.equal(setup.status, 200);
+  assert.match(setup.data.otpauth_url, /^otpauth:\/\/totp\//);
+  const stored = await db.prepare('SELECT totp_secret FROM users WHERE id = ?').get(st.id);
+  assert.ok(stored.totp_secret && !stored.totp_secret.includes(setup.data.secret), 'secret is stored encrypted');
+  assert.equal((await api('POST', '/api/auth/2fa/enable', { code: '000000' }, st.token)).status, 422);
+  const en = await api('POST', '/api/auth/2fa/enable', { code: totp.codeAt(setup.data.secret, Date.now()) }, st.token);
+  assert.equal(en.status, 200);
+  assert.equal(en.data.recovery_codes.length, 8);
+  const rec = await db.prepare('SELECT totp_recovery FROM users WHERE id = ?').get(st.id);
+  assert.ok(!rec.totp_recovery.includes(en.data.recovery_codes[0]), 'recovery codes are stored hashed');
+
+  // step 1 gives NO session; the challenge cannot be used as a bearer token
+  const l1 = await login();
+  assert.equal(l1.data.two_factor_required, true);
+  assert.equal(l1.data.token, undefined);
+  assert.equal((await api('GET', '/api/auth/me', undefined, l1.data.challenge)).status, 401, 'a challenge is not a session');
+  // step 2
+  assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l1.data.challenge, code: '123456' })).status, 401);
+  assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: 'garbage', code: '123456' })).status, 401);
+  // NOTE (integrator): enable() consumed the current 30 s TOTP step, and the
+  // server's anti-replay correctly rejects any further code from that step.
+  // Wait for the next step so every code below is deterministic instead of
+  // racing the 30 s clock (the auditor's version assumed a boundary would
+  // fall in a ~140 ms window and failed deterministically).
+  const STEP_MS = 30000;
+  const enabledStep = (await db.prepare('SELECT totp_last_step FROM users WHERE id = ?').get(st.id)).totp_last_step;
+  const waitMs = (enabledStep + 1) * STEP_MS - Date.now() + 100;
+  if (waitMs > 0) await new Promise(r => setTimeout(r, waitMs));
+
+  const code = totp.codeAt(setup.data.secret, Date.now());
+  const v1 = await api('POST', '/api/auth/2fa/verify', { challenge: l1.data.challenge, code });
+  assert.equal(v1.status, 200);
+  assert.equal((await api('GET', '/api/auth/me', undefined, v1.data.token)).data.totp_enabled, true);
+  // the same code cannot open a second session (anti-replay)
+  const l2 = await login();
+  assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l2.data.challenge, code })).status, 401, 'a used code is dead');
+  // a code from the following step works (server allows ±1 step of clock drift,
+  // and it is beyond the consumed step, so this is deterministic)
+  const next = totp.codeAt(setup.data.secret, (enabledStep + 2) * STEP_MS);
+  assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l2.data.challenge, code: next })).status, 200);
+
+  // recovery code: works once
+  const l3 = await login();
+  const r1 = await api('POST', '/api/auth/2fa/verify', { challenge: l3.data.challenge, code: en.data.recovery_codes[0] });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.data.recovery_codes_left, 7);
+  const l4 = await login();
+  assert.equal((await api('POST', '/api/auth/2fa/verify', { challenge: l4.data.challenge, code: en.data.recovery_codes[0] })).status, 401, 'recovery code is single use');
+
+  // turning it off needs password + code
+  assert.equal((await api('POST', '/api/auth/2fa/disable', { password: 'wrong', code: en.data.recovery_codes[1] }, v1.data.token)).status, 403);
+  assert.equal((await api('POST', '/api/auth/2fa/disable', { password: 'StaffPass123!', code: '111111' }, v1.data.token)).status, 422);
+  assert.equal((await api('POST', '/api/auth/2fa/disable', { password: 'StaffPass123!', code: en.data.recovery_codes[1] }, v1.data.token)).status, 200);
+  assert.ok((await login()).data.token, 'after turning it off, the password opens a session again');
+});
+
+test('REGRESSION: with the 2FA policy on, money and team areas stay locked until the person enrols', async () => {
+  const totp = require('../src/services/totp');
+  const fin = await makeStaff('finance', 'fin2@test.local');
+  const sup = await makeStaff('support', 'sup2@test.local');
+  process.env.REQUIRE_2FA = 'true';
+  try {
+    const locked = await api('GET', '/api/payables', undefined, fin.token);
+    assert.equal(locked.status, 403);
+    assert.equal(locked.data.code, 'MFA_REQUIRED');
+    assert.equal((await api('GET', '/api/reports/kpis', undefined, adminToken)).data.code, 'MFA_REQUIRED', 'owners are held to it too');
+    assert.equal((await api('GET', '/api/staff', undefined, adminToken)).data.code, 'MFA_REQUIRED');
+    const me = await api('GET', '/api/auth/me', undefined, fin.token);
+    assert.equal(me.data.mfa_required, true);
+    assert.equal(me.data.totp_enabled, false);
+    // areas that do not move money are untouched
+    assert.equal((await api('GET', '/api/jobs', undefined, sup.token)).status, 200);
+    assert.equal((await api('GET', '/api/auth/me', undefined, sup.token)).data.mfa_required, false);
+    // enrol -> unlocked
+    const s = await api('POST', '/api/auth/2fa/setup', undefined, fin.token);
+    assert.equal((await api('POST', '/api/auth/2fa/enable', { code: totp.codeAt(s.data.secret, Date.now()) }, fin.token)).status, 200);
+    assert.equal((await api('GET', '/api/payables', undefined, fin.token)).status, 200);
+  } finally {
+    delete process.env.REQUIRE_2FA;
+  }
+  // (policy off again) an owner resets a colleague who lost their phone: sessions die, the password logs in directly
+  const before = await api('GET', '/api/staff', undefined, adminToken);
+  assert.equal(before.data.find(x => x.id === fin.id).totp_enabled, true);
+  const rs = await api('POST', `/api/staff/${fin.id}/reset-2fa`, {}, adminToken);
+  assert.equal(rs.status, 200);
+  assert.equal((await api('GET', '/api/auth/me', undefined, fin.token)).status, 401, 'their old session is revoked');
+  const again = await api('POST', '/api/auth/login', { email: 'fin2@test.local', password: 'StaffPass123!' });
+  assert.ok(again.data.token && !again.data.two_factor_required);
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'staff.2fa_reset' AND entity_id = ?").get(fin.id));
+});
+
+// Helper: a project that is in progress with an accepted contractor (a dispute can be opened on it).
+async function activeProject() {
+  const fp = await freshProject();
+  const pid = fp.projectId;
+  assert.equal((await api('POST', `/api/projects/${pid}/assign`, { contractor_id: contractorId }, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/projects/${pid}/contractor-respond`, { accept: true, terms_accepted: true }, contToken)).status, 200);
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'in_progress' }, contToken)).status, 200);
+  return pid;
+}
+
+test('REGRESSION: disputes — hold, separate channels, finance-only refunds, payout adjustment', async () => {
+  const pid = await activeProject();
+  const desc = 'The tile work is uneven and there are gaps along the wall.';
+  // who may open, and validation
+  assert.equal((await api('POST', '/api/disputes', { project_id: pid, reason: 'quality', description: 'bad' }, custToken)).status, 422);
+  assert.equal((await api('POST', '/api/disputes', { project_id: pid, reason: 'nonsense', description: desc }, custToken)).status, 422);
+  assert.equal((await api('POST', '/api/disputes', { project_id: pid, reason: 'quality', description: desc }, adminToken)).status, 403, 'staff do not open disputes');
+  const stranger = await api('POST', '/api/auth/signup/customer', { name: 'Stranger', email: 'stranger@test.local', phone: '555-303-4040', password: 'Customer123!' });
+  assert.equal((await api('POST', '/api/disputes', { project_id: pid, reason: 'quality', description: desc }, stranger.data.token)).status, 403, 'only the project\'s own customer');
+  // open (one at a time)
+  const open = await api('POST', '/api/disputes', { project_id: pid, reason: 'quality', description: desc }, custToken);
+  assert.equal(open.status, 201);
+  const did = open.data.id;
+  assert.equal(open.data.opened_by, undefined, 'customer view hides internals');
+  assert.equal((await api('POST', '/api/disputes', { project_id: pid, reason: 'other', description: desc }, custToken)).status, 409);
+  assert.equal((await api('GET', `/api/disputes/${did}`, undefined, stranger.data.token)).status, 404);
+
+  // contractor sees the fact of the dispute, never the complaint text
+  const cv = await api('GET', `/api/disputes/${did}`, undefined, contToken);
+  assert.equal(cv.status, 200);
+  assert.equal(cv.data.description, undefined);
+  assert.equal(cv.data.reason, 'quality');
+
+  // channels: customer and contractor never see each other's messages
+  assert.equal((await api('POST', `/api/disputes/${did}/comments`, { body: 'Here is more detail from my side.' }, custToken)).status, 201);
+  assert.equal((await api('POST', `/api/disputes/${did}/comments`, { body: 'We went to the site; the wall was not level.' }, contToken)).status, 201);
+  const sup = await makeStaff('support', 'dsup@test.local');
+  const fin = await makeStaff('finance', 'dfin@test.local');
+  assert.equal((await api('POST', `/api/disputes/${did}/comments`, { body: 'Internal: check photos', visibility: 'staff' }, sup.token)).status, 201);
+  assert.equal((await api('POST', `/api/disputes/${did}/comments`, { body: 'Can you send photos of the wall?', visibility: 'contractor' }, sup.token)).status, 201);
+  assert.equal((await api('POST', `/api/disputes/${did}/comments`, { body: 'We are looking into it.' }, fin.token)).status, 403, 'finance has no support permission');
+  const bodies = (r) => r.data.events.map(e => e.body).join(' | ');
+  const custEv = bodies(await api('GET', `/api/disputes/${did}`, undefined, custToken));
+  const contEv = bodies(await api('GET', `/api/disputes/${did}`, undefined, contToken));
+  const adminEv = bodies(await api('GET', `/api/disputes/${did}`, undefined, adminToken));
+  assert.ok(custEv.includes('more detail') && !custEv.includes('not level') && !custEv.includes('Internal') && !custEv.includes('photos of the wall'));
+  assert.ok(contEv.includes('not level') && contEv.includes('photos of the wall') && !contEv.includes('more detail') && !contEv.includes('Internal'));
+  assert.ok(['more detail', 'not level', 'Internal', 'photos of the wall'].every(s => adminEv.includes(s)), 'staff sees every channel');
+
+  // HOLD: the contractor cannot be paid while the dispute is open
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'completed', force: true }, adminToken)).status, 200);
+  const pb = (await api('GET', '/api/payables', undefined, adminToken)).data.payables.find(r => r.project_id === pid);
+  assert.equal(pb.status, 'pending');
+  const held = await api('POST', `/api/payables/${pb.id}/pay`, { method: 'ach', force: true }, adminToken);
+  assert.equal(held.status, 409);
+  assert.equal(held.data.code, 'DISPUTE_HOLD');
+
+  // investigate; refunds are a FINANCE decision
+  assert.equal((await api('POST', `/api/disputes/${did}/status`, { status: 'investigating' }, sup.token)).status, 200);
+  assert.equal((await api('POST', `/api/disputes/${did}/status`, { status: 'investigating' }, sup.token)).status, 409);
+  const refundBody = { resolution: 'partial_refund', refund_cents: 5000, notes: 'Part of the tile will be redone at our cost; we refund part of the price.', payable_action: 'reduce', payable_cents: 20000 };
+  assert.equal((await api('POST', `/api/disputes/${did}/resolve`, refundBody, sup.token)).status, 403, 'support cannot refund');
+  assert.equal((await api('POST', `/api/disputes/${did}/resolve`, { resolution: 'partial_refund', notes: 'x' }, fin.token)).status, 422, 'amount required');
+  const tooMuch = await api('POST', `/api/disputes/${did}/resolve`, { ...refundBody, refund_cents: 99999 }, fin.token);
+  assert.equal(tooMuch.status, 409);
+  assert.equal(tooMuch.data.max_refund_cents, 15000, 'cannot refund more than the customer paid');
+  const done = await api('POST', `/api/disputes/${did}/resolve`, refundBody, fin.token);
+  assert.equal(done.status, 200);
+  assert.equal(done.data.refund.total_cents, 5000);
+  assert.equal(done.data.refund.manual_cents, 5000, 'Stripe is off: recorded as a manual refund');
+  assert.equal(done.data.payable.action, 'reduced');
+  assert.equal((await api('POST', `/api/disputes/${did}/resolve`, refundBody, fin.token)).status, 409, 'cannot resolve twice');
+  const refunds = (await api('GET', `/api/payments?project_id=${pid}`, undefined, adminToken)).data.filter(r => r.kind === 'refund');
+  assert.equal(refunds.length, 1);
+  assert.equal(refunds[0].amount_cents, 5000);
+  assert.match(refunds[0].notes, new RegExp(`Dispute #${did} `));
+  assert.equal((await api('GET', '/api/payables', undefined, adminToken)).data.payables.find(r => r.id === pb.id).payable_cents, 20000);
+
+  // who sees what after the decision
+  const cAfter = await api('GET', `/api/disputes/${did}`, undefined, custToken);
+  assert.equal(cAfter.data.refund_cents, 5000);
+  assert.ok(cAfter.data.resolution_notes);
+  const kAfter = await api('GET', `/api/disputes/${did}`, undefined, contToken);
+  assert.equal(kAfter.data.resolution, 'resolved_with_adjustment', 'contractor is not told the refund amount');
+  assert.equal(kAfter.data.refund_cents, undefined);
+  assert.equal(kAfter.data.resolution_notes, undefined);
+
+  // hold is lifted: the payout can now be paid (the customer still owes, so it needs the override)
+  assert.equal((await api('POST', `/api/payables/${pb.id}/pay`, { method: 'ach', force: true }, adminToken)).status, 200);
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'dispute.resolved' AND entity_id = ?").get(did));
+  // closed disputes accept no more messages
+  assert.equal((await api('POST', `/api/disputes/${did}/comments`, { body: 'one more thing please' }, custToken)).status, 409);
+});
+
+test('REGRESSION: disputes — contractor can open, opener can withdraw, rework reopens the job, full refund can cancel the payout', async () => {
+  // contractor-opened; withdraw
+  const p1 = await activeProject();
+  const co = await api('POST', '/api/disputes', { project_id: p1, reason: 'incomplete', description: 'The customer will not approve finished work.' }, contToken);
+  assert.equal(co.status, 201);
+  assert.equal(co.data.opened_by_role, 'contractor');
+  const custSees = await api('GET', `/api/disputes/${co.data.id}`, undefined, custToken);
+  assert.equal(custSees.data.description, undefined, 'the customer does not read the contractor\'s complaint');
+  assert.equal((await api('POST', `/api/disputes/${co.data.id}/withdraw`, {}, custToken)).status, 404, 'only the opener withdraws');
+  assert.equal((await api('POST', `/api/disputes/${co.data.id}/withdraw`, {}, contToken)).status, 200);
+  assert.equal((await api('POST', `/api/disputes/${co.data.id}/withdraw`, {}, contToken)).status, 409);
+  const list = await api('GET', '/api/disputes?status=withdrawn', undefined, adminToken);
+  assert.ok(list.data.some(d => d.id === co.data.id));
+
+  // rework: support may resolve (no money); the project goes back to in_progress
+  const p2 = await activeProject();
+  await api('PATCH', `/api/projects/${p2}/stage`, { stage: 'review' }, contToken);
+  const d2 = await api('POST', '/api/disputes', { project_id: p2, reason: 'quality', description: 'The paint is peeling after two days.' }, custToken);
+  const sup = await makeStaff('dispatch', 'ddis@test.local');
+  const rw = await api('POST', `/api/disputes/${d2.data.id}/resolve`, { resolution: 'rework', notes: 'The contractor will repaint the wall.' }, sup.token);
+  assert.equal(rw.status, 200);
+  assert.equal((await db.prepare('SELECT stage FROM projects WHERE id = ?').get(p2)).stage, 'in_progress');
+  assert.equal((await api('POST', `/api/disputes/${d2.data.id}/resolve`, { resolution: 'no_action', notes: 'again' }, sup.token)).status, 409);
+
+  // full refund + cancel the payout; payout changes are finance-only
+  const p3 = await activeProject();
+  await api('PATCH', `/api/projects/${p3}/stage`, { stage: 'completed', force: true }, adminToken);
+  const d3 = await api('POST', '/api/disputes', { project_id: p3, reason: 'no_show', description: 'Nobody ever came to finish the job.' }, custToken);
+  const noMoney = await api('POST', `/api/disputes/${d3.data.id}/resolve`, { resolution: 'no_action', notes: 'cancel their pay', payable_action: 'cancel' }, sup.token);
+  assert.equal(noMoney.status, 403, 'dispatch cannot change payouts');
+  const fin = await makeStaff('finance', 'dfin2@test.local');
+  const full = await api('POST', `/api/disputes/${d3.data.id}/resolve`, { resolution: 'full_refund', notes: 'Full refund; the work was not done.', payable_action: 'cancel' }, fin.token);
+  assert.equal(full.status, 200);
+  assert.equal(full.data.refund.total_cents, 15000, 'full = everything the customer paid, net');
+  assert.equal(full.data.payable.action, 'cancelled');
+  const pb3 = (await api('GET', '/api/payables', undefined, adminToken)).data.payables.find(r => r.project_id === p3);
+  assert.equal(pb3.status, 'cancelled');
+});
+
+test('REGRESSION: KPI dashboard counts disputes', async () => {
+  const k = await api('GET', '/api/reports/kpis?days=365', undefined, adminToken);
+  assert.ok(k.data.quality.disputes_opened >= 1);
+  assert.equal(typeof k.data.quality.dispute_rate_pct, 'number');
+  assert.ok(k.data.quality.refunded_by_disputes_cents >= 20000, 'refunds from the resolved disputes are counted');
+});
+
 after(async () => {
   // leave the server running for manual QA; tests used an isolated DB file.
   process.exit(0);

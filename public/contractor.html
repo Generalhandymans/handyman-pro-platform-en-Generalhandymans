@@ -19,6 +19,7 @@
       <button class="tab active" data-tab="profile" role="tab">Profile</button>
       <button class="tab" data-tab="jobs" role="tab">My jobs</button>
       <button class="tab" data-tab="payouts" role="tab">Payouts</button>
+      <button class="tab" data-tab="disputes" role="tab">Disputes</button>
       <button class="tab" data-tab="messages" role="tab">Messages</button>
     </div>
 
@@ -47,6 +48,24 @@
 
     <section class="tab-panel" id="panel-jobs" role="tabpanel">
       <div id="jobs-list"><p class="muted">Loading your jobs…</p></div>
+    </section>
+
+    <section class="tab-panel" id="panel-disputes" role="tabpanel">
+      <div class="card">
+        <h2 style="margin-top:0">Disputes</h2>
+        <p class="small muted">If a problem comes up on a job (for example the customer will not approve finished work), tell support here. Payouts for that job pause until it is resolved. You never talk to the customer directly — support relays everything.</p>
+        <div id="disputes-box"><p class="muted">Loading…</p></div>
+        <hr class="divider">
+        <h3>Report a problem</h3>
+        <form id="dispute-new" novalidate style="max-width:420px">
+          <div class="field"><label for="dn-project">Job</label><select id="dn-project"></select></div>
+          <div class="field"><label for="dn-reason">Reason</label><select id="dn-reason">
+            <option value="incomplete">Customer will not approve finished work</option><option value="no_show">Customer was not available</option>
+            <option value="damage">Damage / safety issue</option><option value="billing">Payment / price</option><option value="other">Something else</option></select></div>
+          <div class="field"><label for="dn-desc">What happened?</label><textarea id="dn-desc" rows="4" style="width:100%"></textarea></div>
+          <button class="btn btn-primary btn-sm" type="submit">Send to support</button>
+        </form>
+      </div>
     </section>
 
     <section class="tab-panel" id="panel-payouts" role="tabpanel">
@@ -101,8 +120,53 @@
         document.querySelectorAll('.tab-panel').forEach((p) =>
           p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
         if (t.dataset.tab === 'payouts') loadPayouts();
+        if (t.dataset.tab === 'disputes') loadDisputes();
       });
     });
+
+    async function loadDisputes() {
+      const box = document.getElementById('disputes-box');
+      if (!loadDisputes.wired) {
+        loadDisputes.wired = true;
+        document.getElementById('dispute-new').addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          const btn = ev.target.querySelector('button[type=submit]');
+          const desc = document.getElementById('dn-desc').value.trim();
+          if (desc.length < 10) { HP.toast('Please describe what happened (at least 10 characters).', 'error'); return; }
+          HP.busy(btn, true, 'Sending…');
+          try {
+            await HP.api('POST', '/disputes', { project_id: Number(document.getElementById('dn-project').value), reason: document.getElementById('dn-reason').value, description: desc });
+            HP.toast('Sent. Support will reply here.', 'ok'); ev.target.reset(); loadDisputes();
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); } finally { HP.busy(btn, false); }
+        });
+      }
+      try {
+        const ps = await HP.api('GET', '/projects');
+        document.getElementById('dn-project').innerHTML = ps.length ? ps.map((p) => `<option value="${p.id}">Project #${p.id}</option>`).join('') : '<option value="">No jobs yet</option>';
+      } catch (e) { /* the form just stays empty */ }
+      let rows;
+      try { rows = await HP.api('GET', '/disputes'); } catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      if (!rows.length) { box.innerHTML = '<p class="muted">No disputes.</p>'; return; }
+      const kind = { open: 'err', investigating: 'warn', resolved: 'ok', withdrawn: 'muted' };
+      box.innerHTML = rows.map((r) => `<div class="card" style="margin:.5rem 0;padding:.75rem" data-id="${r.id}">
+        <strong>Project #${r.project_id}</strong> · ${HP.esc(r.reason)} ${HP.badge(r.status, kind[r.status] || 'muted')}
+        ${r.resolution ? `<span class="small muted"> · ${HP.esc(String(r.resolution).replace(/_/g, ' '))}</span>` : ''}
+        <div class="small muted">${HP.fmtDateTime(r.created_at)}</div>
+        <div class="dc-thread"></div></div>`).join('');
+      for (const r of rows) {
+        const card = box.querySelector(`[data-id="${r.id}"]`);
+        let det; try { det = await HP.api('GET', '/disputes/' + r.id); } catch (e) { continue; }
+        const th = card.querySelector('.dc-thread');
+        th.innerHTML = det.events.map((e) => `<div class="small" style="margin:.3rem 0;padding:.4rem .6rem;background:${e.author_role === 'admin' ? '#eff6ff' : '#f8fafc'};border-radius:8px;"><strong>${e.author_role === 'admin' ? 'Support' : 'You'}</strong> · ${HP.fmtDateTime(e.created_at)}<br>${HP.esc(e.body)}</div>`).join('')
+          + (['open', 'investigating'].includes(r.status) ? `<textarea rows="2" style="width:100%" class="dc-text" aria-label="Reply to support"></textarea><button class="btn btn-primary btn-sm dc-send" type="button">Send</button>` : '');
+        const send = th.querySelector('.dc-send');
+        if (send) send.addEventListener('click', async () => {
+          const text = th.querySelector('.dc-text').value.trim();
+          if (!text) return;
+          try { await HP.api('POST', `/disputes/${r.id}/comments`, { body: text }); loadDisputes(); } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
+        });
+      }
+    }
 
     async function loadPayouts() {
       const box = document.getElementById('payouts-box');

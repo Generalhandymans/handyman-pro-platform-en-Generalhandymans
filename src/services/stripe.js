@@ -53,13 +53,15 @@ const createDepositIntent = (args) => createIntent({ ...args, kind: 'deposit' })
 
 // Refunds (part of) a PAID Stripe payment. Stripe itself rejects refunds above
 // what is still refundable; we also check first to return a clean error.
-async function refundPayment({ payment, amountCents }) {
+async function refundPayment({ payment, amountCents, cap = false, note }) {
   const db = require('../db');
   const stripe = getClient();
   const pi = await stripe.paymentIntents.retrieve(payment.provider_ref, { expand: ['latest_charge'] });
   const charge = pi.latest_charge;
   const refundable = charge ? (charge.amount - charge.amount_refunded) : 0;
-  const amount = amountCents || refundable;
+  // cap=true: refund min(requested, refundable); nothing refundable -> null (caller moves on to the next payment).
+  const amount = cap ? Math.min(amountCents || refundable, refundable) : (amountCents || refundable);
+  if (cap && refundable < 1) return null;
   if (amount < 1 || amount > refundable) {
     const err = new Error(`Refundable amount is ${refundable} cents.`);
     err.statusCode = 400;
@@ -69,7 +71,7 @@ async function refundPayment({ payment, amountCents }) {
   const info = await db.prepare(
     `INSERT INTO payments (project_id, kind, amount_cents, status, provider, provider_ref, notes)
      VALUES (?,?,?,'paid','stripe',?,?)`
-  ).run(payment.project_id, 'refund', amount, refund.id, `Refund of payment #${payment.id}`);
+  ).run(payment.project_id, 'refund', amount, refund.id, note || `Refund of payment #${payment.id}`);
   return { refund_id: refund.id, payment_id: info.lastInsertRowid, amount_cents: amount };
 }
 

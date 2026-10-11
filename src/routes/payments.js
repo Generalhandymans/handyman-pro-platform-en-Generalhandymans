@@ -121,6 +121,9 @@ router.post('/final-intent', authRequired, requireVerifiedEmail, ah(async (req, 
   if (req.user.role !== 'admin' && (!job || job.customer_id !== req.user.id)) {
     return res.status(403).json({ error: 'Not allowed.' });
   }
+  if (await require('../services/disputes').openDisputeFor(project.id)) {
+    return res.status(409).json({ error: 'There is an open dispute on this project. The final payment opens after it is resolved.', code: 'DISPUTE_HOLD' });
+  }
   const ms = await db.prepare('SELECT customer_approval FROM milestones WHERE project_id = ?').all(project.id);
   if (!ms.length || ms.some(m => m.customer_approval !== 'approved')) {
     return res.status(409).json({ error: 'The final payment opens after every milestone is approved.' });

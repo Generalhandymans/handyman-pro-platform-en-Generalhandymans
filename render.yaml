@@ -54,6 +54,11 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      # Two-step verification (REQUIRED for owner/finance in production).
+      # Set TOTP_ENC_KEY to a long random string BEFORE anyone enrols and never change it:
+      # it encrypts the 2FA secrets (changing it makes them unreadable).
+      - key: TOTP_ENC_KEY
+        sync: false
       # Photos: S3-compatible bucket (AWS S3, Cloudflare R2...). Keep the bucket PRIVATE.
       - key: S3_BUCKET
         sync: false

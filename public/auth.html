@@ -33,6 +33,12 @@
             <input type="password" id="li-password" name="password" autocomplete="current-password">
             <span class="field-error" data-error-for="password"></span>
           </div>
+          <div class="field" id="li-2fa" hidden>
+            <label for="li-code">Verification code <span class="req">*</span></label>
+            <input type="text" id="li-code" name="code" inputmode="text" autocomplete="one-time-code" placeholder="6-digit code or recovery code">
+            <span class="small muted">Open your authenticator app. Lost your phone? Use one of your recovery codes.</span>
+            <span class="field-error" data-error-for="code"></span>
+          </div>
           <button class="btn btn-primary btn-block" type="submit" id="btn-login">Log in</button>
           <p class="small" style="margin-top:.75rem"><a href="#" id="forgot-link">Forgot your password?</a></p>
         </form>
@@ -321,6 +327,25 @@
       HP.clearFieldErrors(form);
       const email = document.getElementById('li-email').value.trim();
       const password = document.getElementById('li-password').value;
+      // Step 2 (two-step verification): the password was already accepted.
+      if (form.dataset.challenge) {
+        const code = document.getElementById('li-code').value.trim();
+        if (!code) { HP.applyFieldErrors(form, { code: 'Enter your code.' }); return; }
+        HP.busy(btn, true, 'Verifying…');
+        try {
+          const r2 = await HP.api('POST', '/auth/2fa/verify', { challenge: form.dataset.challenge, code });
+          HP.setSession(r2.token, r2.user);
+          if (r2.recovery_codes_left !== undefined) HP.toast(`Recovery code used. ${r2.recovery_codes_left} left.`, 'info');
+          redirectByRole(r2.user);
+        } catch (err) {
+          if (err.status === 401 && /expired|sign in again/i.test(err.message)) {
+            delete form.dataset.challenge; document.getElementById('li-2fa').hidden = true;
+            document.getElementById('li-password').disabled = false;
+          }
+          HP.handleFormError(form, err);
+        } finally { HP.busy(btn, false); }
+        return;
+      }
       if (!email || !password) {
         HP.applyFieldErrors(form, {
           ...(email ? {} : { email: 'Enter your email.' }),
@@ -331,6 +356,14 @@
       HP.busy(btn, true, 'Logging in…');
       try {
         const r = await HP.api('POST', '/auth/login', { email, password });
+        if (r.two_factor_required) {
+          form.dataset.challenge = r.challenge;
+          document.getElementById('li-2fa').hidden = false;
+          document.getElementById('li-password').disabled = true;
+          document.getElementById('li-code').focus();
+          btn.textContent = 'Verify';
+          return;
+        }
         HP.setSession(r.token, r.user);
         HP.toast(`Welcome back, ${r.user.name.split(' ')[0]}.`, 'ok');
         redirectByRole(r.user);
