@@ -12,6 +12,8 @@ jobs:
         with: { node-version: 20, cache: npm }
       - run: npm ci
       - run: npm test
+      # Runs the three portals' real scripts against the data npm test left behind (no browser needed).
+      - run: npm run ui-smoke
 
   # The same suite against PostgreSQL: this is what production runs, and several
   # audit findings (un-awaited queries) only fail here.

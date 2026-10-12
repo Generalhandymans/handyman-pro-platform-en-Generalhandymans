@@ -1,6 +1,7 @@
 // Job requests: public intake, photo upload (with vision hook), real estimation.
 const express = require('express');
-const { requireStaff, can } = require('../services/permissions');
+const { requireStaff, can, denial } = require('../services/permissions');
+const { auditLog } = require('../services/audit');
 const multer = require('multer');
 const crypto = require('crypto');
 const path = require('path');
@@ -236,12 +237,21 @@ router.get('/', authRequired, requireStaff('read'), ah(async (req, res) => {
   res.json(rows);
 }));
 
-router.patch('/:id', authRequired, requireStaff('support'), ah(async (req, res) => {
+// Each status belongs to the team role that owns it. Support used to be able to set ANY status, including
+// 'deposit_paid', which unlocks contractor assignment: that skipped the finance control entirely.
+const STATUS_OWNER = {
+  new: 'support', ai_analyzed: 'support', quote_sent: 'support', lost: 'support', cancelled: 'support',
+  deposit_paid: 'finance',
+  assigned: 'dispatch', scheduled: 'dispatch', in_progress: 'dispatch', review: 'dispatch', completed: 'dispatch',
+};
+router.patch('/:id', authRequired, requireStaff('read'), ah(async (req, res) => {
   const job = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'Job request not found.' });
-  const allowed = ['new', 'ai_analyzed', 'quote_sent', 'deposit_paid', 'assigned', 'scheduled', 'in_progress', 'review', 'completed', 'lost', 'cancelled'];
   const { status } = req.body || {};
-  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+  if (!Object.prototype.hasOwnProperty.call(STATUS_OWNER, status)) return res.status(400).json({ error: 'Invalid status.' });
+  const deny = denial(req.user, STATUS_OWNER[status]);
+  if (deny) return res.status(403).json({ ...deny, error: `Setting a request to "${status}" needs the ${STATUS_OWNER[status]} role. ${deny.error}` });
+  await auditLog(req.user.id, 'job.status_set', 'job_requests', job.id, `${job.status} -> ${status}`);
   await db.prepare('UPDATE job_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(status, job.id);
   res.json(await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(job.id));
 }));
