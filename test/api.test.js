@@ -147,9 +147,12 @@ test('job intake + photo upload (optimized) + estimate', async () => {
   assert.ok(photo.width <= 1600 && photo.height <= 1600, `resized to ${photo.width}x${photo.height}`);
   assert.ok(photo.size_bytes < buf.length, 'compressed smaller than original');
 
-  const e = await api('POST', `/api/jobs/${jobId}/estimate`, { scope: { sqft: 400 } }, custToken);
+  // The painting questionnaire's key is `area_sqft` (this used to send `sqft`, which the estimator ignores,
+  // so the original test never exercised the pricing).
+  const e = await api('POST', `/api/jobs/${jobId}/estimate`, { scope: { area_sqft: 400, wall_condition: 'good' } }, custToken);
   assert.equal(e.status, 201);
   assert.ok(e.data.low_cents > 0 && e.data.high_cents >= e.data.low_cents);
+  assert.equal(e.data.missing.length, 0, 'with the required answers nothing is reported as missing');
 });
 
 test('quote create → send (customer notified) → accept requires terms (admin notified, project born)', async () => {
@@ -1299,6 +1302,197 @@ test('REGRESSION: quotes — a customer can decline, lists/reads are owner-or-st
   await api('POST', `/api/quotes/${q2.data.id}/send`, {}, adminToken);
   assert.equal((await api('POST', `/api/quotes/${q2.data.id}/respond`, { accept: true }, custToken)).status, 400, 'terms must be accepted explicitly');
   assert.equal((await db.prepare('SELECT COUNT(*) c FROM projects WHERE quote_id = ?').get(q2.data.id)).c, 0, 'nothing is created without the terms');
+});
+
+test('REGRESSION: manual request-status changes need the role that owns each status (support cannot mark a deposit paid)', async () => {
+  const job = await api('POST', '/api/jobs', { name: 'Status Test', phone: '555-212-3434', email: 'statustest@test.local', address: '2 Oak Ave', service_type: 'painting', description: 'Paint the kitchen walls please.' });
+  const id = job.data.id;
+  const sup = await makeStaff('support', 'st-sup@test.local');
+  const fin = await makeStaff('finance', 'st-fin@test.local');
+  const dis = await makeStaff('dispatch', 'st-dis@test.local');
+  const set = (token, status) => api('PATCH', `/api/jobs/${id}`, { status }, token);
+
+  assert.equal((await set(custToken, 'lost')).status, 403, 'customers cannot');
+  assert.equal((await set(sup.token, 'banana')).status, 400);
+  assert.equal((await set(sup.token, '__proto__')).status, 400, 'prototype keys are not statuses');
+  assert.equal((await api('PATCH', '/api/jobs/999999', { status: 'lost' }, adminToken)).status, 404);
+  // support: pipeline housekeeping only
+  assert.equal((await set(sup.token, 'lost')).status, 200);
+  assert.equal((await set(sup.token, 'new')).status, 200);
+  const blocked = await set(sup.token, 'deposit_paid');
+  assert.equal(blocked.status, 403, 'support cannot declare a deposit paid');
+  assert.match(blocked.data.error, /finance/);
+  assert.equal((await set(sup.token, 'completed')).status, 403);
+  assert.equal((await set(sup.token, 'assigned')).status, 403);
+  // finance owns "deposit paid"; dispatch owns the operational statuses
+  assert.equal((await set(fin.token, 'deposit_paid')).status, 200);
+  assert.equal((await set(fin.token, 'scheduled')).status, 403);
+  assert.equal((await set(dis.token, 'scheduled')).status, 200);
+  assert.equal((await set(dis.token, 'deposit_paid')).status, 403, 'dispatch cannot either');
+  assert.equal((await set(adminToken, 'completed')).status, 200, 'owners can set anything');
+  assert.equal((await db.prepare('SELECT status FROM job_requests WHERE id = ?').get(id)).status, 'completed');
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'job.status_set' AND entity_id = ?").get(id), 'manual changes are audited');
+  // the staff list is readable by every staff role
+  assert.equal((await api('GET', '/api/jobs', undefined, sup.token)).status, 200);
+  assert.equal((await api('GET', '/api/jobs?status=completed', undefined, fin.token)).status, 200);
+  assert.equal((await api('GET', '/api/jobs', undefined, custToken)).status, 403);
+});
+
+test('REGRESSION: intake validation, the trade catalog and the estimator (price grows with scope, confidence reflects photos, access is scoped)', async () => {
+  // catalog
+  const trades = await api('GET', '/api/trades');
+  assert.equal(trades.status, 200);
+  assert.ok(trades.data.length >= 3 && trades.data.every(t => t.service_type && t.label));
+  assert.equal((await api('GET', '/api/trades/painting')).status, 200);
+  assert.equal((await api('GET', '/api/trades/not-a-trade')).status, 404);
+  assert.ok(!JSON.stringify(trades.data).match(/cents|price/i), 'the public catalog exposes no prices');
+
+  // intake validation
+  const base = { name: 'Intake Test', phone: '555-777-9090', email: 'intake@test.local', address: '1 Main St', service_type: 'painting', description: 'Paint two rooms with white paint.' };
+  for (const [bad, field] of [[{ phone: 'abc' }, 'phone'], [{ email: 'nope' }, 'email'], [{ service_type: 'magic' }, 'service_type'], [{ urgency: 'whenever' }, 'urgency'], [{ description: '' }, 'description'], [{ name: '' }, 'name'], [{ address: '' }, 'address']]) {
+    const r = await api('POST', '/api/jobs', { ...base, ...bad });
+    assert.equal(r.status, 422, `invalid ${field} is rejected`);
+    assert.ok((r.data.errors || r.data.fields || {})[field], `the error names the ${field} field`);
+  }
+
+  // estimator: guest owns it through the claim token
+  const g = await api('POST', '/api/jobs', base);
+  assert.equal(g.status, 201);
+  const q = '?claim=' + g.data.claim_token;
+  assert.equal((await api('POST', `/api/jobs/${g.data.id}/estimate`, { scope: { area_sqft: 300, wall_condition: 'good' } })).status, 403, 'no claim, no estimate');
+  assert.equal((await api('POST', `/api/jobs/${g.data.id}/estimate`, { scope: { area_sqft: 300, wall_condition: 'good' } }, contToken)).status, 403, 'another user cannot');
+  const small = await api('POST', `/api/jobs/${g.data.id}/estimate${q}`, { scope: { area_sqft: 200, wall_condition: 'good' } });
+  const big = await api('POST', `/api/jobs/${g.data.id}/estimate${q}`, { scope: { area_sqft: 1200, wall_condition: 'good' } });
+  assert.equal(small.status, 201);
+  assert.equal(big.status, 201);
+  assert.ok(small.data.low_cents > 0 && small.data.high_cents >= small.data.low_cents);
+  assert.ok(big.data.low_cents > small.data.low_cents && big.data.high_cents > small.data.high_cents, 'more square feet cost more');
+  assert.ok(Array.isArray(small.data.line_items) && small.data.line_items.length >= 1);
+  assert.ok(small.data.confidence >= 30 && small.data.confidence <= 95, 'confidence stays within its bounds');
+  // urgency costs more
+  const urgent = await api('POST', '/api/jobs', { ...base, urgency: 'urgent' });
+  const uq = await api('POST', `/api/jobs/${urgent.data.id}/estimate?claim=${urgent.data.claim_token}`, { scope: { area_sqft: 200, wall_condition: 'good' } });
+  assert.ok(uq.data.high_cents >= small.data.high_cents, 'urgent work is never cheaper');
+  // photos raise confidence (this used to read an un-awaited count and ignore the photos)
+  const noPhotos = small.data.confidence;
+  assert.equal((await uploadPhoto(`/api/jobs/${g.data.id}/photos`, null, { query: q })).status, 201);
+  assert.equal((await uploadPhoto(`/api/jobs/${g.data.id}/photos`, null, { query: q })).status, 201);
+  const withPhotos = await api('POST', `/api/jobs/${g.data.id}/estimate${q}`, { scope: { area_sqft: 200, wall_condition: 'good' } });
+  assert.ok(withPhotos.data.confidence > noPhotos || noPhotos >= 90, `photos raise the confidence (${noPhotos} -> ${withPhotos.data.confidence})`);
+  assert.ok(withPhotos.data.factors.some(f => /photo/i.test(f)), 'and the estimate says so');
+  // reading it back
+  const latest = await api('GET', `/api/jobs/${g.data.id}/estimate/latest${q}`);
+  assert.equal(latest.status, 200);
+  assert.equal(latest.data.confidence, withPhotos.data.confidence);
+  assert.ok(Array.isArray(latest.data.line_items) && Array.isArray(latest.data.risks));
+  assert.equal((await api('GET', `/api/jobs/${g.data.id}/estimate/latest`)).status, 403);
+  const none = await api('POST', '/api/jobs', base);
+  assert.equal((await api('GET', `/api/jobs/${none.data.id}/estimate/latest?claim=${none.data.claim_token}`)).status, 404, 'no estimate yet');
+  // reading the request itself
+  const one = await api('GET', `/api/jobs/${g.data.id}${q}`);
+  assert.equal(one.status, 200);
+  assert.equal(one.data.photos.length, 2);
+  assert.ok(one.data.latest_estimate && one.data.latest_estimate.confidence);
+  assert.equal(one.data.claim_token, undefined, 'the claim token is never echoed back on reads');
+  // customer list is theirs only
+  const mine = await api('GET', '/api/jobs/mine/list', undefined, custToken);
+  assert.equal(mine.status, 200);
+  assert.ok(mine.data.every(j => j.id !== g.data.id), 'guest requests are not in a customer list');
+  assert.equal((await api('GET', '/api/jobs/mine/list', undefined, contToken)).status, 403);
+});
+
+test('REGRESSION: IDOR sweep — nobody can read or act on another customer\'s project, quote, thread, dispute or payments', async () => {
+  // victim: the main customer (custToken) with projectId/quoteId/csThread/scThread. Attackers:
+  const stranger = (await api('POST', '/api/auth/signup/customer', { name: 'IDOR Customer', email: 'idor-c@test.local', phone: '555-424-2424', password: 'Customer123!' })).data.token;
+  const otherContractor = (await api('POST', '/api/auth/signup/contractor', { name: 'IDOR Contractor', email: 'idor-k@test.local', phone: '555-434-3434', password: 'Contractor123!', legal_name: 'IDOR LLC', city: 'Napa' })).data.token;
+  const mid = (await api('GET', `/api/projects/${projectId}`, undefined, adminToken)).data.milestones[0].id;
+  // a live dispute on a fresh project of the victim, so dispute routes have a real target
+  const vp = await activeProject();
+  const dsp = await api('POST', '/api/disputes', { project_id: vp, reason: 'quality', description: 'The finish is uneven in two places.' }, custToken);
+  assert.equal(dsp.status, 201);
+  const did = dsp.data.id;
+  const vq = (await api('GET', `/api/quotes?job_request_id=${jobId}`, undefined, custToken)).data[0].id;
+
+  // POSITIVE CONTROLS: the same targets must work for their legitimate owners, otherwise "everything is refused"
+  // could just mean the ids are wrong and the sweep would prove nothing.
+  for (const [who, token, path] of [
+    ['the customer', custToken, `/api/jobs/${jobId}`], ['the customer', custToken, `/api/jobs/${jobId}/estimate/latest`],
+    ['the customer', custToken, `/api/quotes/${vq}`], ['the customer', custToken, `/api/projects/${projectId}`],
+    ['the customer', custToken, `/api/projects/${projectId}/threads`], ['the customer', custToken, `/api/threads/${csThread}/messages`],
+    ['the customer', custToken, `/api/disputes/${did}`], ['the project\'s contractor', contToken, `/api/projects/${projectId}`],
+    ['the project\'s contractor', contToken, `/api/threads/${scThread}/messages`], ['the project\'s contractor', contToken, `/api/disputes/${did}`],
+  ]) {
+    const r = await api('GET', path, undefined, token);
+    assert.ok([200, 404].includes(r.status) && !(r.status === 404 && !/estimate\/latest/.test(path)), `control: ${who} must reach ${path} (got ${r.status})`);
+  }
+  const attacks = [];
+  const atk = (who, token, method, path, body) => attacks.push({ who, token, method, path, body });
+  for (const [who, token] of [['stranger customer', stranger], ['other contractor', otherContractor]]) {
+    atk(who, token, 'GET', `/api/jobs/${jobId}`);
+    atk(who, token, 'GET', `/api/jobs/${jobId}/estimate/latest`);
+    atk(who, token, 'POST', `/api/jobs/${jobId}/estimate`, { scope: { area_sqft: 100, wall_condition: 'good' } });
+    atk(who, token, 'POST', `/api/jobs/${jobId}/claim`, { claim_token: 'x'.repeat(32) });
+    atk(who, token, 'GET', `/api/quotes/${vq}`);
+    atk(who, token, 'GET', `/api/quotes?job_request_id=${jobId}`);
+    atk(who, token, 'POST', `/api/quotes/${vq}/respond`, { accept: false });
+    atk(who, token, 'GET', `/api/projects/${projectId}`);
+    atk(who, token, 'GET', `/api/projects/${projectId}/sign-off`);
+    atk(who, token, 'POST', `/api/projects/${projectId}/sign-off`, { signer_name: 'Mallory', signature: 'data:image/png;base64,' + 'A'.repeat(1200), checklist: { work_complete: true, site_clean: true } });
+    atk(who, token, 'PATCH', `/api/projects/${projectId}/stage`, { stage: 'review' });
+    atk(who, token, 'POST', `/api/projects/${projectId}/milestones/${mid}/approve`, { approved: true });
+    atk(who, token, 'POST', `/api/projects/${projectId}/milestones/${mid}/complete`, {});
+    atk(who, token, 'POST', `/api/projects/${projectId}/contractor-respond`, { accept: true, terms_accepted: true });
+    atk(who, token, 'POST', `/api/projects/${projectId}/on-my-way`, {});
+    atk(who, token, 'POST', `/api/projects/${projectId}/visit-outcome`, { outcome: 'completed' });
+    atk(who, token, 'GET', `/api/projects/${projectId}/threads`);
+    atk(who, token, 'POST', `/api/projects/${projectId}/threads`, { kind: 'client_support' });
+    atk(who, token, 'GET', `/api/threads/${csThread}/messages`);
+    atk(who, token, 'POST', `/api/threads/${csThread}/messages`, { body: 'I should not be here' });
+    atk(who, token, 'GET', `/api/threads/${scThread}/messages`);
+    atk(who, token, 'POST', `/api/threads/${scThread}/messages`, { body: 'I should not be here' });
+    atk(who, token, 'GET', `/api/disputes/${did}`);
+    atk(who, token, 'POST', `/api/disputes/${did}/comments`, { body: 'I should not be here' });
+    atk(who, token, 'POST', `/api/disputes/${did}/withdraw`, {});
+    atk(who, token, 'POST', '/api/disputes', { project_id: vp, reason: 'quality', description: 'I am not part of this project at all.' });
+    atk(who, token, 'POST', '/api/reviews', { project_id: projectId, rating: 1, comment: 'bad' });
+  }
+  // role-crossing: the project's own contractor attempting customer-only actions, and the customer attempting contractor-only ones
+  atk('the project\'s own contractor', contToken, 'POST', `/api/projects/${projectId}/milestones/${mid}/approve`, { approved: true });
+  atk('the project\'s own contractor', contToken, 'POST', `/api/quotes/${vq}/respond`, { accept: false });
+  atk('the project\'s own contractor', contToken, 'POST', '/api/reviews', { project_id: projectId, rating: 5, comment: 'self review' });
+  atk('the customer', custToken, 'POST', `/api/projects/${projectId}/milestones/${mid}/complete`, {});
+  atk('the customer', custToken, 'POST', `/api/projects/${projectId}/contractor-respond`, { accept: true, terms_accepted: true });
+  atk('the customer', custToken, 'POST', `/api/projects/${projectId}/on-my-way`, {});
+  atk('the customer', custToken, 'PATCH', `/api/projects/${projectId}/stage`, { stage: 'completed' });
+
+  const leaks = [];
+  for (const a of attacks) {
+    const r = await api(a.method, a.path, a.body, a.token);
+    if (![401, 403, 404].includes(r.status)) leaks.push(`${a.who}: ${a.method} ${a.path} -> ${r.status} ${JSON.stringify(r.data).slice(0, 80)}`);
+  }
+  // Payment intents need Stripe ON to reach the authorization check at all (otherwise they answer 503 first).
+  await withFakeStripe(async () => {
+    for (const [who, token] of [['stranger customer', stranger], ['other contractor', otherContractor], ['the project\'s own contractor', contToken]]) {
+      for (const path of ['/api/payments/deposit-intent', '/api/payments/final-intent']) {
+        const r = await api('POST', path, { project_id: vp }, token);
+        if (![401, 403, 404].includes(r.status)) leaks.push(`${who}: POST ${path} -> ${r.status} ${JSON.stringify(r.data).slice(0, 80)}`);
+      }
+    }
+  })();
+  assert.deepEqual(leaks, [], 'these requests were NOT refused:\n' + leaks.join('\n'));
+
+  // list endpoints must be scoped, not refused: they may answer 200 but never with the victim's data
+  const mine = async (p, token) => (await api('GET', p, undefined, token)).data;
+  for (const [who, token] of [['stranger customer', stranger], ['other contractor', otherContractor]]) {
+    assert.deepEqual(await mine(`/api/payments?project_id=${vp}`, token), [], `${who} sees no payments of the victim`);
+    assert.deepEqual((await mine('/api/projects', token)).filter(p => [projectId, vp].includes(p.id)), [], `${who} sees none of the victim's projects`);
+    assert.deepEqual((await mine('/api/disputes', token)).filter(d => d.id === did), [], `${who} sees none of the victim's disputes`);
+    assert.deepEqual((await mine('/api/reviews', token)).filter(r => r.project_id === projectId), [], `${who} sees none of the victim's reviews`);
+    const ex = JSON.stringify(await mine('/api/me/export', token));
+    assert.ok(!ex.includes('cust@test.local') && !ex.includes('Hi, when will the work start'), `${who}'s export contains none of the victim's data`);
+    const pm = await mine('/api/payables/mine', token);
+    assert.ok(!pm.payables || pm.payables.every(p => p.project_id !== vp), `${who} sees none of the victim's payables`);
+  }
 });
 
 test('REGRESSION: every report endpoint runs and returns JSON (admin/finance only)', async () => {
