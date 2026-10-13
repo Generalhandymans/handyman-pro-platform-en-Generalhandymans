@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS contractors (
   background_check TEXT NOT NULL DEFAULT 'pending' CHECK (background_check IN ('pending','passed','failed')),
   photo_filename TEXT,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','active','suspended')),
+  has_license INTEGER NOT NULL DEFAULT 1,
+  license_exempt INTEGER NOT NULL DEFAULT 0,
+  contractor_kind TEXT NOT NULL DEFAULT 'independent' CHECK (contractor_kind IN ('independent','inhouse')),
   rating_avg REAL DEFAULT 0,
   jobs_completed INTEGER DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -87,7 +90,7 @@ CREATE TABLE IF NOT EXISTS photos (
   size_bytes INTEGER,
   width INTEGER,
   height INTEGER,
-  kind TEXT NOT NULL DEFAULT 'request' CHECK (kind IN ('request','progress','completion')),
+  kind TEXT NOT NULL DEFAULT 'request' CHECK (kind IN ('request','progress','completion','signoff')),
   vision_json TEXT DEFAULT '{}',
   uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -307,6 +310,205 @@ CREATE TABLE IF NOT EXISTS terms_acceptances (
 
 CREATE INDEX IF NOT EXISTS idx_terms_user ON terms_acceptances(user_id);
 CREATE INDEX IF NOT EXISTS idx_terms_ref ON terms_acceptances(kind, reference_id);
+
+CREATE TABLE IF NOT EXISTS ai_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,provider TEXT NOT NULL,model TEXT,
+  job_request_id INTEGER REFERENCES job_requests(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+  input_summary TEXT,output_json TEXT NOT NULL DEFAULT '{}',confidence INTEGER,
+  status TEXT NOT NULL DEFAULT 'completed' CHECK(status IN ('completed','fallback','failed')),
+  error_code TEXT,duration_ms INTEGER,created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_runs_job ON ai_runs(job_request_id);
+CREATE INDEX IF NOT EXISTS idx_ai_runs_project ON ai_runs(project_id);
+
+CREATE TABLE IF NOT EXISTS job_scope_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_request_id INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
+  version_no INTEGER NOT NULL,source TEXT NOT NULL CHECK(source IN ('customer','ai','admin','contractor')),
+  scope_json TEXT NOT NULL,confidence INTEGER,created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now')),UNIQUE(job_request_id,version_no)
+);
+CREATE TABLE IF NOT EXISTS risk_assessments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_request_id INTEGER NOT NULL REFERENCES job_requests(id) ON DELETE CASCADE,
+  severity TEXT NOT NULL DEFAULT 'low' CHECK(severity IN ('low','medium','high','critical')),
+  flags_json TEXT NOT NULL DEFAULT '[]',requires_human_review INTEGER NOT NULL DEFAULT 0,
+  requires_license_review INTEGER NOT NULL DEFAULT 0,requires_permit_review INTEGER NOT NULL DEFAULT 0,
+  notes TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL UNIQUE,token_hash TEXT NOT NULL,user_agent TEXT,ip_prefix TEXT,
+  expires_at TEXT NOT NULL,revoked_at TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now')),last_seen_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS security_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  event_type TEXT NOT NULL,severity TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info','warning','critical')),
+  ip_prefix TEXT,user_agent TEXT,detail TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type);
+
+
+CREATE TABLE IF NOT EXISTS operations_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,detail TEXT,entity_type TEXT,entity_id INTEGER,
+  priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low','medium','high','critical')),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','in_progress','blocked','done','dismissed')),
+  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,due_at TEXT,
+  source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','system','sla','payment','dispatch','compliance','customer')),
+  fingerprint TEXT,created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  completed_at TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now')),updated_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ops_tasks_status_priority ON operations_tasks(status,priority);
+CREATE INDEX IF NOT EXISTS idx_ops_tasks_assignee ON operations_tasks(assigned_to);
+
+CREATE TABLE IF NOT EXISTS operations_notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type TEXT NOT NULL,entity_id INTEGER NOT NULL,body TEXT NOT NULL,
+  visibility TEXT NOT NULL DEFAULT 'internal' CHECK(visibility IN ('internal')),
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ops_notes_entity ON operations_notes(entity_type,entity_id);
+
+CREATE TABLE IF NOT EXISTS sla_policies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,code TEXT NOT NULL UNIQUE,label TEXT NOT NULL,
+  threshold_minutes INTEGER NOT NULL,enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+INSERT OR IGNORE INTO sla_policies(code,label,threshold_minutes,enabled) VALUES
+ ('new_lead_first_action','New lead first action',60,1),
+ ('quote_response_followup','Quote follow-up',2880,1),
+ ('unassigned_project','Accepted project assignment',240,1),
+ ('contractor_offer_response','Contractor offer response',120,1),
+ ('customer_approval_wait','Customer approval wait',2880,1),
+ ('payment_failure','Payment failure attention',30,1);
+
+CREATE TABLE IF NOT EXISTS operations_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,entity_type TEXT,entity_id INTEGER,
+  severity TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info','warning','critical')),
+  summary TEXT NOT NULL,detail TEXT,created_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ops_events_created ON operations_events(created_at);
+CREATE TABLE IF NOT EXISTS dispatch_assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  match_score REAL,
+  status TEXT NOT NULL DEFAULT 'offered' CHECK(status IN ('offered','accepted','declined','expired','cancelled')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dispatch_assignments_project ON dispatch_assignments(project_id);
+
+
+
+CREATE TABLE IF NOT EXISTS contractor_skills (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  skill_code TEXT NOT NULL,
+  proficiency TEXT NOT NULL DEFAULT 'experienced' CHECK (proficiency IN ('basic','experienced','expert')),
+  years_experience INTEGER NOT NULL DEFAULT 0,
+  is_primary INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(contractor_id,skill_code)
+);
+CREATE TABLE IF NOT EXISTS contractor_availability (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  weekday INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),
+  start_time TEXT,end_time TEXT,is_available INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(contractor_id,weekday)
+);
+CREATE TABLE IF NOT EXISTS contractor_blackouts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  start_date TEXT NOT NULL,end_date TEXT NOT NULL,reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS contractor_documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  doc_type TEXT NOT NULL,label TEXT,document_number TEXT,issuer TEXT,expires_on TEXT,
+  status TEXT NOT NULL DEFAULT 'submitted' CHECK(status IN ('submitted','verified','rejected','expired')),
+  storage_key TEXT,original_name TEXT,mime TEXT,
+  reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,reviewed_at TEXT,rejection_reason TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS contractor_daily_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  work_date TEXT NOT NULL,summary TEXT NOT NULL,hours_worked REAL,blockers TEXT,
+  customer_visible INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS contractor_offer_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL CHECK(event_type IN ('offered','viewed','accepted','declined','expired')),
+  detail TEXT,created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS contractor_quality_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  event_type TEXT NOT NULL,points INTEGER NOT NULL DEFAULT 0,note TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_contractor_skills_contractor ON contractor_skills(contractor_id);
+CREATE INDEX IF NOT EXISTS idx_contractor_documents_contractor ON contractor_documents(contractor_id);
+CREATE INDEX IF NOT EXISTS idx_contractor_offer_events ON contractor_offer_events(contractor_id,project_id);
+
+
+CREATE TABLE IF NOT EXISTS change_orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  reason TEXT,
+  price_delta_cents INTEGER NOT NULL DEFAULT 0,
+  schedule_delta_days INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','sent','approved','rejected','cancelled')),
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sent_at TEXT,
+  responded_at TEXT,
+  customer_note TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_change_orders_project ON change_orders(project_id);
+CREATE INDEX IF NOT EXISTS idx_change_orders_status ON change_orders(status);
+
+CREATE TABLE IF NOT EXISTS project_schedule_preferences (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  preferred_date TEXT,
+  time_window TEXT CHECK (time_window IN ('morning','afternoon','evening','anytime')),
+  flexibility TEXT CHECK (flexibility IN ('exact','plus_minus_1','plus_minus_3','flexible')),
+  notes TEXT,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS project_customer_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  detail TEXT,
+  actor_role TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_customer_events_project ON project_customer_events(project_id);
+
 `;
 
 db.exec(SCHEMA);
@@ -333,8 +535,65 @@ if (!columnExists('users', 'reset_expires')) {
 if (!columnExists('projects', 'contractor_status')) {
   db.exec(`ALTER TABLE projects ADD COLUMN contractor_status TEXT CHECK (contractor_status IN ('offered','accepted','declined'))`);
 }
+// ---- 2026-10-07: contractor licensing + kind (independent vs in-house) ----
+if (!columnExists('contractors', 'has_license')) {
+  db.exec(`ALTER TABLE contractors ADD COLUMN has_license INTEGER NOT NULL DEFAULT 1`);
+}
+if (!columnExists('contractors', 'license_exempt')) {
+  db.exec(`ALTER TABLE contractors ADD COLUMN license_exempt INTEGER NOT NULL DEFAULT 0`);
+}
+if (!columnExists('contractors', 'contractor_kind')) {
+  db.exec(`ALTER TABLE contractors ADD COLUMN contractor_kind TEXT NOT NULL DEFAULT 'independent'`);
+}
+// ---- 2026-10-07: negotiation offers (contractor counter-offers, CaliFix-style) ----
+db.exec(`CREATE TABLE IF NOT EXISTS contractor_offers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  contractor_id INTEGER NOT NULL REFERENCES contractors(id) ON DELETE CASCADE,
+  proposed_cents INTEGER NOT NULL,
+  note TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','rejected','superseded')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+// ---- 2026-10-07: photos.kind CHECK gains 'signoff' (signed close-out sheet) ----
+try {
+  const psql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='photos'`).get();
+  if (psql && psql.sql && !psql.sql.includes("'signoff'")) {
+    db.exec(`
+      CREATE TABLE photos_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_request_id INTEGER REFERENCES job_requests(id) ON DELETE CASCADE,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        filename TEXT NOT NULL,
+        original_name TEXT,
+        mime TEXT,
+        size_bytes INTEGER,
+        width INTEGER,
+        height INTEGER,
+        kind TEXT NOT NULL DEFAULT 'request' CHECK (kind IN ('request','progress','completion','signoff')),
+        vision_json TEXT DEFAULT '{}',
+        uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        storage_key TEXT,
+        storage_provider TEXT NOT NULL DEFAULT 'local',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO photos_new (id, job_request_id, project_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by, storage_key, storage_provider, created_at)
+        SELECT id, job_request_id, project_id, filename, original_name, mime, size_bytes, width, height, kind, vision_json, uploaded_by, storage_key, storage_provider, created_at
+        FROM photos;
+      DROP TABLE photos;
+      ALTER TABLE photos_new RENAME TO photos;
+    `);
+    console.log('[migrate] photos table: kind CHECK now includes signoff');
+  }
+} catch (e) {
+  console.error('[migrate] photos table migration failed:', e.message);
+}
 if (!columnExists('photos', 'storage_key')) {
   db.exec(`ALTER TABLE photos ADD COLUMN storage_key TEXT`);
+}
+// ---- 2026-10-07: follow-up automation (auto-emailed flag) ----
+if (!columnExists('followup_tasks', 'auto_emailed')) {
+  db.exec(`ALTER TABLE followup_tasks ADD COLUMN auto_emailed INTEGER NOT NULL DEFAULT 0`);
 }
 if (!columnExists('photos', 'storage_provider')) {
   db.exec(`ALTER TABLE photos ADD COLUMN storage_provider TEXT NOT NULL DEFAULT 'local'`);
@@ -495,9 +754,10 @@ db.exec(`CREATE TABLE IF NOT EXISTS dispute_events (
 
 // ---- Migrate payments.provider CHECK to include 'stripe' (was manual/stripe_stub) ----
 // Also adds 'paid' to the status CHECK for Stripe-confirmed payments.
+// 2026-10-07: also adds 'simulated' provider for the test payment mode.
 try {
   const sql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='payments'`).get();
-  if (sql && sql.sql && !sql.sql.includes("'stripe'")) {
+  if (sql && sql.sql && (!sql.sql.includes("'stripe'") || !sql.sql.includes("'simulated'"))) {
     db.exec(`
       CREATE TABLE payments_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -505,7 +765,7 @@ try {
         kind TEXT NOT NULL CHECK (kind IN ('deposit','milestone','final','refund')),
         amount_cents INTEGER NOT NULL,
         status TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded','pending','paid','failed')),
-        provider TEXT NOT NULL DEFAULT 'manual' CHECK (provider IN ('manual','stripe')),
+        provider TEXT NOT NULL DEFAULT 'manual' CHECK (provider IN ('manual','stripe','simulated')),
         provider_ref TEXT,
         notes TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))

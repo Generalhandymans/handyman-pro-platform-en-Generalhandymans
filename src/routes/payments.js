@@ -17,10 +17,13 @@ router.get('/stripe-status', ah(async (req, res) => {
   res.json({
     implemented: true,
     enabled: stripeSvc.isEnabled(),
+    simulated: stripeSvc.isSimulated(),
     publishable_key: stripeSvc.isEnabled() ? (process.env.STRIPE_PUBLISHABLE_KEY || null) : null,
     message: stripeSvc.isEnabled()
       ? 'Stripe is connected. Deposits are charged through Stripe PaymentIntents.'
-      : 'Stripe is not configured. Set STRIPE_SECRET_KEY (+ webhook secret) to charge cards. Payments are recorded manually meanwhile.',
+      : stripeSvc.isSimulated()
+        ? 'SIMULATED payment mode (testing only — no real charge). Set STRIPE_SECRET_KEY for real payments.'
+        : 'Stripe is not configured. Set STRIPE_SECRET_KEY (+ webhook secret) to charge cards. Payments are recorded manually meanwhile.',
   });
 }));
 
@@ -217,6 +220,9 @@ router.post('/', authRequired, requireStaff('finance'), ah(async (req, res) => {
          WHERE id = ? AND status IN ('new','ai_analyzed','quote_sent')`
       ).run(proj.job_request_id);
     }
+    // Confirm to the customer (payment + Terms of Service).
+    const { depositConfirmationEmail } = require('../services/notify');
+    await depositConfirmationEmail(b.project_id).catch(() => {});
   }
   await auditLog(req.user.id, 'payment.recorded', 'payments', info.lastInsertRowid, `${b.kind} ${b.amount_cents} cents (manual) on project #${b.project_id}`);
   res.status(201).json(await db.prepare('SELECT * FROM payments WHERE id = ?').get(info.lastInsertRowid));

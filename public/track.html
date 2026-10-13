@@ -3,9 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Track a job — General Handyman Solutions</title>
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <title>Track a job — Helpman</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg?v=20261006c">
+  <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
   <link rel="stylesheet" href="css/styles.css">
+  <link rel="stylesheet" href="css/helpman-v2.css">
 </head>
 <body>
   <header class="site-header" id="site-header"></header>
@@ -35,7 +38,7 @@
 
   <script src="js/api.js"></script>
   <script>
-  // General Handyman Solutions — guest job tracking (claim-token based, no login).
+  // Helpman — guest job tracking (claim-token based, no login).
   (function () {
     'use strict';
     HP.mountHeader('track');
@@ -72,6 +75,7 @@
         <div class="card">
           <h3>Latest estimate</h3>
           <div class="estimate-range" style="font-size:1.6rem">${HP.fmtMoney(est.low_cents)} – ${HP.fmtMoney(est.high_cents)}</div>
+          <p class="hm-disclaimer"><strong>Referential estimate.</strong> Calculated from trade pricing data for California — not a final price. A formal proposal will be made once the work has been examined.</p>
           <div class="score-wrap"><div class="score-track"><div class="score-fill" style="width:${est.confidence}%"></div></div><span class="small muted">${est.confidence}% confidence</span></div>
           <p class="small muted">Computed ${HP.fmtDate(est.created_at)}.</p>
         </div>` : '';

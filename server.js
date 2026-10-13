@@ -1,4 +1,4 @@
-// General Handyman Solutions — main server.
+// Helpman — main server.
 // Run: npm install && npm start
 //
 // Serves the public site + portals from ./public, exposes the JSON API under
@@ -14,8 +14,12 @@ const { execSync } = require('child_process');
 const db = require('./src/db');
 const mailer = require('./src/services/mailer');
 
+const { requestId, requireProductionSecrets } = require('./src/services/security');
+requireProductionSecrets();
+
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
 
 // Optional error reporting. Enable with: npm i @sentry/node  +  SENTRY_DSN=...
 // Without the package or the DSN this does nothing.
@@ -53,7 +57,9 @@ const logger = pino({
     censor: '[REDACTED]',
   },
 });
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'same-origin' } }));
+app.use(requestId);
+app.disable('x-powered-by');
 app.use((req, res, next) => {
   const started = process.hrtime.bigint();
   res.on('finish', () => {
@@ -129,9 +135,15 @@ const intakeLimiter = rateLimit({
   standardHeaders: 'draft-7', legacyHeaders: false,
   message: { error: 'Too many requests. Please wait a bit and try again.' },
 });
+const intelligenceLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 60,
+  standardHeaders: 'draft-7', legacyHeaders: false,
+  message: { error: 'Too many AI requests. Please wait a few minutes and try again.' },
+});
 app.use('/api/auth', authLimiter);
 app.post('/api/jobs', intakeLimiter);
 app.post('/api/referrals/redeem', intakeLimiter); // public + guessable codes: cap attempts per IP
+app.use('/api/intelligence', intelligenceLimiter);
 
 // ---- Photo delivery ----
 // Multer stores files under random names with no extension, so we resolve the
@@ -227,6 +239,9 @@ app.post('/api/unsubscribe', async (req, res) => {
   await unsub.suppress(email, 'unsubscribed');
   res.type('html').send('<!doctype html><body style="font-family:Arial,sans-serif;max-width:480px;margin:48px auto;"><h2>You are unsubscribed</h2><p>You will no longer receive promotional emails.</p></body>');
 });
+app.use('/api/health', require('./src/routes/health-v6'));
+app.use('/api/growth', require('./src/routes/growth'));
+
 
 // ---- API routes ----
 app.use('/api/auth', require('./src/routes/auth'));
@@ -234,10 +249,14 @@ app.use('/api/trades', require('./src/routes/trades'));
 app.use('/api/jobs', require('./src/routes/jobs'));
 app.use('/api/quotes', require('./src/routes/quotes'));
 app.use('/api/projects', require('./src/routes/projects'));
+app.use('/api/customer-experience', require('./src/routes/customer-experience'));
 app.use('/api/contractors', require('./src/routes/contractors'));
+app.use('/api/contractor-ops', require('./src/routes/contractor-ops'));
 app.use('/api/crm', require('./src/routes/crm'));
+app.use('/api/operations', require('./src/routes/operations'));
 app.use('/api/campaigns', require('./src/routes/campaigns'));
 app.use('/api/reports', require('./src/routes/reports'));
+app.use('/api/intelligence', require('./src/routes/intelligence'));
 app.use('/api/reviews', require('./src/routes/reviews'));
 app.use('/api/referrals', require('./src/routes/referrals'));
 app.use('/api/payments', require('./src/routes/payments'));
@@ -265,6 +284,13 @@ const smsSvc = require('./src/services/sms');
 setInterval(() => {
   smsSvc.runReminders().catch(e => console.error('[reminders]', e.message));
 }, 10 * 60 * 1000).unref();
+// ---- Background: follow-up automation every hour (tasks + auto quote reminders) ----
+const { runFollowupAutomation } = require('./src/services/crm');
+setInterval(() => {
+  runFollowupAutomation()
+    .then(r => { if (r.created || r.emailed) console.log('[followup]', JSON.stringify(r)); })
+    .catch(e => console.error('[followup]', e.message));
+}, 60 * 60 * 1000);
 
 // ---- 404 for unknown API routes ----
 app.use('/api', (req, res) => res.status(404).json({ error: 'Unknown API endpoint.' }));

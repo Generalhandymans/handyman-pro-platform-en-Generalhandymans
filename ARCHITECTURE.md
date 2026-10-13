@@ -1,4 +1,4 @@
-# ARCHITECTURE.md — General Handyman Solutions
+# ARCHITECTURE.md — Helpman
 
 ## System diagram (text)
 

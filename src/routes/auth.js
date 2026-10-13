@@ -7,6 +7,7 @@ const db = require('../db');
 const { ah, authRequired, requireRole, isEmail, isPhone, isNonEmpty, failIfErrors, signToken, signChallenge, verifyChallenge } = require('../middleware');
 const totp = require('../services/totp');
 const { notify, shell } = require('../services/notify');
+const { securityEvent } = require('../services/security');
 
 const router = express.Router();
 
@@ -21,7 +22,7 @@ async function sendVerificationEmail(user, token) {
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/api/auth/verify?token=${token}`;
   return await notify({
     to: user.email,
-    subject: 'Verify your General Handyman Solutions email',
+    subject: 'Verify your Helpman email',
     html: shell('Verify your email', `Hi ${user.name.split(' ')[0]}, please confirm this is your email address:`, [
       ['Account', user.email],
       ['Verify link', link],
@@ -67,6 +68,14 @@ router.post('/signup/contractor', ah(async (req, res) => {
   if (typeof b.password !== 'string' || b.password.length < 8) errors.password = 'Password must be at least 8 characters.';
   if (!isNonEmpty(b.legal_name, 160)) errors.legal_name = 'Legal name is required.';
   if (!isNonEmpty(b.city, 120)) errors.city = 'City is required.';
+  const kind = (b.contractor_kind || 'independent');
+  if (!['independent', 'inhouse'].includes(kind)) errors.contractor_kind = 'Invalid contractor kind.';
+  // has_license: when explicitly true, the license number becomes mandatory.
+  // When absent (older clients), keep the previous lenient behavior.
+  const hasLicense = b.has_license === undefined || b.has_license === null
+    ? null
+    : !(b.has_license === false || b.has_license === 0 || b.has_license === 'false');
+  if (hasLicense === true && !isNonEmpty(b.license_number, 200)) errors.license_number = 'License number is required when you have a license.';
   if (failIfErrors(res, errors)) return;
 
   const exists = await db.prepare('SELECT id FROM users WHERE email = ?').get(b.email.trim().toLowerCase());
@@ -78,12 +87,13 @@ router.post('/signup/contractor', ah(async (req, res) => {
     ).run(b.name.trim(), b.email.trim().toLowerCase(), (b.phone || '').trim(), hashPassword(b.password), 'contractor');
     await t.prepare(
       `INSERT INTO contractors (user_id, legal_name, city, service_base, service_radius_miles,
-        years_experience, specialties, license_number, insurance_info)
-       VALUES (?,?,?,?,?,?,?,?,?)`
+        years_experience, specialties, license_number, insurance_info, has_license, contractor_kind)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`
     ).run(
       u.lastInsertRowid, b.legal_name.trim(), b.city.trim(), (b.service_base || b.city || '').trim(),
       Number(b.service_radius_miles) || 25, Number(b.years_experience) || 0,
-      (b.specialties || '').trim(), (b.license_number || '').trim(), (b.insurance_info || '').trim()
+      (b.specialties || '').trim(), (b.license_number || '').trim(), (b.insurance_info || '').trim(),
+      hasLicense === false ? 0 : 1, kind
     );
     return u.lastInsertRowid;
   });
@@ -104,7 +114,11 @@ router.post('/signup/contractor', ah(async (req, res) => {
     token: signToken(user),
     user: publicUser(user),
     verify_sent: true,
-    note: 'Contractor profile created with status "pending". An admin must verify license, insurance and background check before activation.',
+    has_license: hasLicense,
+    contractor_kind: kind,
+    note: hasLicense === false
+      ? 'Your application has gone to review. We will notify you when it is active.'
+      : 'Contractor profile created with status "pending". An admin must verify license, insurance and background check before activation.',
   });
 }));
 
@@ -116,6 +130,7 @@ router.post('/login', ah(async (req, res) => {
   }
   const user = await db.prepare('SELECT * FROM users WHERE email = ?').get(email.trim().toLowerCase());
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    await securityEvent(req, 'login_failed', 'warning', `email=${email.trim().toLowerCase().slice(0,80)}`, user ? user.id : null);
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
   if (user.role === 'admin' && user.staff_role === 'disabled') {
@@ -251,7 +266,7 @@ router.post('/forgot', ah(async (req, res) => {
   const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/auth.html?reset=${token}`;
   await notify({
     to: user.email,
-    subject: 'Reset your General Handyman Solutions password',
+    subject: 'Reset your Helpman password',
     html: shell('Reset your password', `Hi ${user.name.split(' ')[0]}, use the link below within 1 hour:`, [
       ['Reset link', link],
     ]) + `<p style="text-align:center;margin:20px 0;"><a href="${link}" style="background:#111827;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:bold;">Reset password</a></p>`,

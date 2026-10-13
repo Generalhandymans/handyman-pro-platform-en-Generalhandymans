@@ -19,6 +19,14 @@ function isEnabled() {
   return !!process.env.STRIPE_SECRET_KEY;
 }
 
+// Simulated payment mode ("como si Stripe estuviera"): for end-to-end testing
+// without real Stripe keys. Enabled ONLY with SIMULATED_PAYMENTS=true and only
+// when Stripe is NOT configured. Every simulated record is clearly labeled so
+// it can never be confused with a real charge.
+function isSimulated() {
+  return !isEnabled() && process.env.SIMULATED_PAYMENTS === 'true';
+}
+
 function getClient() {
   if (!isEnabled()) throw new Error('Stripe is not configured. Set STRIPE_SECRET_KEY.');
   if (!stripeClient) {
@@ -38,7 +46,7 @@ async function createIntent({ projectId, amountCents, kind = 'deposit', customer
     amount: amountCents,
     currency: 'usd',
     receipt_email: customerEmail || undefined,
-    description: description || `General Handyman Solutions — ${label} for project #${projectId}`,
+    description: description || `Helpman — ${label} for project #${projectId}`,
     metadata: { project_id: String(projectId), kind },
     automatic_payment_methods: { enabled: true, allow_redirects: 'never' },
   });
@@ -120,6 +128,9 @@ async function handleWebhook(rawBody, signature) {
            WHERE id = ? AND status IN ('new','ai_analyzed','quote_sent')`
         ).run(proj.job_request_id);
       }
+      // Email the customer: deposit received + Terms of Service.
+      const { depositConfirmationEmail } = require('./notify');
+      await depositConfirmationEmail(pid).catch(() => {});
     }
     return event.type;
   }
@@ -137,4 +148,10 @@ async function handleWebhook(rawBody, signature) {
 // Test hook: lets the automated tests inject a fake Stripe client (no network). Never used in production.
 function _setClientForTests(client) { stripeClient = client; }
 
-module.exports = { _setClientForTests, isEnabled, getClient, createIntent, createDepositIntent, refundPayment, handleWebhook };
+// Status reporter: true when Stripe is NOT configured but SIMULATED_PAYMENTS=true.
+// Every simulated record is clearly labeled so it can never be confused with a real charge.
+function isSimulated() {
+  return !isEnabled() && process.env.SIMULATED_PAYMENTS === 'true';
+}
+
+module.exports = { _setClientForTests, isEnabled, isSimulated, getClient, createIntent, createDepositIntent, refundPayment, handleWebhook };

@@ -2,7 +2,7 @@
 const jwt = require('jsonwebtoken');
 const db = require('../db');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-only-secret-change-me';
+const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? null : 'dev-only-secret-change-me');
 if (!process.env.JWT_SECRET) {
   if (process.env.NODE_ENV === 'production') {
     // Never run production with a publicly known signing key.

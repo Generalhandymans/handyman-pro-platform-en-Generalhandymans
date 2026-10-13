@@ -1,4 +1,4 @@
-# ROADMAP.md — General Handyman Solutions
+# ROADMAP.md — Helpman
 
 Ordered by business value. Stubs in v1 are marked honestly in the README;
 each item below turns one into the real thing.

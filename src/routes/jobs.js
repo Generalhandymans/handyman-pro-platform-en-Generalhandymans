@@ -166,6 +166,7 @@ router.post('/:id/estimate', ah(async (req, res) => {
   }
   const photoCount = Number((await db.prepare('SELECT COUNT(*) c FROM photos WHERE job_request_id = ?').get(job.id)).c) || 0;
 
+
   let result;
   try {
     result = estimateJob({

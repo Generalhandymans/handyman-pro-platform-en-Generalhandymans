@@ -1,0 +1,56 @@
+services:
+  - type: web
+    name: helpman-app
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health/live
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: PUBLIC_URL
+        value: https://helpman.app
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: helpman-postgres
+          property: connectionString
+      - key: DB_SSL
+        value: "true"
+      - key: HANDYMAN_FROM_NAME
+        value: HELPMAN
+      - key: HANDYMAN_FROM_EMAIL
+        sync: false
+      - key: EMAIL_PROVIDER
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_SCOPE_MODEL
+        value: gpt-4o-mini
+      - key: OPENAI_VISION_MODEL
+        value: gpt-4o-mini
+      - key: SEED_DEMO
+        value: "false"
+      - key: LOG_LEVEL
+        value: info
+
+databases:
+  - name: helpman-postgres
+    plan: basic-256mb
+    databaseName: helpman
+    user: helpman

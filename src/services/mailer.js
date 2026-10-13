@@ -5,14 +5,14 @@
 // the BUSINESS account, never a personal one.
 //
 //   HANDYMAN_FROM_EMAIL  (default: "generalhandymans@gmail.com" — the real business address)
-//   HANDYMAN_FROM_NAME   (default: "General Handyman Solutions")
+//   HANDYMAN_FROM_NAME   (default: "Helpman")
 //
 // Real delivery additionally requires a provider: EMAIL_PROVIDER=sendgrid plus
 // SENDGRID_API_KEY (or another SMTP setup). Default is "console" log mode,
 // which records every message in the email_log table without sending anything.
 // See README ("Business email setup") before sending real mail.
 const FROM_EMAIL = process.env.HANDYMAN_FROM_EMAIL || process.env.EMAIL_FROM || 'generalhandymans@gmail.com';
-const FROM_NAME = process.env.HANDYMAN_FROM_NAME || 'General Handyman Solutions';
+const FROM_NAME = process.env.HANDYMAN_FROM_NAME || 'Helpman';
 
 // Providers:
 //  - "console" (default): prints to server console AND returns ok:true.

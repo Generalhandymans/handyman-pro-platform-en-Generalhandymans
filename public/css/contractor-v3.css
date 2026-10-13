@@ -1,0 +1,10 @@
+.hm3-hero{display:flex;justify-content:space-between;gap:1rem;align-items:center;padding:1.4rem;border-radius:20px;background:linear-gradient(135deg,#0b2d5b,#123e78);color:#fff;margin:1rem 0}
+.hm3-hero h2{margin:.25rem 0}.hm3-hero p{margin:.3rem 0;opacity:.85;max-width:700px}.hm3-score{min-width:120px;text-align:center}.hm3-score strong{font-size:3rem}.hm3-score span{opacity:.7}
+.hm3-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:.75rem;margin:1rem 0}.hm3-stats>div{background:#fff;border:1px solid #e4e9ef;border-radius:16px;padding:1rem}.hm3-stats span{display:block;font-size:.78rem;color:#6a7787}.hm3-stats strong{display:block;margin-top:.25rem;font-size:1.2rem}
+.hm3-grid{display:grid;grid-template-columns:1fr 1.4fr;gap:1rem}.hm3-score-row{display:grid;grid-template-columns:130px 1fr 42px;gap:.6rem;align-items:center;margin:.65rem 0;text-transform:capitalize}.hm3-score-row>div{height:8px;background:#e9eef5;border-radius:99px;overflow:hidden}.hm3-score-row i{display:block;height:100%;background:#2563eb}
+.hm3-chips{display:flex;gap:.5rem;flex-wrap:wrap}.hm3-chips>span{padding:.45rem .7rem;border-radius:999px;background:#eef4ff;color:#0b2d5b;font-size:.82rem}
+.hm3-week{display:grid;gap:.55rem;margin:1rem 0}.hm3-day{display:grid;grid-template-columns:1fr 140px 140px;gap:.75rem;align-items:center;padding:.65rem;border-bottom:1px solid #edf1f5}.hm3-day input[type=time]{width:100%}
+.hm3-list-row{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:.75rem 0;border-bottom:1px solid #edf1f5}.hm3-list-row small{display:block;color:#6a7787;margin-top:.2rem}
+.eyebrow{text-transform:uppercase;letter-spacing:.08em;font-size:.72rem;font-weight:700;opacity:.75}
+@media(max-width:900px){.hm3-stats{grid-template-columns:1fr 1fr}.hm3-grid{grid-template-columns:1fr}.hm3-day{grid-template-columns:1fr 1fr}.hm3-day label{grid-column:1/-1}}
+@media(max-width:560px){.hm3-hero{align-items:flex-start}.hm3-score strong{font-size:2rem}.hm3-stats{grid-template-columns:1fr}.hm3-day{grid-template-columns:1fr}}

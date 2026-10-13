@@ -86,7 +86,7 @@ router.post('/:id/queue', ah(async (req, res) => {
     for (const m of members) {
       if (!m.email || have.has(m.email)) continue;
       if (await unsub.isSuppressed(m.email)) { skippedUnsubscribed++; continue; }
-      const vars = { name: m.name || 'there', company: 'General Handyman Solutions', ...(m.context || {}) };
+      const vars = { name: m.name || 'there', company: 'Helpman', ...(m.context || {}) };
       await ins.run(c.id, m.email, m.name, crm.renderTemplate(t.subject, vars),
         crm.renderTemplate(t.body_html, vars, { escape: true }) + unsub.footerHtml(m.email), mailer.activeProvider());
       queued++;
