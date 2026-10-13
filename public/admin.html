@@ -27,6 +27,7 @@
       <button class="tab" data-tab="projects" role="tab">Projects</button>
       <button class="tab" data-tab="agenda" role="tab">Agenda</button>
       <button class="tab" data-tab="payouts" role="tab">Payouts</button>
+      <button class="tab" data-tab="collections" role="tab">Collections</button>
       <button class="tab" data-tab="disputes" role="tab">Disputes</button>
       <button class="tab" data-tab="messages" role="tab">Messages</button>
       <button class="tab" data-tab="campaigns" role="tab">Campaigns</button>
@@ -114,6 +115,17 @@
           </form>
         </div>
       </div>
+      <div class="section" id="tech-section" hidden>
+        <div class="section-head"><h2>Add a company technician</h2></div>
+        <p class="small muted">Your own employees. They are <strong>assigned</strong> jobs (no offer to accept), are covered by the company's license and insurance (starting verified), and are paid through payroll, so no per-job payout is created. Owners only.</p>
+        <form id="tech-form" class="btn-row" style="gap:.5rem;flex-wrap:wrap" novalidate>
+          <input id="tech-name" type="text" placeholder="Full name" aria-label="Technician full name" required>
+          <input id="tech-email" type="email" placeholder="Email" aria-label="Technician email" required>
+          <input id="tech-city" type="text" placeholder="City" aria-label="Technician city">
+          <button class="btn btn-primary btn-sm" type="submit">Add technician</button>
+        </form>
+        <p class="small muted">Technician margin uses the internal labor cost entered on each quote; payroll itself is not tracked here.</p>
+      </div>
       <div class="section">
         <div class="section-head"><h2>Recruitment gaps</h2></div>
         <p class="small muted">Open job demand with no active contractor covering that trade in that city.</p>
@@ -184,6 +196,24 @@
         <p class="small muted">The platform records payouts; send the money by ACH, check, Zelle, etc., then mark it paid with the method and reference. A payout is blocked while the customer still owes money (you can override on purpose).</p>
         <div id="po-totals" style="margin:.5rem 0"></div>
         <div id="po-list"><p class="muted">Loading payouts…</p></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="panel-collections" role="tabpanel">
+      <div class="section">
+        <div class="section-head">
+          <h2>Collections</h2>
+          <div class="btn-row">
+            <select id="co-filter" aria-label="Filter by status">
+              <option value="">All</option><option value="overdue">Overdue</option><option value="due">Due</option>
+              <option value="deposit_unpaid">Deposit not paid</option><option value="not_ready">Not payable yet</option><option value="in_dispute">In dispute</option>
+            </select>
+            <button class="btn btn-primary btn-sm" id="co-bulk" type="button">Remind all overdue</button>
+          </div>
+        </div>
+        <p class="small muted">Money owed by customers. Reminders only go out when the customer can actually pay, never during a dispute, and never twice within a few days. Customers pay from their portal; this screen only nudges them.</p>
+        <div id="co-totals" style="margin:.5rem 0"></div>
+        <div id="co-list"><p class="muted">Loading…</p></div>
       </div>
     </section>
 
@@ -294,9 +324,9 @@
     document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
       t.addEventListener('click', () => {
         document.querySelectorAll('#admin-tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
-        document.querySelectorAll('#panel-overview, #panel-kpis, #panel-clients, #panel-contractors, #panel-projects, #panel-agenda, #panel-payouts, #panel-disputes, #panel-messages, #panel-campaigns, #panel-reports, #panel-team, #panel-security')
+        document.querySelectorAll('#panel-overview, #panel-kpis, #panel-clients, #panel-contractors, #panel-projects, #panel-agenda, #panel-payouts, #panel-collections, #panel-disputes, #panel-messages, #panel-campaigns, #panel-reports, #panel-team, #panel-security')
           .forEach((p) => p.classList.toggle('active', p.id === 'panel-' + t.dataset.tab));
-        const fn = { overview: loadOverview, kpis: loadKpis, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, agenda: loadAgendaTab, payouts: loadPayoutsTab, disputes: loadDisputesTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports, team: loadTeam, security: loadSecurity }[t.dataset.tab];
+        const fn = { overview: loadOverview, kpis: loadKpis, clients: loadClients, contractors: loadContractorTab, projects: loadProjectsTab, agenda: loadAgendaTab, payouts: loadPayoutsTab, collections: loadCollectionsTab, disputes: loadDisputesTab, messages: loadMessagesTab, campaigns: loadCampaignsTab, reports: loadReports, team: loadTeam, security: loadSecurity }[t.dataset.tab];
         if (fn) fn();
       });
     });
@@ -396,6 +426,56 @@
             renderAgenda();
           } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); }
           finally { HP.busy(btn, false); }
+        });
+      });
+    }
+
+    // ---------- collections ----------
+    const CO_KIND = { overdue: 'err', due: 'warn', deposit_unpaid: 'warn', not_ready: 'muted', in_dispute: 'info' };
+    const CO_LABEL = { overdue: 'overdue', due: 'due', deposit_unpaid: 'deposit not paid', not_ready: 'not payable yet', in_dispute: 'in dispute' };
+    async function loadCollectionsTab() {
+      if (!loaded.coWired) {
+        loaded.coWired = true;
+        document.getElementById('co-filter').addEventListener('change', renderCollections);
+        document.getElementById('co-bulk').addEventListener('click', async (ev) => {
+          if (!window.confirm('Send a reminder to every overdue customer who is eligible?')) return;
+          HP.busy(ev.target, true, 'Sending…');
+          try {
+            const r = await HP.api('POST', '/collections/remind-overdue', {});
+            HP.toast(`${r.sent} reminder(s) sent` + (r.skipped.length ? `, ${r.skipped.length} skipped (already reminded recently or not eligible).` : '.'), r.sent ? 'ok' : 'info');
+            renderCollections();
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); } finally { HP.busy(ev.target, false); }
+        });
+      }
+      await renderCollections();
+    }
+    async function renderCollections() {
+      const box = document.getElementById('co-list');
+      const st = document.getElementById('co-filter').value;
+      let d;
+      try { d = await HP.api('GET', '/collections' + (st ? '?status=' + st : '')); }
+      catch (e) { box.innerHTML = `<p class="muted">${HP.esc(HP.friendlyMessage(e))}</p>`; return; }
+      const t = d.totals;
+      document.getElementById('co-totals').innerHTML = [
+        HP.badge('Owed: ' + HP.fmtMoney(t.owed_cents), 'warn'), HP.badge('Overdue: ' + HP.fmtMoney(t.overdue_cents || 0), 'err'),
+        HP.badge('Due: ' + HP.fmtMoney(t.due_cents || 0), 'warn'), HP.badge('In dispute: ' + HP.fmtMoney(t.in_dispute_cents || 0), 'info'),
+      ].join(' ') + ` <span class="small muted">Terms: ${d.terms_days} days after sign-off · one reminder every ${d.cooldown_days} days</span>`;
+      if (!d.items.length) { box.innerHTML = '<p class="muted">Nobody owes anything here. 🎉</p>'; return; }
+      box.innerHTML = `<div class="table-scroll"><table><thead><tr><th>Project</th><th>Customer</th><th>Balance</th><th>Status</th><th>Reminders</th><th></th></tr></thead><tbody>
+        ${d.items.map((r) => `<tr data-pid="${r.project_id}">
+          <td>#${r.project_id} <span class="small muted">${HP.esc(r.service_type || '')}</span></td>
+          <td>${HP.esc(r.customer_name || '')}<div class="small muted">${HP.esc(r.customer_email || '')}</div></td>
+          <td><strong>${HP.fmtMoney(r.status === 'deposit_unpaid' ? r.deposit_cents : r.balance_cents)}</strong><div class="small muted">of ${HP.fmtMoney(r.price_cents)}</div></td>
+          <td>${HP.badge(CO_LABEL[r.status] + (r.days_overdue ? ' · ' + r.days_overdue + ' d' : ''), CO_KIND[r.status] || 'muted')}</td>
+          <td class="small">${r.reminders ? r.reminders + ' sent<br>last ' + HP.fmtDateTime(r.last_reminder_at) : '—'}</td>
+          <td><button class="btn btn-outline btn-sm co-remind" type="button" ${r.can_remind.ok ? '' : 'disabled'} title="${r.can_remind.ok ? 'Email the customer' : HP.esc(r.can_remind.reason)}">Send reminder</button></td></tr>`).join('')}
+        </tbody></table></div>`;
+      box.querySelectorAll('tr[data-pid]').forEach((tr) => {
+        const b = tr.querySelector('.co-remind');
+        if (b) b.addEventListener('click', async () => {
+          HP.busy(b, true, 'Sending…');
+          try { await HP.api('POST', `/collections/${tr.dataset.pid}/remind`, {}); HP.toast('Reminder sent.', 'ok'); renderCollections(); }
+          catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); HP.busy(b, false); }
         });
       });
     }
@@ -778,7 +858,7 @@
       if (!me) return;
       window.__perms = me.permissions || [];
       const TAB_AREA = { overview: 'finance', kpis: 'finance', clients: 'support', contractors: 'dispatch', projects: 'read', agenda: 'read', disputes: 'read',
-        payouts: 'finance', messages: 'support', campaigns: 'marketing', reports: 'finance', team: 'staff' };
+        payouts: 'finance', collections: 'finance', messages: 'support', campaigns: 'marketing', reports: 'finance', team: 'staff' };
       let first = null;
       document.querySelectorAll('#admin-tabs .tab').forEach((t) => {
         const need = TAB_AREA[t.dataset.tab];
@@ -1066,6 +1146,19 @@
       loadGaps();
       document.getElementById('verify-select').addEventListener('change', paintVerifyDetail);
       document.getElementById('verify-form').addEventListener('submit', submitVerify);
+      if ((window.__perms || []).includes('staff')) {
+        document.getElementById('tech-section').hidden = false;
+        document.getElementById('tech-form').addEventListener('submit', async (ev) => {
+          ev.preventDefault();
+          const btn = ev.target.querySelector('button[type=submit]');
+          HP.busy(btn, true, 'Adding…');
+          try {
+            await HP.api('POST', '/contractors/employees', { name: document.getElementById('tech-name').value.trim(), email: document.getElementById('tech-email').value.trim(), city: document.getElementById('tech-city').value.trim() });
+            HP.toast('Technician added. They set their password from the email link.', 'ok');
+            ev.target.reset(); loaded.contractors = false; loadContractorTab();
+          } catch (e) { HP.toast(HP.friendlyMessage(e), 'error'); } finally { HP.busy(btn, false); }
+        });
+      }
     }
 
     async function loadContractorPipeline() {
@@ -1089,7 +1182,7 @@
         box.innerHTML = `<div class="table-scroll"><table>
           <thead><tr><th>Contractor</th><th>City</th><th>Lifecycle</th><th class="num">Score</th><th class="num">Rating</th><th class="num">Jobs</th><th>Retention</th></tr></thead>
           <tbody>${contractorsCache.map((c) => `<tr>
-            <td><strong>${HP.esc(c.legal_name || c.user_name || '')}</strong><br><span class="small muted">${HP.esc(c.user_name || '')} · ${HP.esc(c.email || '')}</span></td>
+            <td><strong>${HP.esc(c.legal_name || c.user_name || '')}</strong> ${c.provider_type === 'employee' ? HP.badge('company technician', 'info') : ''}<br><span class="small muted">${HP.esc(c.user_name || '')} · ${HP.esc(c.email || '')}</span></td>
             <td>${HP.esc(c.city || '—')}</td>
             <td>${HP.badge(c.lifecycle || c.status, c.status === 'active' ? 'ok' : 'warn')}</td>
             <td class="num">${c.score || 0}</td>

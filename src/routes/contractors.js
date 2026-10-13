@@ -4,9 +4,12 @@ const multer = require('multer');
 const path = require('path');
 const { requireStaff, can } = require('../services/permissions');
 const db = require('../db');
-const { ah, authRequired, requireRole, isNonEmpty, failIfErrors } = require('../middleware');
+const { ah, authRequired, requireRole, isNonEmpty, isEmail, isPhone, failIfErrors } = require('../middleware');
 const { contractorLifecycle, contractorScore, retentionAtRisk } = require('../services/crm');
 const { auditLog } = require('../services/audit');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const { notify, shell } = require('../services/notify');
 
 const router = express.Router();
 
@@ -45,6 +48,10 @@ router.get('/me', authRequired, requireRole('contractor'), ah(async (req, res) =
 // Contractor: update own editable profile fields.
 router.patch('/me', authRequired, requireRole('contractor'), ah(async (req, res) => {
   const b = req.body || {};
+  const cur0 = await db.prepare('SELECT provider_type FROM contractors WHERE user_id = ?').get(req.user.id);
+  if (cur0 && cur0.provider_type === 'employee' && (b.license_number !== undefined || b.insurance_info !== undefined)) {
+    return res.status(403).json({ error: 'Your license and insurance are covered by the company and managed by an administrator.' });
+  }
   const errors = {};
   if (b.city !== undefined && !isNonEmpty(b.city, 120)) errors.city = 'City is invalid.';
   if (b.service_radius_miles !== undefined && !(Number(b.service_radius_miles) >= 1 && Number(b.service_radius_miles) <= 500)) {
@@ -72,6 +79,66 @@ router.patch('/me', authRequired, requireRole('contractor'), ah(async (req, res)
   await db.prepare(`UPDATE contractors SET ${sets.join(', ')} WHERE user_id = ?`).run(...vals);
   if (reverify) await auditLog(req.user.id, 'contractor.reverification_required', 'contractors', cur.id, 'License/insurance details changed by the contractor');
   res.json(await enriched(await db.prepare('SELECT * FROM contractors WHERE user_id = ?').get(req.user.id)));
+}));
+
+// ---- Owner: add a COMPANY TECHNICIAN (provider_type 'employee') ----
+// The company's own license/insurance cover them, so they start verified + background-checked; that is a
+// deliberate bypass of the per-person verification, which is why only an OWNER can do it and it is audited.
+// They are ASSIGNED jobs (no offer to accept) and are paid through payroll, so no per-job payable exists.
+// They sign in like any contractor (set a password from an emailed link).
+router.post('/employees', authRequired, requireStaff('staff'), ah(async (req, res) => {
+  const b = req.body || {};
+  const errors = {};
+  if (!isNonEmpty(b.name, 120)) errors.name = 'Name is required.';
+  if (!isEmail(b.email)) errors.email = 'A valid email is required.';
+  if (b.phone && !isPhone(b.phone)) errors.phone = 'Phone looks invalid.';
+  if (b.city && !isNonEmpty(b.city, 80)) errors.city = 'City is too long.';
+  if (b.specialties !== undefined && (!Array.isArray(b.specialties) || b.specialties.some(s => typeof s !== 'string'))) errors.specialties = 'A list of trades.';
+  if (failIfErrors(res, errors)) return;
+  const email = b.email.trim().toLowerCase();
+  if (await db.prepare('SELECT id FROM users WHERE email = ?').get(email)) return res.status(409).json({ error: 'That email already has an account.' });
+  const token = crypto.randomBytes(24).toString('hex');
+  const expires = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+  const hash = bcrypt.hashSync(crypto.randomBytes(24).toString('hex'), 10); // unknown until they set their own
+  let userId, contractorId;
+  await db.transaction(async (tx) => {
+    const u = await tx.prepare(
+      `INSERT INTO users (name, email, phone, password_hash, role, email_verified, reset_token, reset_expires) VALUES (?,?,?,?,'contractor',1,?,?)`
+    ).run(b.name.trim(), email, (b.phone || '').trim(), hash, token, expires);
+    userId = u.lastInsertRowid;
+    const k = await tx.prepare(
+      `INSERT INTO contractors (user_id, legal_name, city, specialties, license_verified, insurance_verified, background_check, status, provider_type)
+       VALUES (?,?,?,?,1,1,'passed','active','employee')`
+    ).run(userId, b.name.trim(), (b.city || '').trim() || null, JSON.stringify(b.specialties || []));
+    contractorId = k.lastInsertRowid;
+  });
+  await auditLog(req.user.id, 'contractor.employee_created', 'contractors', contractorId, `${email} — company technician, verification covered by the company`);
+  const link = `${process.env.PUBLIC_URL || 'http://localhost:3000'}/auth.html?reset=${token}`;
+  await notify({
+    to: email, subject: 'Your technician account at General Handyman Solutions',
+    html: shell('Welcome to the team', `Hi ${b.name.trim().split(' ')[0]}, your technician account is ready. Set your password within 24 hours:`, [['Set password', link]]),
+  }).catch(() => {});
+  res.status(201).json({ id: contractorId, user_id: userId, provider_type: 'employee', status: 'active' });
+}));
+
+// ---- Owner: convert between company technician and independent contractor ----
+router.patch('/:id/provider-type', authRequired, requireStaff('staff'), ah(async (req, res) => {
+  const type = (req.body || {}).provider_type;
+  if (!['contractor', 'employee'].includes(type)) return res.status(422).json({ errors: { provider_type: 'employee or contractor.' } });
+  const c = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(req.params.id);
+  if (!c) return res.status(404).json({ error: 'Contractor not found.' });
+  if (c.provider_type === type) return res.json({ id: c.id, provider_type: type });
+  if (type === 'employee') {
+    // Becoming payroll: an unpaid per-job payable would be orphaned.
+    const open = await db.prepare(`SELECT COUNT(*) c FROM contractor_payables WHERE contractor_id = ? AND status IN ('pending','approved')`).get(c.id);
+    if (Number(open.c) > 0) return res.status(409).json({ error: 'This contractor has unpaid payouts. Pay or cancel them before converting to a company technician.' });
+    await db.prepare(`UPDATE contractors SET provider_type = 'employee' WHERE id = ?`).run(c.id);
+  } else {
+    // The company's coverage ended with the employment: they must be verified on their own again.
+    await db.prepare(`UPDATE contractors SET provider_type = 'contractor', license_verified = 0, insurance_verified = 0, background_check = 'pending', status = 'pending' WHERE id = ?`).run(c.id);
+  }
+  await auditLog(req.user.id, 'contractor.provider_type_changed', 'contractors', c.id, `${c.provider_type} -> ${type}`);
+  res.json(await db.prepare('SELECT * FROM contractors WHERE id = ?').get(c.id));
 }));
 
 // ---- Contractor: upload / replace the profile photo ----

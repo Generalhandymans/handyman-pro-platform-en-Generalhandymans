@@ -22,6 +22,10 @@ async function customerBalanceCents(projectId) {
 // Idempotent: returns the existing payable if there is one. No contractor -> null.
 async function ensurePayable(project) {
   if (!project || project.contractor_id == null || !(project.contractor_cost_cents > 0)) return null;
+  // Company technicians are paid through payroll (outside this app): no per-job payable. Their
+  // contractor_cost_cents stays as the internal labor cost used for margin reporting.
+  const who = await db.prepare('SELECT provider_type FROM contractors WHERE id = ?').get(project.contractor_id);
+  if (who && who.provider_type === 'employee') return null;
   const existing = await db.prepare('SELECT * FROM contractor_payables WHERE project_id = ?').get(project.id);
   if (existing) return existing;
   const due = new Date(Date.now() + TERMS_DAYS() * 86400000).toISOString();

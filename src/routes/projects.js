@@ -191,6 +191,7 @@ router.get('/:id/recommendations', authRequired, requireStaff('dispatch'), ah(as
       parts: match.parts,
       strongest: match.explanation.strongest,
       weakest: match.explanation.weakest,
+      provider_type: contractor.provider_type || 'contractor', // dispatch needs to know who is a company technician
     })),
     meta: { eligible: ranked.length, active_total: contractors.length, ineligible },
   });
@@ -215,6 +216,26 @@ router.post('/:id/assign', authRequired, requireStaff('dispatch'), ah(async (req
     return res.status(409).json({ error: 'The deposit has not been paid yet. Offer the job after the deposit is recorded.' });
   }
   const expiresAt = new Date(Date.now() + offers.OFFER_TTL_MS).toISOString();
+  // Company technicians are ASSIGNED (no offer to accept); independent contractors are OFFERED the job.
+  const direct = (req.body || {}).direct === true;
+  if (direct && (c.provider_type || 'contractor') !== 'employee') {
+    return res.status(422).json({ error: 'Direct assignment is only for company technicians. Independent contractors receive an offer they can accept.' });
+  }
+  if (direct) {
+    await db.prepare(`UPDATE projects SET contractor_id = ?, contractor_status = 'accepted', stage = 'scheduled', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(c.id, p.id);
+    if (p.stage !== 'scheduled') await require('../services/events').stage(p.id, p.stage, 'scheduled', req.user.id);
+    await auditLog(req.user.id, 'project.assigned_direct', 'projects', p.id, `Project assigned directly to company technician #${c.id}`);
+    const cu2 = await db.prepare('SELECT name, email FROM users WHERE id = ?').get(c.user_id);
+    const job2 = await db.prepare('SELECT * FROM job_requests WHERE id = ?').get(p.job_request_id);
+    if (cu2 && cu2.email) {
+      await notify({
+        to: cu2.email,
+        subject: `New assignment — ${job2.service_type} (#${p.id})`,
+        html: shell('You were assigned a job', `Hi ${cu2.name.split(' ')[0]}, you were assigned a project; it is already on your schedule. Details are in your portal.`, []),
+      }).catch(() => {});
+    }
+    return res.json(await db.prepare('SELECT * FROM projects WHERE id = ?').get(p.id));
+  }
   await db.prepare(`UPDATE projects SET contractor_id = ?, contractor_status = 'offered', offer_expires_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
     .run(c.id, expiresAt, p.id);
   await auditLog(req.user.id, 'project.contractor_offered', 'projects', p.id, `Project offered to contractor #${c.id}`);

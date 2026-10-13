@@ -261,6 +261,7 @@ app.use('/api/reviews', require('./src/routes/reviews'));
 app.use('/api/referrals', require('./src/routes/referrals'));
 app.use('/api/payments', require('./src/routes/payments'));
 app.use('/api/payables', require('./src/routes/payables'));
+app.use('/api/collections', require('./src/routes/collections'));
 app.use('/api/sms', require('./src/routes/sms'));
 app.use('/api/ai', require('./src/routes/ai'));
 app.use('/api/disputes', require('./src/routes/disputes'));

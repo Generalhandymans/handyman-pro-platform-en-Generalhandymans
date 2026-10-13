@@ -16,7 +16,7 @@ router.get('/kpis', ah(async (req, res) => {
   const n = Number(req.query.days);
   const days = Number.isInteger(n) && n >= 7 && n <= 730 ? n : 30;
   const LIM = 20000;
-  const [jobs, quotes, projects, payments, sheets, payables, reviews, ms, disputes, visits, events] = await Promise.all([
+  const [jobs, quotes, projects, payments, sheets, payables, reviews, ms, disputes, visits, events, contractors] = await Promise.all([
     db.prepare(`SELECT id, customer_id, source, created_at FROM job_requests ORDER BY id DESC LIMIT ${LIM}`).all(),
     db.prepare(`SELECT id, job_request_id, status, customer_price_cents, sent_at, responded_at FROM quotes ORDER BY id DESC LIMIT ${LIM}`).all(),
     db.prepare(`SELECT id, job_request_id, contractor_id, stage, customer_price_cents, contractor_cost_cents, created_at, scheduled_start, scheduled_end FROM projects ORDER BY id DESC LIMIT ${LIM}`).all(),
@@ -28,10 +28,11 @@ router.get('/kpis', ah(async (req, res) => {
     db.prepare(`SELECT status, refund_cents, created_at, resolved_at FROM disputes`).all(),
     db.prepare(`SELECT outcome, created_at FROM visit_events`).all(),
     db.prepare(`SELECT entity, entity_id, type, data, created_at FROM events WHERE type IN ('project.stage','payment.paid') ORDER BY id DESC LIMIT ${LIM}`).all(),
+    db.prepare(`SELECT id, provider_type FROM contractors`).all(),
   ]);
   const milestoneCounts = Object.fromEntries(ms.map(r => [r.k, Number(r.c)]));
   res.json(require('../services/kpis').computeKpis(
-    { jobs, quotes, projects, payments, sheets, payables, reviews, milestoneCounts, disputes, visits, events }, { days }));
+    { jobs, quotes, projects, payments, sheets, payables, reviews, milestoneCounts, disputes, visits, events, contractors }, { days }));
 }));
 
 router.get('/overview', ah(async (req, res) => {

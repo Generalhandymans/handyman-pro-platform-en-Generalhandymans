@@ -2382,6 +2382,278 @@ test('customer project view: technician photo shown, phone and cost never', asyn
   assert.equal(pr.data.contractor_cost_cents, undefined, 'no cost leaks');
 });
 
+// A project the customer has fully signed off (balance = 35000 after the 15000 deposit).
+async function signedProject() {
+  const pid = await activeProject();
+  const ms = (await api('GET', `/api/projects/${pid}`, undefined, adminToken)).data.milestones;
+  for (const m of ms) { await api('POST', `/api/projects/${pid}/milestones/${m.id}/complete`, {}, contToken); await api('POST', `/api/projects/${pid}/milestones/${m.id}/approve`, { approved: true }, custToken); }
+  assert.equal((await api('POST', `/api/projects/${pid}/sign-off`, { signer_name: 'Test Customer', signature: 'data:image/png;base64,' + 'A'.repeat(1200), checklist: { work_complete: true, site_clean: true } }, custToken)).status, 201);
+  return pid;
+}
+const sqlDaysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 19).replace('T', ' ');
+
+test('REGRESSION: collections — classification, finance-only access, polite reminders (cool-down, never in dispute), bulk overdue, bounces', async () => {
+  const fin = await makeStaff('finance', 'col-fin@test.local');
+  const sup = await makeStaff('support', 'col-sup@test.local');
+  const dis = await makeStaff('dispatch', 'col-dis@test.local');
+  const list = async (qs = '') => (await api('GET', `/api/collections${qs}`, undefined, fin.token)).data;
+  const find = async (pid) => (await list()).items.find(i => i.project_id === pid);
+  const emails = (subjectLike) => db.prepare("SELECT * FROM email_log WHERE subject LIKE ? ORDER BY id DESC").all(subjectLike);
+
+  // access
+  for (const [who, token] of [['customer', custToken], ['contractor', contToken], ['support', sup.token], ['dispatch', dis.token]]) {
+    assert.equal((await api('GET', '/api/collections', undefined, token)).status, 403, `${who} cannot see collections`);
+    assert.equal((await api('POST', '/api/collections/1/remind', {}, token)).status, 403, `${who} cannot send reminders`);
+  }
+  assert.equal((await api('GET', '/api/collections')).status, 401);
+  assert.equal((await api('GET', '/api/collections', undefined, adminToken)).status, 200, 'the owner can');
+  assert.equal((await api('POST', '/api/collections/999999/remind', {}, fin.token)).status, 404);
+
+  // A: signed off, inside the terms -> "due"; then 20 days old -> "overdue"
+  const A = await signedProject();
+  let a = await find(A);
+  assert.equal(a.status, 'due');
+  assert.equal(a.balance_cents, 35000);
+  assert.equal(a.paid_cents, 15000);
+  assert.equal(a.can_remind.ok, true);
+  assert.equal(a.customer_email, 'cust@test.local');
+  assert.equal(a.contractor_cost_cents, undefined, 'finance sees what customers owe, never the margin through this screen');
+  await db.prepare('UPDATE completion_sheets SET signed_at = ? WHERE project_id = ?').run(sqlDaysAgo(20), A);
+  a = await find(A);
+  assert.equal(a.status, 'overdue');
+  assert.ok(a.days_overdue >= 12 && a.days_overdue <= 14, 'days overdue = 20 - 7 terms: ' + a.days_overdue);
+
+  // B: nothing signed -> not payable yet; C: signed but in dispute -> never
+  const B = await activeProject();
+  const b = await find(B);
+  assert.equal(b.status, 'not_ready');
+  assert.equal(b.can_remind.ok, false);
+  assert.equal((await api('POST', `/api/collections/${B}/remind`, {}, fin.token)).status, 409);
+  const C = await signedProject();
+  await api('POST', '/api/disputes', { project_id: C, reason: 'quality', description: 'The finish cracked a week later.' }, custToken);
+  await db.prepare('UPDATE completion_sheets SET signed_at = ? WHERE project_id = ?').run(sqlDaysAgo(30), C);
+  const c = await find(C);
+  assert.equal(c.status, 'in_dispute', 'a dispute beats "overdue"');
+  const refused = await api('POST', `/api/collections/${C}/remind`, {}, fin.token);
+  assert.equal(refused.status, 409);
+  assert.match(refused.data.error, /dispute/);
+
+  // reminder to A: sent once, logged, audited; the second is refused by the cool-down
+  const before = (await emails('Your final balance for project #' + A + '%')).length;
+  const sent = await api('POST', `/api/collections/${A}/remind`, {}, fin.token);
+  assert.equal(sent.status, 200);
+  assert.equal(sent.data.amount_cents, 35000);
+  const mail = (await emails('Your final balance for project #' + A + '%'));
+  assert.equal(mail.length, before + 1);
+  assert.match(mail[0].subject, /\$350\.00/);
+  assert.equal(mail[0].to_email, 'cust@test.local');
+  const again = await api('POST', `/api/collections/${A}/remind`, {}, fin.token);
+  assert.equal(again.status, 409);
+  assert.match(again.data.error, /next one can go out on \d{4}-\d{2}-\d{2}/);
+  assert.equal((await emails('Your final balance for project #' + A + '%')).length, before + 1, 'no second email');
+  a = await find(A);
+  assert.equal(a.reminders, 1);
+  assert.equal(a.can_remind.ok, false);
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'collections.reminder' AND entity_id = ?").get(A));
+  assert.ok(await db.prepare("SELECT id FROM events WHERE type = 'collection.reminder' AND entity_id = ?").get(A));
+  await db.prepare('UPDATE collection_reminders SET created_at = ? WHERE project_id = ?').run(sqlDaysAgo(4), A);
+  assert.equal((await find(A)).can_remind.ok, true, 'after the cool-down it can be sent again');
+
+  // D: deposit never paid (abandoned card payment) -> its own status and wording
+  let D;
+  await withFakeStripe(async () => { D = await acceptWithStripe(); })();
+  const d = await find(D);
+  assert.equal(d.status, 'deposit_unpaid');
+  assert.equal(d.deposit_cents, 15000);
+  const dep = await api('POST', `/api/collections/${D}/remind`, {}, fin.token);
+  assert.equal(dep.status, 200);
+  assert.equal(dep.data.amount_cents, 15000, 'a deposit reminder asks for the deposit, not the whole price');
+  assert.equal((await emails('Your deposit for project #' + D + '%')).length, 1);
+
+  // bulk: only OVERDUE, eligible ones. A was just reminded again below; E is a fresh overdue one.
+  const E = await signedProject();
+  await db.prepare('UPDATE completion_sheets SET signed_at = ? WHERE project_id = ?').run(sqlDaysAgo(25), E);
+  await api('POST', `/api/collections/${A}/remind`, {}, fin.token); // A back inside its cool-down
+  const bulk = await api('POST', '/api/collections/remind-overdue', {}, fin.token);
+  assert.equal(bulk.status, 200);
+  assert.equal(bulk.data.sent, 1, 'only E goes out');
+  assert.ok(bulk.data.skipped.some(s => s.project_id === A && /recently/.test(s.reason)), 'A is skipped by the cool-down');
+  assert.equal((await emails('Your final balance for project #' + E + '%')).length, 1);
+  assert.equal((await emails('Your final balance for project #' + C + '%')).length, 0, 'never during a dispute');
+  assert.equal((await emails('Your final balance for project #' + B + '%')).length, 0, 'never before it can be paid');
+  assert.equal((await api('POST', '/api/collections/remind-overdue', {}, sup.token)).status, 403);
+
+  // totals and filters
+  const all = await list();
+  assert.ok(all.totals.overdue_cents >= 70000 && all.totals.in_dispute_cents >= 35000 && all.totals.deposit_unpaid_cents >= 15000);
+  assert.ok(all.items.every(i => i.balance_cents >= 100));
+  assert.equal(all.items[0].status, 'overdue', 'most urgent first');
+  assert.ok((await list('?status=in_dispute')).items.every(i => i.status === 'in_dispute'));
+  assert.equal(all.terms_days, 7);
+
+  // paying clears it from the list
+  assert.equal((await api('POST', '/api/payments', { project_id: E, kind: 'final', amount_cents: 35000 }, adminToken)).status, 201);
+  assert.equal(await find(E), undefined, 'a settled project is no longer owed');
+
+  // an address that bounced is never mailed again; a plain promo unsubscribe does not block money reminders
+  const unsub = require('../src/services/unsubscribe');
+  await db.prepare('UPDATE collection_reminders SET created_at = ? WHERE project_id = ?').run(sqlDaysAgo(10), A);
+  await unsub.suppress('cust@test.local', 'unsubscribed');
+  assert.equal((await api('POST', `/api/collections/${A}/remind`, {}, fin.token)).status, 200, 'a marketing opt-out does not stop a balance reminder');
+  await db.prepare('UPDATE collection_reminders SET created_at = ? WHERE project_id = ?').run(sqlDaysAgo(10), A);
+  await db.prepare("DELETE FROM email_suppressions WHERE email = 'cust@test.local'").run();
+  await unsub.suppress('cust@test.local', 'sendgrid:bounce');
+  const bounced = await api('POST', `/api/collections/${A}/remind`, {}, fin.token);
+  assert.equal(bounced.status, 502);
+  assert.match(bounced.data.error, /bounced/);
+  await db.prepare("DELETE FROM email_suppressions WHERE email = 'cust@test.local'").run();
+});
+
+// Company technician: created by the owner, signs in through the emailed link.
+async function makeEmployee(email, name = 'Own Tech') {
+  const r = await api('POST', '/api/contractors/employees', { name, email, city: 'Napa', specialties: ['painting'] }, adminToken);
+  assert.equal(r.status, 201, 'create technician');
+  const u = await db.prepare('SELECT reset_token FROM users WHERE email = ?').get(email);
+  assert.equal((await api('POST', '/api/auth/reset', { token: u.reset_token, password: 'TechPass123!' })).status, 200);
+  const lg = await api('POST', '/api/auth/login', { email, password: 'TechPass123!' });
+  assert.equal(lg.status, 200);
+  // Profile photo: our assign gate requires one before ANY assignment (the customer sees who knocks).
+  const pform = new FormData();
+  pform.append('photo', new Blob([Buffer.from('fake tech photo')], { type: 'image/jpeg' }), 'tech.jpg');
+  assert.equal((await api('POST', '/api/contractors/me/photo', undefined, lg.data.token, pform)).status, 201);
+  return { id: r.data.id, token: lg.data.token };
+}
+
+test('REGRESSION: company technicians — owner-only creation, direct assignment, no per-job payout, protected verification', async () => {
+  const sup = await makeStaff('support', 'emp-sup@test.local');
+  const dis = await makeStaff('dispatch', 'emp-dis@test.local');
+  const body = { name: 'Eva Technician', email: 'eva.tech@test.local', city: 'Napa', specialties: ['painting'] };
+  // creation: owners only
+  for (const [who, token] of [['support', sup.token], ['dispatch', dis.token], ['customer', custToken], ['contractor', contToken]]) {
+    assert.equal((await api('POST', '/api/contractors/employees', body, token)).status, 403, `${who} cannot add technicians`);
+  }
+  assert.equal((await api('POST', '/api/contractors/employees', body)).status, 401);
+  assert.equal((await api('POST', '/api/contractors/employees', { ...body, email: 'nope' }, adminToken)).status, 422);
+  assert.equal((await api('POST', '/api/contractors/employees', { ...body, name: '' }, adminToken)).status, 422);
+  assert.equal((await api('POST', '/api/contractors/employees', { ...body, email: 'cust@test.local' }, adminToken)).status, 409, 'an existing account cannot be reused');
+
+  const eva = await makeEmployee('eva.tech@test.local', 'Eva Technician');
+  const row = await db.prepare('SELECT * FROM contractors WHERE id = ?').get(eva.id);
+  assert.equal(row.provider_type, 'employee');
+  assert.equal(row.status, 'active');
+  assert.equal(row.license_verified, 1);
+  assert.equal(row.insurance_verified, 1);
+  assert.equal(row.background_check, 'passed');
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'contractor.employee_created' AND entity_id = ?").get(eva.id), 'the verification bypass is audited');
+  const me = await api('GET', '/api/auth/me', undefined, eva.token);
+  assert.equal(me.data.role, 'contractor');
+  assert.equal(me.data.contractor.provider_type, 'employee');
+  assert.equal(me.data.contractor.status, 'active');
+
+  // self-signup can never create an employee
+  const selfSign = await api('POST', '/api/auth/signup/contractor', { name: 'Sneaky', email: 'sneaky@test.local', phone: '555-818-1919', password: 'Contractor123!', legal_name: 'S LLC', city: 'X', provider_type: 'employee' });
+  assert.equal((await db.prepare('SELECT provider_type, status FROM contractors WHERE user_id = ?').get(selfSign.data.user.id)).provider_type, 'contractor');
+
+  // direct assignment: only for technicians; an independent contractor still gets an offer
+  const fp = await freshProject();
+  const bad = await api('POST', `/api/projects/${fp.projectId}/assign`, { contractor_id: contractorId, direct: true }, adminToken);
+  assert.equal(bad.status, 422, 'direct assignment is not for independent contractors');
+  const asg = await api('POST', `/api/projects/${fp.projectId}/assign`, { contractor_id: eva.id, direct: true }, adminToken);
+  assert.equal(asg.status, 200);
+  assert.equal(asg.data.contractor_status, 'accepted', 'no offer to accept');
+  assert.equal(asg.data.stage, 'scheduled');
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'project.assigned_direct' AND entity_id = ?").get(fp.projectId));
+  const tl = (await api('GET', `/api/projects/${fp.projectId}/timeline`, undefined, adminToken)).data.filter(e => e.type === 'project.stage').map(e => e.data.to);
+  assert.deepEqual(tl, ['assigned', 'scheduled'], 'the timeline shows the assignment');
+  // the technician can work the job like any contractor
+  assert.equal((await api('POST', `/api/projects/${fp.projectId}/on-my-way`, {}, eva.token)).status, 200);
+  assert.equal((await api('PATCH', `/api/projects/${fp.projectId}/stage`, { stage: 'in_progress' }, eva.token)).status, 200);
+  assert.equal((await api('GET', `/api/projects/${fp.projectId}`, undefined, eva.token)).data.customer_price_cents, undefined, 'a technician never sees the customer price either');
+  // and cannot touch another contractor's job
+  const other = await activeProject();
+  assert.equal((await api('PATCH', `/api/projects/${other}/stage`, { stage: 'review' }, eva.token)).status, 403);
+
+  // an independent contractor is still OFFERED (needs to accept); an offer to a technician also works
+  const offered = await freshProject();
+  const off = await api('POST', `/api/projects/${offered.projectId}/assign`, { contractor_id: contractorId }, adminToken);
+  assert.equal(off.data.contractor_status, 'offered');
+
+  // no per-job payable for the technician; the contractor control project DOES get one
+  assert.equal((await api('PATCH', `/api/projects/${fp.projectId}/stage`, { stage: 'completed', force: true }, adminToken)).status, 200);
+  assert.equal(Number((await db.prepare('SELECT COUNT(*) c FROM contractor_payables WHERE project_id = ?').get(fp.projectId)).c), 0, 'payroll, not a payable');
+  const ctl = await activeProject();
+  await api('PATCH', `/api/projects/${ctl}/stage`, { stage: 'completed', force: true }, adminToken);
+  assert.equal(Number((await db.prepare('SELECT COUNT(*) c FROM contractor_payables WHERE project_id = ?').get(ctl)).c), 1, 'an independent contractor is paid per job');
+  assert.deepEqual((await api('GET', '/api/payables/mine', undefined, eva.token)).data.payables, []);
+  const gen = await api('POST', '/api/payables/generate', {}, adminToken);
+  assert.equal(Number((await db.prepare('SELECT COUNT(*) c FROM contractor_payables WHERE project_id = ?').get(fp.projectId)).c), 0, 'the backfill does not create one either');
+
+  // their license/insurance belong to the company: they cannot edit (and so cannot void) them
+  assert.equal((await api('PATCH', '/api/contractors/me', { license_number: 'CSLB-1' }, eva.token)).status, 403);
+  assert.equal((await api('PATCH', '/api/contractors/me', { insurance_info: 'x' }, eva.token)).status, 403);
+  const city = await api('PATCH', '/api/contractors/me', { city: 'Sonoma' }, eva.token);
+  assert.equal(city.status, 200);
+  assert.equal(city.data.status, 'active');
+  assert.equal(city.data.provider_type, 'employee', 'editing the profile never changes the type');
+
+  // dispatch sees the type when choosing who to send
+  const recs = await api('GET', `/api/projects/${asg.data.id}/recommendations`, undefined, dis.token);
+  assert.equal(recs.status, 200);
+  assert.ok(JSON.stringify(recs.data).includes('employee'), 'recommendations show who is a company technician');
+
+  // KPIs compare the two
+  const k = await api('GET', '/api/reports/kpis?days=30', undefined, adminToken);
+  assert.ok(k.data.providers.employee.completed >= 1);
+  assert.ok(k.data.providers.contractor.completed >= 1);
+  assert.equal(typeof k.data.providers.employee.margin_pct, 'number');
+});
+
+test('REGRESSION: converting between company technician and contractor — owner only, blocked by unpaid payouts, coverage ends with employment', async () => {
+  // a fresh independent contractor with an unpaid payout
+  const k = await api('POST', '/api/auth/signup/contractor', { name: 'Convert Me', email: 'convertme@test.local', phone: '555-919-2020', password: 'Contractor123!', legal_name: 'CM LLC', city: 'Napa' });
+  const ctok = k.data.token;
+  const cid = (await api('GET', '/api/contractors/me', undefined, ctok)).data.id;
+  await api('PATCH', `/api/contractors/${cid}/verify`, { license_verified: true, insurance_verified: true, background_check: 'passed' }, adminToken);
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { status: 'active' }, adminToken)).status, 200);
+  // Profile photo: our assign gate requires one before ANY assignment.
+  const cform = new FormData();
+  cform.append('photo', new Blob([Buffer.from('fake convert photo')], { type: 'image/jpeg' }), 'conv.jpg');
+  assert.equal((await api('POST', '/api/contractors/me/photo', undefined, ctok, cform)).status, 201);
+  const fp = await freshProject();
+  assert.equal((await api('POST', `/api/projects/${fp.projectId}/assign`, { contractor_id: cid }, adminToken)).status, 200);
+  assert.equal((await api('POST', `/api/projects/${fp.projectId}/contractor-respond`, { accept: true, terms_accepted: true }, ctok)).status, 200);
+  await api('PATCH', `/api/projects/${fp.projectId}/stage`, { stage: 'completed', force: true }, adminToken);
+  const pb = (await api('GET', '/api/payables', undefined, adminToken)).data.payables.find(r => r.project_id === fp.projectId);
+  assert.equal(pb.status, 'pending');
+
+  const dis = await makeStaff('dispatch', 'conv-dis@test.local');
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/provider-type`, { provider_type: 'employee' }, dis.token)).status, 403, 'owner only');
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/provider-type`, { provider_type: 'robot' }, adminToken)).status, 422);
+  assert.equal((await api('PATCH', '/api/contractors/999999/provider-type', { provider_type: 'employee' }, adminToken)).status, 404);
+  const blocked = await api('PATCH', `/api/contractors/${cid}/provider-type`, { provider_type: 'employee' }, adminToken);
+  assert.equal(blocked.status, 409, 'an unpaid payout would be orphaned');
+  assert.match(blocked.data.error, /unpaid payouts/);
+  assert.equal((await api('POST', `/api/payables/${pb.id}/cancel`, { notes: 'moving to payroll' }, adminToken)).status, 200);
+  const toEmp = await api('PATCH', `/api/contractors/${cid}/provider-type`, { provider_type: 'employee' }, adminToken);
+  assert.equal(toEmp.status, 200);
+  assert.equal(toEmp.data.provider_type, 'employee');
+  assert.equal(toEmp.data.status, 'active', 'converting to employee keeps them working');
+
+  // and back: the company's coverage ends, so they need their own verification again
+  const back = await api('PATCH', `/api/contractors/${cid}/provider-type`, { provider_type: 'contractor' }, adminToken);
+  assert.equal(back.status, 200);
+  assert.equal(back.data.provider_type, 'contractor');
+  assert.equal(back.data.status, 'pending');
+  assert.equal(back.data.license_verified, 0);
+  assert.equal(back.data.insurance_verified, 0);
+  assert.equal(back.data.background_check, 'pending');
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/verify`, { status: 'active' }, adminToken)).status, 422, 'cannot go active again without re-verifying');
+  assert.ok(await db.prepare("SELECT id FROM admin_audit WHERE action = 'contractor.provider_type_changed' AND entity_id = ?").get(cid));
+  // converting to the type it already has is a no-op
+  assert.equal((await api('PATCH', `/api/contractors/${cid}/provider-type`, { provider_type: 'contractor' }, adminToken)).status, 200);
+});
+
+
 after(async () => {
   // The server keeps the process alive, so exit explicitly — but give the reporter a moment first:
   // exiting immediately dropped the result of the LAST test from the report.

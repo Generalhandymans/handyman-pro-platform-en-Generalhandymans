@@ -56,7 +56,7 @@ Es lo único que mira cómo se ve. Usa la tarjeta de prueba de Stripe `4242 4242
 1. [ ] Invitado: crea una solicitud con fotos y marca la casilla de SMS → ve el estimado.
 2. [ ] Crea cuenta (verifica el correo) → la solicitud queda en tu cuenta.
 3. [ ] Admin: crea y envía la cotización → el cliente la acepta (con términos) y **paga el depósito** → el trabajo pasa a *deposit paid*.
-4. [ ] Admin (despacho): asigna un contratista → el contratista acepta → agenda una visita → llega el SMS de confirmación.
+4. [ ] Admin (despacho): asigna un contratista → el contratista acepta → agenda una visita → llega el SMS de confirmación. **Repite con un técnico propio** (owner: *Contractors → Add a company technician*): se le asigna directo, sin oferta, y al completarse no aparece pago en *Payouts*.
 5. [ ] Contratista: «On my way» → llega el SMS; sube fotos; completa hitos → el cliente los aprueba.
 6. [ ] Cliente: **firma la hoja de cierre** (con el dedo en el móvil) → **paga el saldo final**.
 7. [ ] Admin (finanzas): el pago al contratista aparece en *Payouts* → apruébalo y márcalo pagado.
@@ -74,4 +74,4 @@ Es lo único que mira cómo se ve. Usa la tarjeta de prueba de Stripe `4242 4242
 - [ ] Plan de reversa: cómo pausar nuevas solicitudes y a quién avisas.
 
 ## 6. Lo que este repositorio todavía NO tiene
-Cuadrillas/técnicos propios como entidad, WhatsApp, mover el dinero a contratistas desde la app (Stripe Connect), PDF de la hoja de cierre, cola de trabajos externa (hoy corre en el proceso), antibots, CSP, paginación, español en la interfaz, descuento por referido aplicado al precio. Ver `AUDIT_CHANGES.md` («NO incluido»).
+Cuadrillas (equipos de varios técnicos) y nómina de técnicos propios (hoy solo existe el tipo «técnico propio»), WhatsApp, mover el dinero a contratistas desde la app (Stripe Connect), PDF de la hoja de cierre, cola de trabajos externa (hoy corre en el proceso), antibots, CSP, paginación, español en la interfaz, descuento por referido aplicado al precio. Ver `AUDIT_CHANGES.md` («NO incluido»).

@@ -674,11 +674,28 @@ if (!columnExists('contractors', 'lat')) {
   db.exec(`ALTER TABLE contractors ADD COLUMN lat REAL`);
   db.exec(`ALTER TABLE contractors ADD COLUMN lng REAL`);
 }
+if (!columnExists('contractors', 'provider_type')) {
+  // 'contractor' = independent (offers, own license/insurance, paid per job); 'employee' = company technician.
+  db.exec(`ALTER TABLE contractors ADD COLUMN provider_type TEXT NOT NULL DEFAULT 'contractor' CHECK (provider_type IN ('contractor','employee'))`);
+}
 db.exec(`CREATE TABLE IF NOT EXISTS email_suppressions (
   email TEXT PRIMARY KEY,
   reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
+
+// Payment reminders sent to customers (cool-down + audit of who asked for what).
+db.exec(`CREATE TABLE IF NOT EXISTS collection_reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  sent_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  to_email TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  amount_cents INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('sent','failed')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_collection_reminders_project ON collection_reminders(project_id)`);
 
 // Business events: WHEN things happened (project stage changes, payments confirmed). The KPIs use this for
 // accurate completion dates and cycle times; it is also a per-project timeline. Never blocks a flow.

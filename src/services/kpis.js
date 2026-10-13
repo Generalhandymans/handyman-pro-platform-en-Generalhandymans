@@ -204,9 +204,24 @@ function computeKpis(d, opts = {}) {
     note: 'Only visits that someone logged are counted; a low "logged" number means the team is not recording outcomes yet.',
   };
 
+  // ---------- company technicians vs independent contractors ----------
+  const typeOf = new Map((d.contractors || []).map(c => [c.id, c.provider_type || 'contractor']));
+  const providers = { employee: { active: 0, completed: 0, revenue_cents: 0, margin_cents: 0 }, contractor: { active: 0, completed: 0, revenue_cents: 0, margin_cents: 0 }, unassigned: { active: 0 } };
+  for (const p of d.projects) {
+    if (!ACTIVE.has(p.stage)) continue;
+    if (p.contractor_id == null) providers.unassigned.active++;
+    else providers[typeOf.get(p.contractor_id) === 'employee' ? 'employee' : 'contractor'].active++;
+  }
+  for (const p of doneByDate) {
+    if (p.contractor_id == null) continue;
+    const g = providers[typeOf.get(p.contractor_id) === 'employee' ? 'employee' : 'contractor'];
+    g.completed++; g.revenue_cents += Number(p.customer_price_cents); g.margin_cents += Number(p.customer_price_cents) - Number(p.contractor_cost_cents || 0);
+  }
+  for (const g of [providers.employee, providers.contractor]) g.margin_pct = pct(g.margin_cents, g.revenue_cents);
+
   return {
     window: { days, from: from.toISOString(), to: now.toISOString() },
-    funnel, speed: speedOut, sources, money, receivables: ar, payables, quality, capacity, visits,
+    funnel, speed: speedOut, sources, money, receivables: ar, payables, quality, capacity, visits, providers,
     not_tracked: [
       'NPS (only a 1–5 review rating exists)',
       'Customer acquisition cost (marketing spend is not stored)', 'Contractor utilization (no availability data)',

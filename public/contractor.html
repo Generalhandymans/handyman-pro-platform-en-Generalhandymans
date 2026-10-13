@@ -199,6 +199,14 @@
       loadProfile();
       loadPhotoCard();
       loadJobs();
+      // Company technicians are paid through payroll: no per-job payouts to show.
+      try {
+        const c = await HP.api('GET', '/contractors/me');
+        if (c && c.provider_type === 'employee') {
+          const t = document.querySelector('#portal-tabs .tab[data-tab="payouts"]');
+          if (t) t.hidden = true;
+        }
+      } catch (e) { /* profile loads anyway via loadPhotoCard */ }
       HPMsg.mountMessages(document.getElementById('messages-box'), {
         fetchProjects: async () => {
           const ps = await HP.api('GET', '/projects');
