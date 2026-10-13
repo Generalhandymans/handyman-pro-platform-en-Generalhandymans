@@ -100,6 +100,18 @@ router.get('/', authRequired, ah(async (req, res) => {
   res.json(await Promise.all(rows.map(r => withDetails(r, req.user.role, req.user))));
 }));
 
+// ---- Staff: the project's timeline (stage changes, confirmed payments) ----
+router.get('/:id/timeline', authRequired, requireStaff('read'), ah(async (req, res) => {
+  const p = await db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Project not found.' });
+  const ids = (await db.prepare(`SELECT id FROM payments WHERE project_id = ?`).all(p.id)).map(r => r.id);
+  const rows = await db.prepare(
+    `SELECT e.id, e.entity, e.entity_id, e.type, e.data, e.created_at, u.name AS actor FROM events e LEFT JOIN users u ON u.id = e.actor_id
+     WHERE (e.entity = 'project' AND e.entity_id = ?) ${ids.length ? `OR (e.entity = 'payment' AND e.entity_id IN (${ids.map(() => '?').join(',')}))` : ''} ORDER BY e.id`
+  ).all(p.id, ...ids);
+  res.json(rows.map(r => ({ ...r, data: r.data ? JSON.parse(r.data) : null })));
+}));
+
 // ---- Admin: agenda for a date window (default: today + 6 days) ----
 // Active projects with their dates, overlap warnings per contractor, and the
 // list that still needs a date. MUST stay above '/:id'.
@@ -347,6 +359,7 @@ router.patch('/:id/stage', authRequired, ah(async (req, res) => {
   }
 
   await db.prepare(`UPDATE projects SET stage = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(stage, p.id);
+  if (p.stage !== stage) await require('../services/events').stage(p.id, p.stage, stage, req.user.id);
   const jobStatus = { scheduled: 'scheduled', in_progress: 'in_progress', review: 'review', completed: 'completed', cancelled: 'cancelled' }[stage];
   if (jobStatus) await db.prepare(`UPDATE job_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(jobStatus, p.job_request_id);
 

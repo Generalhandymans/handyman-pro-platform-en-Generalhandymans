@@ -49,19 +49,33 @@ function computeKpis(d, opts = {}) {
   for (const q of d.quotes) { (quotesByJob.get(q.job_request_id) || quotesByJob.set(q.job_request_id, []).get(q.job_request_id)).push(q); }
   const projByJob = new Map();
   for (const p of d.projects) if (!projByJob.has(p.job_request_id)) projByJob.set(p.job_request_id, p);
+  // ---- business events: exact completion dates and the moment a payment was CONFIRMED ----
+  const evData = (e) => { if (e.data == null) return null; if (typeof e.data === 'object') return e.data; try { return JSON.parse(e.data); } catch (x) { return null; } };
+  const completedAt = new Map();   // project id -> time of the LAST move to 'completed'
+  const paidAt = new Map();        // payment id -> time Stripe/the team confirmed it
+  for (const e of (d.events || [])) {
+    const t = toDate(e.created_at); if (!t) continue;
+    if (e.type === 'project.stage' && e.entity === 'project') {
+      const x = evData(e);
+      if (x && x.to === 'completed' && (!completedAt.has(e.entity_id) || t > completedAt.get(e.entity_id))) completedAt.set(e.entity_id, t);
+    } else if (e.type === 'payment.paid' && e.entity === 'payment') paidAt.set(e.entity_id, t);
+  }
+
   const depositByProject = new Map();
   for (const p of d.payments) {
     if (p.kind === 'deposit' && OK_PAY.has(p.status)) {
+      const when = paidAt.get(p.id) || toDate(p.created_at);
       const prev = depositByProject.get(p.project_id);
-      if (!prev || toDate(p.created_at) < toDate(prev.created_at)) depositByProject.set(p.project_id, p);
+      if (!prev || when < prev.when) depositByProject.set(p.project_id, { ...p, when });
     }
   }
   const sheetByProject = new Map(d.sheets.map(s => [s.project_id, s]));
 
+
   // ---------- funnel + speed: cohort = requests created in the window ----------
   const cohort = d.jobs.filter(j => inWin(j.created_at));
   const f = { requests: cohort.length, quoted: 0, accepted: 0, deposit_paid: 0, completed: 0 };
-  const sp = { request_to_quote: [], quote_to_accept: [], accept_to_deposit: [], project_to_signoff: [] };
+  const sp = { request_to_quote: [], quote_to_accept: [], accept_to_deposit: [], project_to_signoff: [], start_to_complete: [] };
   const bySource = new Map();
   for (const j of cohort) {
     const qs = (quotesByJob.get(j.id) || []).filter(q => q.sent_at);
@@ -77,7 +91,7 @@ function computeKpis(d, opts = {}) {
       f.accepted++;
       sp.quote_to_accept.push(hoursBetween(acc.sent_at, acc.responded_at));
     }
-    if (dep) { f.deposit_paid++; sp.accept_to_deposit.push(hoursBetween(proj.created_at, dep.created_at)); }
+    if (dep) { f.deposit_paid++; sp.accept_to_deposit.push(hoursBetween(proj.created_at, dep.when)); }
     if (proj && proj.stage === 'completed') f.completed++;
     if (proj && sheetByProject.has(proj.id)) sp.project_to_signoff.push(hoursBetween(proj.created_at, sheetByProject.get(proj.id).signed_at));
     const src = j.source || 'unknown';
@@ -94,7 +108,6 @@ function computeKpis(d, opts = {}) {
     },
     note: 'Recent requests are still moving through the funnel, so the later rates rise as the cohort matures.',
   };
-  const speedOut = Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, speed(v)]));
   const sources = [...bySource.values()].map(s => ({ ...s, accept_rate: pct(s.accepted, s.requests) })).sort((a, b) => b.requests - a.requests);
 
   // ---------- money ----------
@@ -107,6 +120,10 @@ function computeKpis(d, opts = {}) {
   const winProjects = d.projects.filter(p => inWin(p.created_at) && p.stage !== 'cancelled');
   const sumP = (rows, k) => rows.reduce((a, p) => a + Number(p[k] || 0), 0);
   const doneProjects = winProjects.filter(p => p.stage === 'completed');
+  // By the EXACT completion date (needs the events log): what finished in the window, whenever it started.
+  const doneByDate = d.projects.filter(p => p.stage === 'completed' && completedAt.has(p.id) && inWin(completedAt.get(p.id)));
+  for (const p of doneByDate) sp.start_to_complete.push(hoursBetween(p.created_at, completedAt.get(p.id)));
+  const dRev = sumP(doneByDate, 'customer_price_cents'), dCost = sumP(doneByDate, 'contractor_cost_cents');
   const money = {
     collected_cents: collected, refunds_cents: refunds,
     by_kind: { deposit: sumKind('deposit'), milestone: sumKind('milestone'), final: sumKind('final') },
@@ -115,8 +132,12 @@ function computeKpis(d, opts = {}) {
     booked_margin_pct: pct(sumP(winProjects, 'customer_price_cents') - sumP(winProjects, 'contractor_cost_cents'), sumP(winProjects, 'customer_price_cents')),
     completed_margin_cents: sumP(doneProjects, 'customer_price_cents') - sumP(doneProjects, 'contractor_cost_cents'),
     completed_margin_pct: pct(sumP(doneProjects, 'customer_price_cents') - sumP(doneProjects, 'contractor_cost_cents'), sumP(doneProjects, 'customer_price_cents')),
-    note: 'Margin cohorts are projects STARTED in the window. Collected = deposits + milestones + final − refunds, by payment date.',
+    completed_by_date: { count: doneByDate.length, revenue_cents: dRev, margin_cents: dRev - dCost, margin_pct: pct(dRev - dCost, dRev) },
+    note: '"Margin (completed)" uses projects STARTED in the window; "completed by date" uses the exact completion date from the events log (projects completed before the log existed are not counted). Collected = deposits + milestones + final − refunds, by payment date.',
   };
+
+  // Speed medians are summarized HERE, after every bucket (incl. start_to_complete from the events log) is filled.
+  const speedOut = Object.fromEntries(Object.entries(sp).map(([k, v]) => [k, speed(v)]));
 
   // ---------- receivables (customers who still owe us) ----------
   const net = netPaidByProject(d.payments);

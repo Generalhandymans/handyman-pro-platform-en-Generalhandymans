@@ -16,21 +16,22 @@ router.get('/kpis', ah(async (req, res) => {
   const n = Number(req.query.days);
   const days = Number.isInteger(n) && n >= 7 && n <= 730 ? n : 30;
   const LIM = 20000;
-  const [jobs, quotes, projects, payments, sheets, payables, reviews, ms, disputes, visits] = await Promise.all([
+  const [jobs, quotes, projects, payments, sheets, payables, reviews, ms, disputes, visits, events] = await Promise.all([
     db.prepare(`SELECT id, customer_id, source, created_at FROM job_requests ORDER BY id DESC LIMIT ${LIM}`).all(),
     db.prepare(`SELECT id, job_request_id, status, customer_price_cents, sent_at, responded_at FROM quotes ORDER BY id DESC LIMIT ${LIM}`).all(),
     db.prepare(`SELECT id, job_request_id, contractor_id, stage, customer_price_cents, contractor_cost_cents, created_at, scheduled_start, scheduled_end FROM projects ORDER BY id DESC LIMIT ${LIM}`).all(),
-    db.prepare(`SELECT project_id, kind, amount_cents, status, created_at FROM payments ORDER BY id DESC LIMIT ${LIM}`).all(),
+    db.prepare(`SELECT id, project_id, kind, amount_cents, status, created_at FROM payments ORDER BY id DESC LIMIT ${LIM}`).all(),
     db.prepare(`SELECT project_id, signed_at FROM completion_sheets`).all(),
     db.prepare(`SELECT status, payable_cents, due_at, paid_at FROM contractor_payables`).all(),
     db.prepare(`SELECT rating, created_at FROM reviews`).all(),
     db.prepare(`SELECT customer_approval AS k, COUNT(*) AS c FROM milestones GROUP BY customer_approval`).all(),
     db.prepare(`SELECT status, refund_cents, created_at, resolved_at FROM disputes`).all(),
     db.prepare(`SELECT outcome, created_at FROM visit_events`).all(),
+    db.prepare(`SELECT entity, entity_id, type, data, created_at FROM events WHERE type IN ('project.stage','payment.paid') ORDER BY id DESC LIMIT ${LIM}`).all(),
   ]);
   const milestoneCounts = Object.fromEntries(ms.map(r => [r.k, Number(r.c)]));
   res.json(require('../services/kpis').computeKpis(
-    { jobs, quotes, projects, payments, sheets, payables, reviews, milestoneCounts, disputes, visits }, { days }));
+    { jobs, quotes, projects, payments, sheets, payables, reviews, milestoneCounts, disputes, visits, events }, { days }));
 }));
 
 router.get('/overview', ah(async (req, res) => {

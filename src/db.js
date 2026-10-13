@@ -421,6 +421,20 @@ db.exec(`CREATE TABLE IF NOT EXISTS email_suppressions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`);
 
+// Business events: WHEN things happened (project stage changes, payments confirmed). The KPIs use this for
+// accurate completion dates and cycle times; it is also a per-project timeline. Never blocks a flow.
+db.exec(`CREATE TABLE IF NOT EXISTS events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  actor_id INTEGER,
+  data TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity, entity_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_events_type ON events(type, created_at)`);
+
 // Completion sheet: the customer's signed acceptance of finished work.
 db.exec(`CREATE TABLE IF NOT EXISTS completion_sheets (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

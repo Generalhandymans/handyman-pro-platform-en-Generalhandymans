@@ -247,6 +247,7 @@ router.post('/:id/resolve', ah(async (req, res) => {
   // Rework: the project goes back to in_progress so the contractor fixes it.
   if (b.resolution === 'rework' && pt && pt.p.stage !== 'cancelled') {
     await db.prepare(`UPDATE projects SET stage = 'in_progress' WHERE id = ?`).run(pt.p.id);
+    await require('../services/events').stage(pt.p.id, pt.p.stage, 'in_progress', req.user.id);
     await db.prepare(`UPDATE job_requests SET status = 'in_progress', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(pt.p.job_request_id);
   }
 

@@ -110,6 +110,7 @@ async function handleWebhook(rawBody, signature) {
     ).run(pay.id);
     const kind = pi.metadata && pi.metadata.kind;
     const pid = pi.metadata && pi.metadata.project_id;
+    if (upd.changes === 1) await require('./events').record('payment', pay.id, 'payment.paid', { data: { project_id: Number(pid) || null, kind, amount_cents: pay.amount_cents } });
     if (upd.changes === 1 && kind === 'deposit' && pid) {
       const proj = await db.prepare('SELECT job_request_id FROM projects WHERE id = ?').get(pid);
       if (proj) {
