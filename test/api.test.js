@@ -955,6 +955,10 @@ test('REGRESSION: Stripe deposit — amount comes from the quote, the webhook is
   assert.equal(Number((await db.prepare("SELECT COUNT(*) c FROM payments WHERE project_id = ? AND kind = 'deposit' AND status = 'paid'").get(pid)).c), 1);
   // already paid: no new intent
   assert.equal((await api('POST', '/api/payments/deposit-intent', { project_id: pid }, custToken)).status, 409);
+  // the confirmation is logged ONCE (the replay above must not duplicate it)
+  const paidEvents = await db.prepare("SELECT * FROM events WHERE type = 'payment.paid' AND entity = 'payment' AND entity_id = ?").all(cur.id);
+  assert.equal(paidEvents.length, 1, 'one payment.paid event, even after a replayed webhook');
+  assert.equal(JSON.parse(paidEvents[0].data).kind, 'deposit');
 
   // a failed payment is recorded as failed
   const pid2 = await acceptWithStripe();
@@ -1512,6 +1516,46 @@ test('REGRESSION: IDOR sweep — nobody can read or act on another customer\'s p
     const pm = await mine('/api/payables/mine', token);
     assert.ok(!pm.payables || pm.payables.every(p => p.project_id !== vp), `${who} sees none of the victim's payables`);
   }
+});
+
+test('REGRESSION: business events — stage changes are logged in order, the timeline is staff-only, and the KPIs use the exact completion date', async () => {
+  const pid = await activeProject(); // created -> scheduled (contractor accepts) -> in_progress
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'review' }, contToken)).status, 200);
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'completed', force: true }, adminToken)).status, 200);
+  const completedCount = async () => (await api('GET', `/api/projects/${pid}/timeline`, undefined, adminToken)).data.filter(e => e.data && e.data.to === 'completed').length;
+  assert.equal(await completedCount(), 1);
+  assert.equal((await api('PATCH', `/api/projects/${pid}/stage`, { stage: 'completed', force: true }, adminToken)).status, 200);
+  assert.equal(await completedCount(), 1, 're-sending the same stage logs nothing');
+
+  const tl = await api('GET', `/api/projects/${pid}/timeline`, undefined, adminToken);
+  assert.equal(tl.status, 200);
+  const stages = tl.data.filter(e => e.type === 'project.stage').map(e => e.data.to);
+  assert.deepEqual(stages, ['assigned', 'scheduled', 'in_progress', 'review', 'completed'], 'every move, in order');
+  assert.equal(tl.data[0].data.from, null, 'the first event is the creation');
+  assert.ok(tl.data.every(e => e.id && e.created_at), 'every entry has a timestamp');
+  assert.ok(tl.data.find(e => e.data.to === 'review').actor, 'it records who did it');
+  assert.equal((await api('GET', `/api/projects/${pid}/timeline`, undefined, custToken)).status, 403, 'customers do not see the internal timeline');
+  assert.equal((await api('GET', `/api/projects/${pid}/timeline`, undefined, contToken)).status, 403);
+  assert.equal((await api('GET', `/api/projects/${pid}/timeline`)).status, 401);
+  assert.equal((await api('GET', '/api/projects/999999/timeline', undefined, adminToken)).status, 404);
+  const sup = await makeStaff('support', 'tl-sup@test.local');
+  assert.equal((await api('GET', `/api/projects/${pid}/timeline`, undefined, sup.token)).status, 200, 'any staff role can read it');
+
+  // a rework pushed by a dispute is on the timeline too
+  const p2 = await activeProject();
+  await api('PATCH', `/api/projects/${p2}/stage`, { stage: 'review' }, contToken);
+  const dsp = await api('POST', '/api/disputes', { project_id: p2, reason: 'quality', description: 'The paint is peeling after two days.' }, custToken);
+  await api('POST', `/api/disputes/${dsp.data.id}/resolve`, { resolution: 'rework', notes: 'Repaint the wall.' }, adminToken);
+  const tl2 = (await api('GET', `/api/projects/${p2}/timeline`, undefined, adminToken)).data.filter(e => e.type === 'project.stage');
+  assert.deepEqual(tl2.slice(-2).map(e => e.data.to), ['review', 'in_progress']);
+  assert.equal(tl2[tl2.length - 1].data.from, 'review');
+
+  // KPIs
+  const k = await api('GET', '/api/reports/kpis?days=30', undefined, adminToken);
+  assert.ok(k.data.money.completed_by_date.count >= 1, 'closed in the window, by exact date');
+  assert.ok(k.data.money.completed_by_date.revenue_cents > 0);
+  assert.ok(k.data.speed.start_to_complete.n >= 1, 'start-to-complete is measured now');
+  assert.ok(k.data.speed.start_to_complete.median_hours >= 0);
 });
 
 test('REGRESSION: every report endpoint runs and returns JSON (admin/finance only)', async () => {

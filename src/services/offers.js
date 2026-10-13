@@ -79,6 +79,7 @@ async function acceptOffer(p, { userId, ip }) {
   await db.prepare(
     `UPDATE projects SET contractor_status = 'accepted', stage = 'scheduled', offer_expires_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
   ).run(p.id);
+  if (p.stage !== 'scheduled') await require('./events').stage(p.id, p.stage, 'scheduled', userId);
   await db.prepare(`UPDATE job_requests SET status = 'assigned', updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(p.job_request_id);
   await recordAcceptance({ userId, kind: 'contractor_job', referenceId: p.id, version: CONTRACTOR_TERMS_VERSION, ip: ip || null });
   await auditLog(userId, 'project.contractor_accepted', 'projects', p.id, `Contractor accepted under terms v${CONTRACTOR_TERMS_VERSION}`);

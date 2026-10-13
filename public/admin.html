@@ -636,6 +636,7 @@
           ${card('Booked', HP.fmtMoney(m.booked_cents), m.quotes_accepted + ' quotes accepted')}
           ${card('Avg ticket', m.avg_ticket_cents == null ? '—' : HP.fmtMoney(m.avg_ticket_cents), '')}
           ${card('Margin (completed)', P(m.completed_margin_pct), 'projected on new work: ' + P(m.booked_margin_pct))}
+          ${card('Closed in this window', m.completed_by_date.count, 'margin ' + P(m.completed_by_date.margin_pct) + ' · by exact completion date')}
           ${card('Customers owe us', HP.fmtMoney(ar.total_cents), ar.count + ' project(s)')}
           ${card('Overdue 61+ days', HP.fmtMoney(ar.d61_plus), '31–60 d: ' + HP.fmtMoney(ar.d31_60))}
           ${card('We owe contractors', HP.fmtMoney(pb.owed_cents), HP.fmtMoney(pb.overdue_cents) + ' overdue')}
@@ -650,6 +651,7 @@
           ${card('Quote → accepted', H(k.speed.quote_to_accept), 'n=' + k.speed.quote_to_accept.n)}
           ${card('Accepted → deposit', H(k.speed.accept_to_deposit), 'n=' + k.speed.accept_to_deposit.n)}
           ${card('Project → signed off', H(k.speed.project_to_signoff), 'n=' + k.speed.project_to_signoff.n)}
+          ${card('Start → completed', H(k.speed.start_to_complete), 'n=' + k.speed.start_to_complete.n)}
         </div>
         <h3>Quality &amp; capacity</h3>
         <div class="kpis">

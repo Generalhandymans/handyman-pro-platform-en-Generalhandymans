@@ -190,6 +190,7 @@ router.post('/:id/respond', authRequired, ah(async (req, res) => {
   } catch (e) {
     return res.status(e.statusCode || 500).json({ error: e.statusCode ? e.message : 'Something went wrong on our end. Please try again.' });
   }
+  await require('../services/events').record('project', projectId, 'project.stage', { actorId: req.user.id, data: { from: null, to: 'assigned' } });
   await touchInteraction(job.id, 'customer_reply', 'quote accepted');
 
   // Notify admins: a customer accepted — time to assign a contractor.

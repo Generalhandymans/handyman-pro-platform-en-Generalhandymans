@@ -29,7 +29,26 @@ On first boot with an empty database:
 To re-seed from scratch: delete `data/handyman.db*` and restart with `SEED_DEMO=true`.
 
 No build tools, no bundlers, no frontend frameworks — vanilla HTML/CSS/JS served
-by Express, one SQLite file.
+by Express. SQLite for local development and tests; **PostgreSQL in production**
+(`DATABASE_URL`, migrations run on boot).
+
+> **Read first:** this README predates a large hardening/feature pass. The accurate
+> picture is in **[`AUDIT_CHANGES.md`](AUDIT_CHANGES.md)** (what changed, what is verified and
+> what is not) and **[`docs/GO_LIVE.md`](docs/GO_LIVE.md)** (checklist from here to a pilot).
+> Since this README was written the platform also has: Stripe deposits/final balance/refunds,
+> team roles (owner/finance/dispatch/support) and 2-step verification, an admin agenda,
+> signed completion sheets, contractor payouts, disputes, a KPI dashboard, SMS reminders with
+> consent, an AI-assisted reply drafter (human approval only), privacy export/delete, and
+> unsubscribe handling for campaigns.
+
+## Checks
+
+```bash
+npm test            # API suite (SQLite)
+npm run ui-smoke    # runs the three portals' real scripts against the data npm test leaves (no browser)
+```
+CI (`.github/workflows/test.yml`) runs the suite on SQLite **and PostgreSQL**. Neither check
+replaces opening the pages in a real browser.
 
 ## Demo logins (seed data — only when `SEED_DEMO=true`)
 
@@ -127,9 +146,10 @@ To send real email:
   contractor performance, estimate-vs-actual calibration.
 
 **Stubs / not implemented:**
-- **Payments (Stripe): READY.** `GET /api/payments/stripe-status` — set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` to charge cards; without them, deposits stay manual.
-  returns `{implemented:false}`. All payment rows are manual bookkeeping
-  (`provider="manual"`) — nothing charges a card. See ROADMAP.md.
+- **Payments (Stripe): implemented** (deposit, final balance, refunds, verified idempotent webhook).
+  Set `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET`. In production the server
+  refuses to start without Stripe unless `ALLOW_MANUAL_PAYMENTS=true` (manual pilot). It has been
+  tested against a fake client, **not** against Stripe itself.
 - **Vision AI without a key:** heuristic mode only, clearly labeled.
 - **Email without a provider key:** log mode only, clearly labeled.
 
